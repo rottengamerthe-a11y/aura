@@ -46,8 +46,9 @@ function startWebServer() {
 
 async function main() {
   startWebServer();
+  console.log("Connecting to MongoDB...");
   await connectDatabase();
-  await registerCommands();
+  console.log("Starting Discord client...");
 
   const client = new Client({
     intents: [GatewayIntentBits.Guilds],
@@ -71,7 +72,15 @@ async function main() {
     }
   });
 
+  console.log("Logging in to Discord...");
   await client.login(process.env.DISCORD_TOKEN);
+
+  console.log("Registering application commands...");
+  try {
+    await registerCommands();
+  } catch (error) {
+    console.error("Command registration failed:", error);
+  }
 }
 
 main().catch((error) => {
