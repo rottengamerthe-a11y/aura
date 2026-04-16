@@ -41,8 +41,16 @@ async function verifyDiscordConfiguration() {
   console.log(`Discord client id: ${process.env.DISCORD_CLIENT_ID}`);
   console.log("Verifying Discord credentials over REST...");
 
-  const application = await rest.get("/oauth2/applications/@me");
-  const currentUser = await rest.get("/users/@me");
+  const timeoutMs = 15000;
+  const withTimeout = (promise, label) => Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]);
+
+  const application = await withTimeout(rest.get("/oauth2/applications/@me"), "Discord application lookup");
+  const currentUser = await withTimeout(rest.get("/users/@me"), "Discord bot user lookup");
 
   console.log(`Discord application verified: ${application.name} (${application.id})`);
   console.log(`Discord bot user verified: ${currentUser.username} (${currentUser.id})`);
@@ -69,7 +77,11 @@ async function main() {
   startWebServer();
   console.log("Connecting to MongoDB...");
   await connectDatabase();
-  await verifyDiscordConfiguration();
+  try {
+    await verifyDiscordConfiguration();
+  } catch (error) {
+    console.error("Discord REST verification failed:", error);
+  }
   console.log("Starting Discord client...");
 
   const client = new Client({
