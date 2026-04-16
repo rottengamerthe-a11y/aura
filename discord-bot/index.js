@@ -6,6 +6,13 @@ const mongoose = require("mongoose");
 const { buildCommands, routeInteraction } = require("./src/game/service");
 
 const requiredEnv = ["DISCORD_TOKEN", "DISCORD_CLIENT_ID", "MONGODB_URI"];
+
+requiredEnv.forEach((key) => {
+  if (typeof process.env[key] === "string") {
+    process.env[key] = process.env[key].trim();
+  }
+});
+
 const missing = requiredEnv.filter((key) => !process.env[key]);
 
 if (missing.length) {
@@ -25,6 +32,20 @@ async function registerCommands() {
 
   await rest.put(Routes.applicationCommands(process.env.DISCORD_CLIENT_ID), { body: commands });
   console.log(`Registered ${commands.length} global commands.`);
+}
+
+async function verifyDiscordConfiguration() {
+  const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
+
+  console.log(`Discord token length: ${process.env.DISCORD_TOKEN.length}`);
+  console.log(`Discord client id: ${process.env.DISCORD_CLIENT_ID}`);
+  console.log("Verifying Discord credentials over REST...");
+
+  const application = await rest.get(Routes.application(process.env.DISCORD_CLIENT_ID));
+  const currentUser = await rest.get(Routes.user());
+
+  console.log(`Discord application verified: ${application.name} (${application.id})`);
+  console.log(`Discord bot user verified: ${currentUser.username} (${currentUser.id})`);
 }
 
 function startWebServer() {
@@ -48,6 +69,7 @@ async function main() {
   startWebServer();
   console.log("Connecting to MongoDB...");
   await connectDatabase();
+  await verifyDiscordConfiguration();
   console.log("Starting Discord client...");
 
   const client = new Client({
