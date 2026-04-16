@@ -41,8 +41,8 @@ async function verifyDiscordConfiguration() {
   console.log(`Discord client id: ${process.env.DISCORD_CLIENT_ID}`);
   console.log("Verifying Discord credentials over REST...");
 
-  const application = await rest.get(Routes.application(process.env.DISCORD_CLIENT_ID));
-  const currentUser = await rest.get(Routes.user());
+  const application = await rest.get("/oauth2/applications/@me");
+  const currentUser = await rest.get("/users/@me");
 
   console.log(`Discord application verified: ${application.name} (${application.id})`);
   console.log(`Discord bot user verified: ${currentUser.username} (${currentUser.id})`);
