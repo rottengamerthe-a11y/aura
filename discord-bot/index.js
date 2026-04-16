@@ -54,6 +54,34 @@ async function main() {
     intents: [GatewayIntentBits.Guilds],
   });
 
+  client.on("warn", (message) => {
+    console.warn("Discord warn:", message);
+  });
+
+  client.on("error", (error) => {
+    console.error("Discord client error:", error);
+  });
+
+  client.on("shardReady", (shardId) => {
+    console.log(`Discord shard ${shardId} ready.`);
+  });
+
+  client.on("shardResume", (shardId, replayedEvents) => {
+    console.log(`Discord shard ${shardId} resumed with ${replayedEvents} replayed events.`);
+  });
+
+  client.on("shardDisconnect", (event, shardId) => {
+    console.warn(`Discord shard ${shardId} disconnected with code ${event.code}.`);
+  });
+
+  client.on("shardError", (error, shardId) => {
+    console.error(`Discord shard ${shardId} error:`, error);
+  });
+
+  client.on("invalidated", () => {
+    console.error("Discord session invalidated.");
+  });
+
   client.once("ready", () => {
     console.log(`Bot ready as ${client.user.tag}`);
   });
@@ -73,7 +101,12 @@ async function main() {
   });
 
   console.log("Logging in to Discord...");
+  const loginTimeout = setTimeout(() => {
+    console.error("Discord login is taking longer than expected.");
+  }, 20000);
+
   await client.login(process.env.DISCORD_TOKEN);
+  clearTimeout(loginTimeout);
 
   console.log("Registering application commands...");
   try {
