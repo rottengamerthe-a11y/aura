@@ -1,6 +1,7 @@
 require("dotenv").config();
 
 const { Client, GatewayIntentBits, REST, Routes } = require("discord.js");
+const express = require("express");
 const mongoose = require("mongoose");
 const { buildCommands, routeInteraction } = require("./src/game/service");
 
@@ -26,7 +27,25 @@ async function registerCommands() {
   console.log(`Registered ${commands.length} global commands.`);
 }
 
+function startWebServer() {
+  const app = express();
+  const port = Number(process.env.PORT) || 3000;
+
+  app.get("/", (_req, res) => {
+    res.status(200).send("Aura bot is running.");
+  });
+
+  app.get("/health", (_req, res) => {
+    res.status(200).json({ ok: true, service: "discord-bot" });
+  });
+
+  app.listen(port, () => {
+    console.log(`Health server listening on port ${port}.`);
+  });
+}
+
 async function main() {
+  startWebServer();
   await connectDatabase();
   await registerCommands();
 
