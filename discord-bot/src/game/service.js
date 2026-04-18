@@ -142,25 +142,6 @@ function getDisplayShopItems(user) {
   }));
 }
 
-function hasPremiumAdminAccess(interaction) {
-  return interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild);
-}
-
-function getPremiumBoostLabel(effectId) {
-  const labels = {
-    spinRewardBoost: "Spin rewards",
-    vaultInterestBoost: "Vault interest",
-    workAuraBoost: "Work aura",
-    workXpBoost: "Work XP",
-    mineYieldBoost: "Mine yield",
-    mineXpBoost: "Mine XP",
-    bossRewardBoost: "Boss rewards",
-    pvpRewardBoost: "PvP rewards",
-    crateAuraBoost: "Crate aura",
-  };
-  return labels[effectId] || effectId;
-}
-
 function getMaterial(materialId) {
   return MATERIALS[materialId] || null;
 }
@@ -688,7 +669,7 @@ const HELP_SECTIONS = [
       { name: "/achievements", description: "Claim milestone rewards you have unlocked." },
       { name: "/leaderboard category:<type>", description: "See the top players or clans." },
       { name: "/authority user:<player>", description: "Use the Warden+ blessing command." },
-      { name: "/premium", description: "Check premium status, buy access, and use admin controls." },
+      { name: "/premium", description: "Open the premium purchase flow." },
     ],
   },
   {
@@ -1547,7 +1528,7 @@ async function handleBuy(interaction) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Item Not Found", description: "That shop item id does not exist.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
   if (isPremiumOnlyItem(item) && !isPremiumActive(user)) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Premium Required", description: "That item is reserved for premium members. Use `/premium status` to check access.", visual: "emblem-alert.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "Premium Required", description: "That item is reserved for premium members. Use `/premium buy` to purchase access.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
   if (user.aura < item.price) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: "You do not have enough aura for that purchase.", visual: "emblem-economy.svg" }), ephemeral: true });
@@ -2039,139 +2020,67 @@ async function handleSetup(interaction) {
 }
 
 async function handlePremium(interaction) {
-  const subcommand = interaction.options.getSubcommand();
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const planId = interaction.options.getString("plan", true);
+  const missing = getMissingPaymentConfig(planId);
 
-  if (subcommand === "status") {
-    const target = interaction.options.getUser("user") || interaction.user;
-    const user = await getOrCreatePlayer(interaction.guildId, target.id);
-    const boostLines = Object.entries(getPremiumEffects(user)).map(([effectId, value]) => `${getPremiumBoostLabel(effectId)}: ${formatEffectValue(value)}`);
-    return interaction.reply(buildEmbedPayload({
-      title: `${target.username}'s Premium Status`,
-      description: isPremiumActive(user) ? "Premium is active and premium rewards are enabled." : "This profile is on the free tier.",
-      visual: "emblem-economy.svg",
-      fields: [
-        { name: "Membership", value: formatPremiumStatus(user), inline: true },
-        { name: "Exclusive Shop Access", value: isPremiumActive(user) ? "Unlocked" : "Locked", inline: true },
-        { name: "Source", value: user.premium?.source || "manual / none", inline: true },
-        { name: "Boosts", value: boostLines.length ? boostLines.join("\n") : "No premium boosts active." },
-      ],
-      footer: "Premium boosts apply to daily, work, spin, mine, crate, vault, boss, and PvP rewards.",
-    }));
+  if (missing.length) {
+    return interaction.reply({
+      ...buildEmbedPayload({
+        title: "Razorpay Setup Incomplete",
+        description: `The payment flow is missing: ${missing.join(", ")}.`,
+        visual: "emblem-alert.svg",
+        footer: "Add the missing Razorpay environment variables, then try again.",
+      }),
+      ephemeral: true,
+    });
   }
 
-  if (subcommand === "buy") {
-    const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-    const planId = interaction.options.getString("plan", true);
-    const missing = getMissingPaymentConfig(planId);
+  getPremiumPlan(planId);
 
-    if (missing.length) {
-      return interaction.reply({
-        ...buildEmbedPayload({
-          title: "Razorpay Setup Incomplete",
-          description: `The payment flow is missing: ${missing.join(", ")}.`,
-          visual: "emblem-alert.svg",
-          footer: "Add the missing Razorpay environment variables, then try again.",
-        }),
-        ephemeral: true,
-      });
+  try {
+    const { paymentLink, referenceId } = await createPremiumPaymentLink({
+      guildId: interaction.guildId,
+      discordUserId: interaction.user.id,
+      planId,
+      username: interaction.user.username,
+    });
+
+    if (user.billing) {
+      user.billing.provider = "razorpay";
+      user.billing.razorpayPaymentLinkId = paymentLink.id;
+      user.billing.razorpayReferenceId = referenceId;
+      user.billing.razorpayPlanId = planId;
+      user.billing.razorpayLinkStatus = paymentLink.status || "created";
+      await user.save();
     }
 
-    const plan = getPremiumPlan(planId);
-
-    try {
-      const { paymentLink, referenceId } = await createPremiumPaymentLink({
-        guildId: interaction.guildId,
-        discordUserId: interaction.user.id,
-        planId,
-        username: interaction.user.username,
-      });
-
-      if (user.billing) {
-        user.billing.provider = "razorpay";
-        user.billing.razorpayPaymentLinkId = paymentLink.id;
-        user.billing.razorpayReferenceId = referenceId;
-        user.billing.razorpayPlanId = planId;
-        user.billing.razorpayLinkStatus = paymentLink.status || "created";
-        await user.save();
-      }
-
-      return interaction.reply({
-        ...buildEmbedPayload({
-          title: "Premium Payment Link Ready",
-          description: `Open the Razorpay link below to purchase the **${formatPremiumPlanLabel(planId)}** premium plan.`,
-          visual: "emblem-success.svg",
-          fields: [
-            { name: "Plan", value: formatPremiumPlanLabel(planId), inline: true },
-            { name: "Current Status", value: formatPremiumStatus(user), inline: true },
-            { name: "Payment Link", value: paymentLink.short_url || paymentLink.id },
-          ],
-          footer: "Premium will update automatically after Razorpay confirms the payment.",
-        }),
-        ephemeral: true,
-      });
-    } catch (error) {
-      console.error("Razorpay payment link creation failed:", error);
-      return interaction.reply({
-        ...buildEmbedPayload({
-          title: "Payment Link Failed",
-          description: "I could not create the Razorpay payment link right now.",
-          visual: "emblem-alert.svg",
-          footer: "Check your Razorpay keys and premium amount environment variables.",
-        }),
-        ephemeral: true,
-      });
-    }
+    return interaction.reply({
+      ...buildEmbedPayload({
+        title: "Premium Payment Link Ready",
+        description: `Open the Razorpay link below to purchase the **${formatPremiumPlanLabel(planId)}** premium plan.`,
+        visual: "emblem-success.svg",
+        fields: [
+          { name: "Plan", value: formatPremiumPlanLabel(planId), inline: true },
+          { name: "Current Status", value: formatPremiumStatus(user), inline: true },
+          { name: "Payment Link", value: paymentLink.short_url || paymentLink.id },
+        ],
+        footer: "Premium will update automatically after Razorpay confirms the payment.",
+      }),
+      ephemeral: true,
+    });
+  } catch (error) {
+    console.error("Razorpay payment link creation failed:", error);
+    return interaction.reply({
+      ...buildEmbedPayload({
+        title: "Payment Link Failed",
+        description: "I could not create the Razorpay payment link right now.",
+        visual: "emblem-alert.svg",
+        footer: "Check your Razorpay keys and premium amount environment variables.",
+      }),
+      ephemeral: true,
+    });
   }
-
-  if (!hasPremiumAdminAccess(interaction)) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Permission Required", description: "You need Manage Server permission to grant or revoke premium.", visual: "emblem-alert.svg" }), ephemeral: true });
-  }
-
-  const target = interaction.options.getUser("user", true);
-  const user = await getOrCreatePlayer(interaction.guildId, target.id);
-
-  if (subcommand === "grant") {
-    const lifetime = interaction.options.getBoolean("lifetime") || false;
-    const durationDays = interaction.options.getInteger("days");
-    user.premium.active = true;
-    user.premium.lifetime = lifetime;
-    user.premium.grantedBy = interaction.user.id;
-    user.premium.source = "manual";
-    user.premium.expiresAt = lifetime ? null : new Date(Date.now() + ((durationDays || 30) * 24 * 60 * 60 * 1000));
-    await user.save();
-
-    return interaction.reply(buildEmbedPayload({
-      title: "Premium Granted",
-      description: `${target.username} now has premium access.`,
-      visual: "emblem-success.svg",
-      fields: [
-        { name: "Plan", value: lifetime ? "Lifetime" : `${durationDays || 30} days`, inline: true },
-        { name: "Status", value: formatPremiumStatus(user), inline: true },
-        { name: "Source", value: "manual", inline: true },
-      ],
-    }));
-  }
-
-  if (subcommand === "revoke") {
-    user.premium.active = false;
-    user.premium.lifetime = false;
-    user.premium.expiresAt = null;
-    user.premium.grantedBy = interaction.user.id;
-    user.premium.source = "manual";
-    await user.save();
-
-    return interaction.reply(buildEmbedPayload({
-      title: "Premium Revoked",
-      description: `${target.username} has been moved back to the free tier.`,
-      visual: "emblem-alert.svg",
-      fields: [
-        { name: "Status", value: formatPremiumStatus(user), inline: true },
-        { name: "Source", value: user.premium?.source || "manual / none", inline: true },
-      ],
-    }));
-  }
-
-  return interaction.reply({ content: "Unsupported premium command.", ephemeral: true });
 }
 
 async function handleLeaderboard(interaction) {
@@ -2750,11 +2659,7 @@ function buildCommands() {
     new SlashCommandBuilder().setName("pvp").setDescription("Challenge another player to an interactive battle.").addUserOption((option) => option.setName("user").setDescription("Opponent").setRequired(true)),
     new SlashCommandBuilder().setName("boss").setDescription("Fight a boss.").addStringOption((option) => option.setName("boss").setDescription("Boss id").addChoices({ name: "ember", value: "ember" }, { name: "oracle", value: "oracle" }, { name: "warden", value: "warden" }, { name: "codex", value: "codex" })),
     new SlashCommandBuilder().setName("leaderboard").setDescription("View top players and clans.").addStringOption((option) => option.setName("category").setDescription("Leaderboard type").setRequired(true).addChoices({ name: "aura", value: "aura" }, { name: "vault", value: "vault" }, { name: "xp", value: "xp" }, { name: "prestige", value: "prestige" }, { name: "clans", value: "clans" })),
-    new SlashCommandBuilder().setName("premium").setDescription("View or manage premium access.")
-      .addSubcommand((sub) => sub.setName("status").setDescription("Check premium status.").addUserOption((option) => option.setName("user").setDescription("Optional target")))
-      .addSubcommand((sub) => sub.setName("buy").setDescription("Create a Stripe checkout link for premium.").addStringOption((option) => option.setName("plan").setDescription("Premium plan").setRequired(true).addChoices(...getPremiumPlanChoices())))
-      .addSubcommand((sub) => sub.setName("grant").setDescription("Grant premium to a user.").addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true)).addIntegerOption((option) => option.setName("days").setDescription("Premium duration in days").setMinValue(1)).addBooleanOption((option) => option.setName("lifetime").setDescription("Grant lifetime premium instead")))
-      .addSubcommand((sub) => sub.setName("revoke").setDescription("Remove premium from a user.").addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true))),
+    new SlashCommandBuilder().setName("premium").setDescription("Open the premium purchase flow.").addStringOption((option) => option.setName("plan").setDescription("Premium plan").setRequired(true).addChoices(...getPremiumPlanChoices())),
     new SlashCommandBuilder().setName("clan").setDescription("Manage your clan.").addSubcommand((sub) => sub.setName("create").setDescription("Create a clan for 50,000 aura.").addStringOption((option) => option.setName("name").setDescription("Clan name").setRequired(true))).addSubcommand((sub) => sub.setName("join").setDescription("Join a clan by code.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("apply").setDescription("Send a join request for approval.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("leave").setDescription("Leave your clan.")).addSubcommand((sub) => sub.setName("info").setDescription("View your clan.")).addSubcommand((sub) => sub.setName("members").setDescription("List clan members.")).addSubcommand((sub) => sub.setName("log").setDescription("View recent clan activity.")).addSubcommand((sub) => sub.setName("kick").setDescription("Owner-only member removal.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true))).addSubcommand((sub) => sub.setName("approve").setDescription("Owner or officer request approval.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("decline").setDescription("Owner or officer reject an applicant.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("role").setDescription("Owner-only officer management.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true)).addStringOption((option) => option.setName("role").setDescription("Role to set").setRequired(true).addChoices({ name: "officer", value: "officer" }, { name: "member", value: "member" }))).addSubcommand((sub) => sub.setName("transfer").setDescription("Owner-only leadership transfer.").addUserOption((option) => option.setName("user").setDescription("New owner").setRequired(true))).addSubcommand((sub) => sub.setName("disband").setDescription("Owner-only full clan deletion.")).addSubcommand((sub) => sub.setName("upgrade").setDescription("Spend clan vault aura on upgrades.").addStringOption((option) => option.setName("path").setDescription("Upgrade path").setRequired(true).addChoices({ name: "hall", value: "hall" }, { name: "vault", value: "vault" }, { name: "arsenal", value: "arsenal" }))).addSubcommand((sub) => sub.setName("raid").setDescription("Launch a cooldown-based clan raid.")).addSubcommand((sub) => sub.setName("donate").setDescription("Donate aura to your clan.").addIntegerOption((option) => option.setName("amount").setDescription("Amount").setRequired(true).setMinValue(1))).addSubcommand((sub) => sub.setName("war").setDescription("Fight another clan by code.").addStringOption((option) => option.setName("enemy").setDescription("Enemy clan code").setRequired(true))),
     new SlashCommandBuilder().setName("authority").setDescription("Rank-only blessing command.").addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true)),
   ].map((command) => command.toJSON());
