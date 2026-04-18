@@ -4,6 +4,7 @@ const { Client, GatewayIntentBits, REST, Routes } = require("discord.js");
 const express = require("express");
 const mongoose = require("mongoose");
 const { getRazorpayConfig, processWebhookEvent, verifyWebhookSignature } = require("./src/billing/razorpay");
+const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigration");
 const { buildCommands, routeInteraction } = require("./src/game/service");
 
 const requiredEnv = ["DISCORD_TOKEN", "DISCORD_CLIENT_ID", "MONGODB_URI"];
@@ -106,6 +107,10 @@ async function main() {
   startWebServer();
   console.log("Connecting to MongoDB...");
   await connectDatabase();
+  const migrationResult = await migrateToGlobalPlayerProfiles();
+  if (migrationResult.ran) {
+    console.log(`Global player migration complete. Merged ${migrationResult.mergedUsers} users and removed ${migrationResult.removedProfiles} duplicate profiles.`);
+  }
   try {
     await verifyDiscordConfiguration();
   } catch (error) {
