@@ -231,7 +231,6 @@ function mergeUsers(users) {
     premiumSource = premiumSource || user.premium?.source || null;
   });
 
-  primary.guildId = undefined;
   primary.aura = aura;
   primary.vaultAura = vaultAura;
   primary.xp = xp;
@@ -312,13 +311,26 @@ async function migrateToGlobalPlayerProfiles() {
     }
 
     const { primary, duplicates } = mergeUsers(users);
-    await primary.save();
-
     const duplicateIds = duplicates.map((user) => user._id);
     if (duplicateIds.length > 0) {
       await User.deleteMany({ _id: { $in: duplicateIds } });
       removedProfiles += duplicateIds.length;
     }
+
+    primary.guildId = undefined;
+    primary.markModified("inventory");
+    primary.markModified("gardenPlots");
+    primary.markModified("ownedPerks");
+    primary.markModified("skills");
+    primary.markModified("equippedGear");
+    primary.markModified("crates");
+    primary.markModified("quests");
+    primary.markModified("claimedAchievements");
+    primary.markModified("premium");
+    primary.markModified("billing");
+    primary.markModified("stats");
+    primary.markModified("clanMemberships");
+    await primary.save();
 
     mergedUsers += 1;
   }
