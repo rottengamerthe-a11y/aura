@@ -72,6 +72,23 @@ const userSchema = new mongoose.Schema(
     crates: { type: Map, of: Number, default: {} },
     quests: { type: [questSchema], default: [] },
     claimedAchievements: { type: [String], default: [] },
+    premium: {
+      active: { type: Boolean, default: false },
+      expiresAt: { type: Date, default: null },
+      lifetime: { type: Boolean, default: false },
+      grantedBy: { type: String, default: null },
+      source: { type: String, default: null },
+    },
+    billing: {
+      provider: { type: String, default: null },
+      razorpayPaymentLinkId: { type: String, default: null },
+      razorpayPaymentId: { type: String, default: null },
+      razorpayOrderId: { type: String, default: null },
+      razorpayReferenceId: { type: String, default: null },
+      razorpayLastEventId: { type: String, default: null },
+      razorpayPlanId: { type: String, default: null },
+      razorpayLinkStatus: { type: String, default: null },
+    },
     stats: {
       spins: { type: Number, default: 0 },
       works: { type: Number, default: 0 },
@@ -89,6 +106,7 @@ const userSchema = new mongoose.Schema(
       shopBuys: { type: Number, default: 0 },
     },
     clanId: { type: mongoose.Schema.Types.ObjectId, ref: "Clan", default: null },
+    clanMemberships: { type: Map, of: mongoose.Schema.Types.ObjectId, default: {} },
   },
   { timestamps: true }
 );

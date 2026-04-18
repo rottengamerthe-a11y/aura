@@ -106,6 +106,33 @@ const SHOP_ITEMS = [
     grantsCrate: "epic",
     description: "Rare progression spike in a box.",
   },
+  {
+    id: "premium_supply_drop",
+    name: "Premium Supply Drop",
+    price: 6800,
+    type: "crate",
+    grantsCrate: "rare",
+    premiumOnly: true,
+    description: "Premium-only rare crate bundle for faster progression.",
+  },
+  {
+    id: "executive_badge",
+    name: "Executive Badge",
+    price: 4800,
+    type: "perk",
+    premiumOnly: true,
+    description: "+10% work aura and +6% vault interest while premium is active.",
+    effects: { workAuraBoost: 0.1, vaultInterestBoost: 0.06 },
+  },
+  {
+    id: "storm_pass",
+    name: "Storm Pass",
+    price: 7200,
+    type: "perk",
+    premiumOnly: true,
+    description: "+10% boss rewards and +8% PvP rewards while premium is active.",
+    effects: { bossRewardBoost: 0.1, pvpRewardBoost: 0.08 },
+  },
 ];
 
 const SKILLS = {

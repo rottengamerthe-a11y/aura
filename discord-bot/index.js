@@ -3,6 +3,7 @@ require("dotenv").config();
 const { Client, GatewayIntentBits, REST, Routes } = require("discord.js");
 const express = require("express");
 const mongoose = require("mongoose");
+const { getRazorpayConfig, processWebhookEvent, verifyWebhookSignature } = require("./src/billing/razorpay");
 const { buildCommands, routeInteraction } = require("./src/game/service");
 
 const requiredEnv = ["DISCORD_TOKEN", "DISCORD_CLIENT_ID", "MONGODB_URI"];
@@ -59,6 +60,34 @@ async function verifyDiscordConfiguration() {
 function startWebServer() {
   const app = express();
   const port = Number(process.env.PORT) || 3000;
+  const razorpayWebhookSecret = getRazorpayConfig().webhookSecret;
+
+  app.post("/razorpay/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+    if (!razorpayWebhookSecret) {
+      return res.status(503).json({ ok: false, error: "razorpay_not_configured" });
+    }
+
+    const signature = req.headers["x-razorpay-signature"];
+    if (!signature) {
+      return res.status(400).json({ ok: false, error: "missing_signature" });
+    }
+
+    const rawBody = req.body.toString("utf8");
+    if (!verifyWebhookSignature(rawBody, signature)) {
+      console.error("Razorpay webhook signature verification failed.");
+      return res.status(400).json({ ok: false, error: "invalid_signature" });
+    }
+
+    try {
+      const event = JSON.parse(rawBody);
+      const eventId = req.headers["x-razorpay-event-id"];
+      const result = await processWebhookEvent(event, eventId);
+      return res.status(200).json({ ok: true, ...result });
+    } catch (error) {
+      console.error("Razorpay webhook processing failed:", error);
+      return res.status(500).json({ ok: false, error: "webhook_processing_failed" });
+    }
+  });
 
   app.get("/", (_req, res) => {
     res.status(200).send("Aura bot is running.");

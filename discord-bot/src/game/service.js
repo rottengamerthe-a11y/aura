@@ -1,10 +1,25 @@
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder } = require("discord.js");
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField, SlashCommandBuilder } = require("discord.js");
 const crypto = require("crypto");
+const { createPremiumPaymentLink, getMissingPaymentConfig, getPremiumPlan, getPremiumPlanChoices } = require("../billing/razorpay");
 const { BOSSES, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
 const { Clan, User } = require("../data/models");
+const { buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
 const { buildEmbedPayload } = require("../utils/visuals");
 
 const activeBattles = new Map();
+const PREMIUM_EFFECTS = Object.freeze({
+  spinRewardBoost: 0.12,
+  vaultInterestBoost: 0.03,
+  workAuraBoost: 0.12,
+  workXpBoost: 0.1,
+  mineYieldBoost: 0.12,
+  mineXpBoost: 0.08,
+  bossRewardBoost: 0.1,
+  pvpRewardBoost: 0.08,
+  crateAuraBoost: 0.1,
+});
+
+const PREMIUM_DAILY_MULTIPLIER = 1.25;
 
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -26,6 +41,91 @@ function progressBar(current, total, size = 12) {
 
 function getItem(itemId) {
   return SHOP_ITEMS.find((item) => item.id === itemId) || null;
+}
+
+function isPremiumActive(user) {
+  if (!user?.premium) {
+    return false;
+  }
+  if (user.premium.lifetime) {
+    return true;
+  }
+  if (!user.premium.active || !user.premium.expiresAt) {
+    return false;
+  }
+  return user.premium.expiresAt.getTime() > Date.now();
+}
+
+function normalizePremiumState(user) {
+  if (!user.premium) {
+    user.premium = { active: false, expiresAt: null, lifetime: false, grantedBy: null, source: null };
+  }
+  if (!user.billing) {
+    user.billing = {
+      provider: null,
+      razorpayPaymentLinkId: null,
+      razorpayPaymentId: null,
+      razorpayOrderId: null,
+      razorpayReferenceId: null,
+      razorpayLastEventId: null,
+      razorpayPlanId: null,
+      razorpayLinkStatus: null,
+    };
+  }
+  if (!isPremiumActive(user) && user.premium.active) {
+    user.premium.active = false;
+    user.premium.lifetime = false;
+    user.premium.expiresAt = null;
+  }
+}
+
+function getPremiumEffects(user) {
+  return isPremiumActive(user) ? PREMIUM_EFFECTS : {};
+}
+
+function formatPremiumStatus(user) {
+  if (isPremiumActive(user) && user.premium?.lifetime) {
+    return "Lifetime Premium";
+  }
+  if (isPremiumActive(user) && user.premium?.expiresAt) {
+    return `Active until ${user.premium.expiresAt.toLocaleDateString("en-US")}`;
+  }
+  return "Free";
+}
+
+function formatPremiumPlanLabel(planId) {
+  const plan = getPremiumPlan(planId);
+  return plan?.label || planId;
+}
+
+function isPremiumOnlyItem(item) {
+  return Boolean(item?.premiumOnly);
+}
+
+function getDisplayShopItems(user) {
+  return SHOP_ITEMS.map((item) => ({
+    ...item,
+    premiumLocked: isPremiumOnlyItem(item) && !isPremiumActive(user),
+  }));
+}
+
+function hasPremiumAdminAccess(interaction) {
+  return interaction.memberPermissions?.has(PermissionsBitField.Flags.ManageGuild);
+}
+
+function getPremiumBoostLabel(effectId) {
+  const labels = {
+    spinRewardBoost: "Spin rewards",
+    vaultInterestBoost: "Vault interest",
+    workAuraBoost: "Work aura",
+    workXpBoost: "Work XP",
+    mineYieldBoost: "Mine yield",
+    mineXpBoost: "Mine XP",
+    bossRewardBoost: "Boss rewards",
+    pvpRewardBoost: "PvP rewards",
+    crateAuraBoost: "Crate aura",
+  };
+  return labels[effectId] || effectId;
 }
 
 function getMaterial(materialId) {
@@ -184,7 +284,7 @@ function nextRank(rankIndex) {
 function getPerkEffects(user) {
   return user.ownedPerks.reduce((acc, perkId) => {
     const item = getItem(perkId);
-    if (!item?.effects) {
+    if (!item?.effects || (isPremiumOnlyItem(item) && !isPremiumActive(user))) {
       return acc;
     }
     Object.entries(item.effects).forEach(([key, value]) => {
@@ -219,8 +319,9 @@ function getCombinedEffects(user) {
   const worldEvent = getCurrentWorldEvent();
   const perkEffects = getPerkEffects(user);
   const gearEffects = getGearEffects(user);
+  const premiumEffects = getPremiumEffects(user);
   const eventEffects = worldEvent.effects || {};
-  return sumEffectSources(perkEffects, gearEffects, eventEffects);
+  return sumEffectSources(perkEffects, gearEffects, premiumEffects, eventEffects);
 }
 
 function ensureInventoryEntry(user, id) {
@@ -280,18 +381,25 @@ async function applyQuestProgress(user, metric, amount) {
 }
 
 async function getOrCreatePlayer(guildId, userId) {
-  let user = await User.findOne({ guildId, userId });
+  let user = await User.findOne(buildPlayerLookup(guildId, userId)).sort({ updatedAt: -1, createdAt: 1 });
   if (!user) {
-    user = await User.create({ guildId, userId });
+    user = await User.create(buildPlayerCreateData(guildId, userId));
   }
   setQuestSet(user);
   if (!Array.isArray(user.gardenPlots) || user.gardenPlots.length === 0) {
     user.gardenPlots = [{ cropId: null, plantedAt: null }, { cropId: null, plantedAt: null }];
   }
+  if (!user.clanMemberships?.get) {
+    user.clanMemberships = new Map(Object.entries(user.clanMemberships || {}));
+  }
+  if (!isGlobalPlayerDataEnabled() && user.clanId && !user.clanMemberships.get(guildId)) {
+    user.clanMemberships.set(guildId, user.clanId);
+  }
   user.equippedGear = user.equippedGear || { tool: null, charm: null, relic: null };
   if (!user.lastVaultInterestAt) {
     user.lastVaultInterestAt = new Date();
   }
+  normalizePremiumState(user);
   return user;
 }
 
@@ -310,7 +418,7 @@ function humanizeMs(ms) {
 }
 
 async function claimVaultInterest(user) {
-  const effects = getPerkEffects(user);
+  const effects = getCombinedEffects(user);
   const now = new Date();
   const elapsedMs = now.getTime() - (user.lastVaultInterestAt?.getTime() || now.getTime());
   const elapsedHours = elapsedMs / (60 * 60 * 1000);
@@ -338,6 +446,7 @@ function buildProfileEmbed(user, targetUser) {
       { name: "XP", value: `${formatNumber(user.xp)}`, inline: true },
       { name: "Rank", value: `${currentRank.name}`, inline: true },
       { name: "Prestige", value: `${user.prestige}`, inline: true },
+      { name: "Membership", value: formatPremiumStatus(user), inline: true },
       { name: "Daily Streak", value: `${user.streak} days`, inline: true },
       { name: "Rank Progress", value: `${progressBar(rankProgressCurrent, rankProgressTotal)}\n${formatNumber(rankProgressCurrent)} / ${formatNumber(rankProgressTotal)} XP` },
       { name: "Battle Record", value: `PvP ${user.stats.pvpWins}-${user.stats.pvpLosses} | Boss ${user.stats.bossWins}-${user.stats.bossLosses}` },
@@ -395,6 +504,7 @@ const HELP_SECTIONS = [
       { name: "/achievements", description: "Claim milestone rewards you have unlocked." },
       { name: "/leaderboard category:<type>", description: "See the top players or clans." },
       { name: "/authority user:<player>", description: "Use the Warden+ blessing command." },
+      { name: "/premium", description: "Check premium status, buy access, and use admin controls." },
     ],
   },
   {
@@ -586,6 +696,7 @@ async function handleStats(interaction) {
       { name: "Vault Deposited", value: `${formatNumber(user.stats.vaultDeposit)} aura`, inline: true },
       { name: "Owned Perks", value: `${formatNumber(user.ownedPerks.length)}`, inline: true },
       { name: "Unlocked Skills", value: `${formatNumber(user.skills.length)}`, inline: true },
+      { name: "Membership", value: formatPremiumStatus(user), inline: true },
     ],
   }));
 }
@@ -646,6 +757,7 @@ async function handleWork(interaction) {
       { name: "Total Shifts", value: `${formatNumber(user.stats.works)}`, inline: true },
       { name: "Next Shift", value: "15 minutes", inline: true },
       { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+      { name: "Premium", value: isPremiumActive(user) ? "Work boost applied" : "No premium boost", inline: true },
     ],
   }));
 }
@@ -686,6 +798,7 @@ async function handleMine(interaction) {
       { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
       { name: "XP", value: `${formatNumber(xpReward)}`, inline: true },
       { name: "Next Mine", value: "12 minutes", inline: true },
+      { name: "Premium", value: isPremiumActive(user) ? "Mining boost applied" : "No premium boost", inline: true },
     ],
   }));
 }
@@ -1005,6 +1118,7 @@ async function handleSpin(interaction) {
       { name: "Jackpot", value: jackpot > 0 ? `Triggered for ${formatNumber(jackpot)} aura` : "Not this time", inline: true },
       { name: "Next Spin", value: "5 minutes", inline: true },
       { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+      { name: "Premium", value: isPremiumActive(user) ? "Spin boost applied" : "No premium boost", inline: true },
     ],
   }));
 }
@@ -1082,12 +1196,16 @@ async function handleDaily(interaction) {
   const streakContinues = Date.now() - last <= COOLDOWNS.dailyMs * 2;
   user.streak = streakContinues ? user.streak + 1 : 1;
   user.lastDailyAt = new Date();
-  const auraReward = 700 + user.streak * 90 + user.prestige * 140;
-  const xpReward = 180 + user.streak * 40;
+  const premiumMultiplier = isPremiumActive(user) ? PREMIUM_DAILY_MULTIPLIER : 1;
+  const auraReward = Math.floor((700 + user.streak * 90 + user.prestige * 140) * premiumMultiplier);
+  const xpReward = Math.floor((180 + user.streak * 40) * premiumMultiplier);
   user.aura += auraReward;
   user.xp += xpReward;
   user.crates.set("common", (user.crates.get("common") || 0) + 1);
   if (user.streak % 7 === 0) {
+    user.crates.set("rare", (user.crates.get("rare") || 0) + 1);
+  }
+  if (isPremiumActive(user)) {
     user.crates.set("rare", (user.crates.get("rare") || 0) + 1);
   }
 
@@ -1103,7 +1221,7 @@ async function handleDaily(interaction) {
     fields: [
       { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
       { name: "XP", value: `${formatNumber(xpReward)}`, inline: true },
-      { name: "Bonus", value: user.streak % 7 === 0 ? "Rare crate earned" : "Common crate earned", inline: true },
+      { name: "Bonus", value: isPremiumActive(user) ? `Premium bonus rare crate + ${user.streak % 7 === 0 ? "streak rare crate" : "common crate"}` : user.streak % 7 === 0 ? "Rare crate earned" : "Common crate earned", inline: true },
     ],
   }));
 }
@@ -1111,12 +1229,12 @@ async function handleDaily(interaction) {
 async function handleVault(interaction) {
   const subcommand = interaction.options.getSubcommand();
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  const perkEffects = getPerkEffects(user);
-  const vaultPerkBonus = perkEffects.vaultInterestBoost || 0;
+  const combinedEffects = getCombinedEffects(user);
+  const vaultPerkBonus = combinedEffects.vaultInterestBoost || 0;
   const vaultRate = 0.03 + vaultPerkBonus + user.prestige * 0.005;
   const bonusLines = [
     `Base: 3.0%/hr`,
-    `Perks: ${formatEffectValue(vaultPerkBonus)}/hr (cap ${formatEffectCapValue("vaultInterestBoost")}/hr)`,
+    `Bonus Sources: ${formatEffectValue(vaultPerkBonus)}/hr (cap ${formatEffectCapValue("vaultInterestBoost")}/hr)`,
     `Prestige: +${(user.prestige * 0.5).toFixed(1)}%/hr`,
   ];
   const interest = await claimVaultInterest(user);
@@ -1157,8 +1275,26 @@ async function handleVault(interaction) {
 }
 
 async function handleShop(interaction) {
-  const lines = SHOP_ITEMS.map((item) => `**${item.name}** - ${formatNumber(item.price)} aura\n\`${item.id}\`\n${item.description}`).join("\n\n");
-  return interaction.reply(buildEmbedPayload({ title: "Aura Shop", description: lines, visual: "emblem-economy.svg", footer: "Use /buy item:<id> to purchase." }));
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const lines = getDisplayShopItems(user).map((item) => {
+    const badges = [item.type];
+    if (isPremiumOnlyItem(item)) {
+      badges.push("premium");
+    }
+    if (item.premiumLocked) {
+      badges.push("locked");
+    }
+    return `**${item.name}** - ${formatNumber(item.price)} aura\n\`${item.id}\` • ${badges.join(" • ")}\n${item.description}`;
+  }).join("\n\n");
+  return interaction.reply(buildEmbedPayload({
+    title: "Aura Shop",
+    description: lines || "No shop items available.",
+    visual: "emblem-economy.svg",
+    fields: [
+      { name: "Membership", value: formatPremiumStatus(user), inline: true },
+    ],
+    footer: "Use /buy item:<id> to purchase. Premium items unlock while premium is active.",
+  }));
 }
 
 async function handleBuy(interaction) {
@@ -1167,6 +1303,9 @@ async function handleBuy(interaction) {
   const item = getItem(itemId);
   if (!item) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Item Not Found", description: "That shop item id does not exist.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  if (isPremiumOnlyItem(item) && !isPremiumActive(user)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Premium Required", description: "That item is reserved for premium members. Use `/premium status` to check access.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
   if (user.aura < item.price) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: "You do not have enough aura for that purchase.", visual: "emblem-economy.svg" }), ephemeral: true });
@@ -1216,6 +1355,7 @@ async function handleInventory(interaction) {
       { name: "Items", value: perkLines },
       { name: "Skills", value: user.skills.map((skillId) => `- ${SKILLS[skillId]?.name || skillId}`).join("\n") || "No skills." },
       { name: "Crates", value: crateLines },
+      { name: "Membership", value: formatPremiumStatus(user) },
       { name: "Effect Caps", value: buildEffectCapLines() },
     ],
   }));
@@ -1287,7 +1427,8 @@ async function handleCrate(interaction) {
   }
 
   user.crates.set(type, (user.crates.get(type) || 0) - 1);
-  const auraReward = randInt(crate.aura[0], crate.aura[1]);
+  const effects = getCombinedEffects(user);
+  const auraReward = Math.floor(randInt(crate.aura[0], crate.aura[1]) * (1 + (effects.crateAuraBoost || 0)));
   const xpReward = randInt(crate.xp[0], crate.xp[1]);
   user.aura += auraReward;
   user.xp += xpReward;
@@ -1323,6 +1464,7 @@ async function handleCrate(interaction) {
       { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
       { name: "XP", value: `${formatNumber(xpReward)}`, inline: true },
       { name: "Bonus Drops", value: bonusLines.length ? bonusLines.join(", ") : "None", inline: true },
+      { name: "Premium", value: isPremiumActive(user) ? "Crate boost applied" : "No premium boost", inline: true },
     ],
   }));
 }
@@ -1654,6 +1796,142 @@ async function handleSetup(interaction) {
   });
 }
 
+async function handlePremium(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+
+  if (subcommand === "status") {
+    const target = interaction.options.getUser("user") || interaction.user;
+    const user = await getOrCreatePlayer(interaction.guildId, target.id);
+    const boostLines = Object.entries(getPremiumEffects(user)).map(([effectId, value]) => `${getPremiumBoostLabel(effectId)}: ${formatEffectValue(value)}`);
+    return interaction.reply(buildEmbedPayload({
+      title: `${target.username}'s Premium Status`,
+      description: isPremiumActive(user) ? "Premium is active and premium rewards are enabled." : "This profile is on the free tier.",
+      visual: "emblem-economy.svg",
+      fields: [
+        { name: "Membership", value: formatPremiumStatus(user), inline: true },
+        { name: "Exclusive Shop Access", value: isPremiumActive(user) ? "Unlocked" : "Locked", inline: true },
+        { name: "Source", value: user.premium?.source || "manual / none", inline: true },
+        { name: "Boosts", value: boostLines.length ? boostLines.join("\n") : "No premium boosts active." },
+      ],
+      footer: "Premium boosts apply to daily, work, spin, mine, crate, vault, boss, and PvP rewards.",
+    }));
+  }
+
+  if (subcommand === "buy") {
+    const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+    const planId = interaction.options.getString("plan", true);
+    const missing = getMissingPaymentConfig(planId);
+
+    if (missing.length) {
+      return interaction.reply({
+        ...buildEmbedPayload({
+          title: "Razorpay Setup Incomplete",
+          description: `The payment flow is missing: ${missing.join(", ")}.`,
+          visual: "emblem-alert.svg",
+          footer: "Add the missing Razorpay environment variables, then try again.",
+        }),
+        ephemeral: true,
+      });
+    }
+
+    const plan = getPremiumPlan(planId);
+
+    try {
+      const { paymentLink, referenceId } = await createPremiumPaymentLink({
+        guildId: interaction.guildId,
+        discordUserId: interaction.user.id,
+        planId,
+        username: interaction.user.username,
+      });
+
+      if (user.billing) {
+        user.billing.provider = "razorpay";
+        user.billing.razorpayPaymentLinkId = paymentLink.id;
+        user.billing.razorpayReferenceId = referenceId;
+        user.billing.razorpayPlanId = planId;
+        user.billing.razorpayLinkStatus = paymentLink.status || "created";
+        await user.save();
+      }
+
+      return interaction.reply({
+        ...buildEmbedPayload({
+          title: "Premium Payment Link Ready",
+          description: `Open the Razorpay link below to purchase the **${formatPremiumPlanLabel(planId)}** premium plan.`,
+          visual: "emblem-success.svg",
+          fields: [
+            { name: "Plan", value: formatPremiumPlanLabel(planId), inline: true },
+            { name: "Current Status", value: formatPremiumStatus(user), inline: true },
+            { name: "Payment Link", value: paymentLink.short_url || paymentLink.id },
+          ],
+          footer: "Premium will update automatically after Razorpay confirms the payment.",
+        }),
+        ephemeral: true,
+      });
+    } catch (error) {
+      console.error("Razorpay payment link creation failed:", error);
+      return interaction.reply({
+        ...buildEmbedPayload({
+          title: "Payment Link Failed",
+          description: "I could not create the Razorpay payment link right now.",
+          visual: "emblem-alert.svg",
+          footer: "Check your Razorpay keys and premium amount environment variables.",
+        }),
+        ephemeral: true,
+      });
+    }
+  }
+
+  if (!hasPremiumAdminAccess(interaction)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Permission Required", description: "You need Manage Server permission to grant or revoke premium.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  const target = interaction.options.getUser("user", true);
+  const user = await getOrCreatePlayer(interaction.guildId, target.id);
+
+  if (subcommand === "grant") {
+    const lifetime = interaction.options.getBoolean("lifetime") || false;
+    const durationDays = interaction.options.getInteger("days");
+    user.premium.active = true;
+    user.premium.lifetime = lifetime;
+    user.premium.grantedBy = interaction.user.id;
+    user.premium.source = "manual";
+    user.premium.expiresAt = lifetime ? null : new Date(Date.now() + ((durationDays || 30) * 24 * 60 * 60 * 1000));
+    await user.save();
+
+    return interaction.reply(buildEmbedPayload({
+      title: "Premium Granted",
+      description: `${target.username} now has premium access.`,
+      visual: "emblem-success.svg",
+      fields: [
+        { name: "Plan", value: lifetime ? "Lifetime" : `${durationDays || 30} days`, inline: true },
+        { name: "Status", value: formatPremiumStatus(user), inline: true },
+        { name: "Source", value: "manual", inline: true },
+      ],
+    }));
+  }
+
+  if (subcommand === "revoke") {
+    user.premium.active = false;
+    user.premium.lifetime = false;
+    user.premium.expiresAt = null;
+    user.premium.grantedBy = interaction.user.id;
+    user.premium.source = "manual";
+    await user.save();
+
+    return interaction.reply(buildEmbedPayload({
+      title: "Premium Revoked",
+      description: `${target.username} has been moved back to the free tier.`,
+      visual: "emblem-alert.svg",
+      fields: [
+        { name: "Status", value: formatPremiumStatus(user), inline: true },
+        { name: "Source", value: user.premium?.source || "manual / none", inline: true },
+      ],
+    }));
+  }
+
+  return interaction.reply({ content: "Unsupported premium command.", ephemeral: true });
+}
+
 async function handleLeaderboard(interaction) {
   const category = interaction.options.getString("category", true);
   if (category === "clans") {
@@ -1663,7 +1941,20 @@ async function handleLeaderboard(interaction) {
   }
 
   const sortMap = { aura: { aura: -1 }, xp: { xp: -1 }, prestige: { prestige: -1, xp: -1 }, vault: { vaultAura: -1 } };
-  const users = await User.find({ guildId: interaction.guildId }).sort(sortMap[category] || { aura: -1 }).limit(10);
+  let users;
+  if (isGlobalPlayerDataEnabled()) {
+    const rawUsers = await User.find(buildPlayerLeaderboardFilter(interaction.guildId)).sort({ ...(sortMap[category] || { aura: -1 }), updatedAt: -1 });
+    const seenUserIds = new Set();
+    users = rawUsers.filter((player) => {
+      if (seenUserIds.has(player.userId)) {
+        return false;
+      }
+      seenUserIds.add(player.userId);
+      return true;
+    }).slice(0, 10);
+  } else {
+    users = await User.find(buildPlayerLeaderboardFilter(interaction.guildId)).sort(sortMap[category] || { aura: -1 }).limit(10);
+  }
   const members = await Promise.all(users.map(async (player) => {
     const member = await interaction.client.users.fetch(player.userId).catch(() => null);
     return { player, name: member?.username || player.userId };
@@ -1678,11 +1969,12 @@ async function handleLeaderboard(interaction) {
 async function handleClan(interaction) {
   const subcommand = interaction.options.getSubcommand();
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const currentClanId = getGuildClanId(user, interaction.guildId);
   const clanCreateCost = 50000;
   const clanRaidCooldownMs = 45 * 60 * 1000;
 
   if (subcommand === "create") {
-    if (user.clanId) {
+    if (currentClanId) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Already In Clan", description: "Leave your current clan before creating another one.", visual: "clan-hall.svg" }), ephemeral: true });
     }
     if (user.aura < clanCreateCost) {
@@ -1693,7 +1985,7 @@ async function handleClan(interaction) {
     const clan = await Clan.create({ guildId: interaction.guildId, name, code, ownerId: interaction.user.id, memberIds: [interaction.user.id] });
     addClanLog(clan, "create", interaction.user.id, `Created the clan with invite code ${code}.`);
     user.aura -= clanCreateCost;
-    user.clanId = clan._id;
+    setGuildClanId(user, interaction.guildId, clan._id);
     await clan.save();
     await user.save();
     return interaction.reply(buildEmbedPayload({
@@ -1708,7 +2000,7 @@ async function handleClan(interaction) {
   }
 
   if (subcommand === "join") {
-    if (user.clanId) {
+    if (currentClanId) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Already In Clan", description: "Leave your current clan before joining another one.", visual: "clan-hall.svg" }), ephemeral: true });
     }
     const code = interaction.options.getString("code", true);
@@ -1725,14 +2017,14 @@ async function handleClan(interaction) {
     }
     clan.pendingApplicantIds = clan.pendingApplicantIds.filter((id) => id !== interaction.user.id);
     addClanLog(clan, "join", interaction.user.id, "Joined through the clan invite code.");
-    user.clanId = clan._id;
+    setGuildClanId(user, interaction.guildId, clan._id);
     await clan.save();
     await user.save();
     return interaction.reply(buildEmbedPayload({ title: "Clan Joined", description: `You joined **${clan.name}**.`, visual: "clan-hall.svg" }));
   }
 
   if (subcommand === "apply") {
-    if (user.clanId) {
+    if (currentClanId) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Already In Clan", description: "Leave your current clan before applying to another one.", visual: "clan-hall.svg" }), ephemeral: true });
     }
     const code = interaction.options.getString("code", true);
@@ -1759,10 +2051,10 @@ async function handleClan(interaction) {
   }
 
   if (subcommand === "leave") {
-    if (!user.clanId) {
+    if (!currentClanId) {
       return interaction.reply({ ...buildEmbedPayload({ title: "No Clan", description: "You are not in a clan right now.", visual: "clan-hall.svg" }), ephemeral: true });
     }
-    const clan = await Clan.findById(user.clanId);
+    const clan = await Clan.findById(currentClanId);
     if (clan) {
       if (clan.ownerId === interaction.user.id && clan.memberIds.length > 1) {
         return interaction.reply({ ...buildEmbedPayload({ title: "Owner Cannot Leave Yet", description: "Kick or transfer out the other members before the clan owner leaves.", visual: "clan-hall.svg" }), ephemeral: true });
@@ -1776,18 +2068,18 @@ async function handleClan(interaction) {
         await clan.save();
       }
     }
-    user.clanId = null;
+    setGuildClanId(user, interaction.guildId, null);
     await user.save();
     return interaction.reply(buildEmbedPayload({ title: "Clan Left", description: "You left your clan.", visual: "clan-hall.svg" }));
   }
 
-  if (!user.clanId) {
+  if (!currentClanId) {
     return interaction.reply({ ...buildEmbedPayload({ title: "No Clan", description: "Create or join a clan first.", visual: "clan-hall.svg" }), ephemeral: true });
   }
 
-  const clan = await Clan.findById(user.clanId);
+  const clan = await Clan.findById(currentClanId);
   if (!clan) {
-    user.clanId = null;
+    setGuildClanId(user, interaction.guildId, null);
     await user.save();
     return interaction.reply({ ...buildEmbedPayload({ title: "Clan Missing", description: "Your clan record was missing and has been reset.", visual: "clan-hall.svg" }), ephemeral: true });
   }
@@ -1862,7 +2154,7 @@ async function handleClan(interaction) {
     clan.memberIds = clan.memberIds.filter((id) => id !== target.id);
     clan.officerIds = clan.officerIds.filter((id) => id !== target.id);
     const targetProfile = await getOrCreatePlayer(interaction.guildId, target.id);
-    targetProfile.clanId = null;
+    setGuildClanId(targetProfile, interaction.guildId, null);
     addClanLog(clan, "kick", interaction.user.id, "Removed a clan member.", target.id);
     await clan.save();
     await targetProfile.save();
@@ -1887,7 +2179,8 @@ async function handleClan(interaction) {
     }
 
     const targetProfile = await getOrCreatePlayer(interaction.guildId, target.id);
-    if (targetProfile.clanId && String(targetProfile.clanId) !== String(clan._id)) {
+    const targetClanId = getGuildClanId(targetProfile, interaction.guildId);
+    if (targetClanId && String(targetClanId) !== String(clan._id)) {
       clan.pendingApplicantIds = clan.pendingApplicantIds.filter((id) => id !== target.id);
       await clan.save();
       return interaction.reply({ ...buildEmbedPayload({ title: "Approval Failed", description: "That player already joined a different clan.", visual: "clan-hall.svg" }), ephemeral: true });
@@ -1897,7 +2190,7 @@ async function handleClan(interaction) {
     if (!clan.memberIds.includes(target.id)) {
       clan.memberIds.push(target.id);
     }
-    targetProfile.clanId = clan._id;
+    setGuildClanId(targetProfile, interaction.guildId, clan._id);
     addClanLog(clan, "approve", interaction.user.id, "Approved a pending clan application.", target.id);
     await clan.save();
     await targetProfile.save();
@@ -1986,9 +2279,9 @@ async function handleClan(interaction) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Owner Only", description: "Only the clan owner can disband the clan.", visual: "clan-hall.svg" }), ephemeral: true });
     }
 
-    await User.updateMany({ guildId: interaction.guildId, clanId: clan._id }, { $set: { clanId: null } });
+    await User.updateMany(buildClanMembershipFilter(interaction.guildId, clan._id), buildClanMembershipClearUpdate(interaction.guildId));
     await Clan.deleteOne({ _id: clan._id });
-    user.clanId = null;
+    setGuildClanId(user, interaction.guildId, null);
     await user.save();
     return interaction.reply(buildEmbedPayload({
       title: "Clan Disbanded",
@@ -2210,6 +2503,11 @@ function buildCommands() {
     new SlashCommandBuilder().setName("pvp").setDescription("Challenge another player to an interactive battle.").addUserOption((option) => option.setName("user").setDescription("Opponent").setRequired(true)),
     new SlashCommandBuilder().setName("boss").setDescription("Fight a boss.").addStringOption((option) => option.setName("boss").setDescription("Boss id").addChoices({ name: "ember", value: "ember" }, { name: "oracle", value: "oracle" }, { name: "warden", value: "warden" }, { name: "codex", value: "codex" })),
     new SlashCommandBuilder().setName("leaderboard").setDescription("View top players and clans.").addStringOption((option) => option.setName("category").setDescription("Leaderboard type").setRequired(true).addChoices({ name: "aura", value: "aura" }, { name: "vault", value: "vault" }, { name: "xp", value: "xp" }, { name: "prestige", value: "prestige" }, { name: "clans", value: "clans" })),
+    new SlashCommandBuilder().setName("premium").setDescription("View or manage premium access.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("Check premium status.").addUserOption((option) => option.setName("user").setDescription("Optional target")))
+      .addSubcommand((sub) => sub.setName("buy").setDescription("Create a Stripe checkout link for premium.").addStringOption((option) => option.setName("plan").setDescription("Premium plan").setRequired(true).addChoices(...getPremiumPlanChoices())))
+      .addSubcommand((sub) => sub.setName("grant").setDescription("Grant premium to a user.").addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true)).addIntegerOption((option) => option.setName("days").setDescription("Premium duration in days").setMinValue(1)).addBooleanOption((option) => option.setName("lifetime").setDescription("Grant lifetime premium instead")))
+      .addSubcommand((sub) => sub.setName("revoke").setDescription("Remove premium from a user.").addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true))),
     new SlashCommandBuilder().setName("clan").setDescription("Manage your clan.").addSubcommand((sub) => sub.setName("create").setDescription("Create a clan for 50,000 aura.").addStringOption((option) => option.setName("name").setDescription("Clan name").setRequired(true))).addSubcommand((sub) => sub.setName("join").setDescription("Join a clan by code.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("apply").setDescription("Send a join request for approval.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("leave").setDescription("Leave your clan.")).addSubcommand((sub) => sub.setName("info").setDescription("View your clan.")).addSubcommand((sub) => sub.setName("members").setDescription("List clan members.")).addSubcommand((sub) => sub.setName("log").setDescription("View recent clan activity.")).addSubcommand((sub) => sub.setName("kick").setDescription("Owner-only member removal.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true))).addSubcommand((sub) => sub.setName("approve").setDescription("Owner or officer request approval.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("decline").setDescription("Owner or officer reject an applicant.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("role").setDescription("Owner-only officer management.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true)).addStringOption((option) => option.setName("role").setDescription("Role to set").setRequired(true).addChoices({ name: "officer", value: "officer" }, { name: "member", value: "member" }))).addSubcommand((sub) => sub.setName("transfer").setDescription("Owner-only leadership transfer.").addUserOption((option) => option.setName("user").setDescription("New owner").setRequired(true))).addSubcommand((sub) => sub.setName("disband").setDescription("Owner-only full clan deletion.")).addSubcommand((sub) => sub.setName("upgrade").setDescription("Spend clan vault aura on upgrades.").addStringOption((option) => option.setName("path").setDescription("Upgrade path").setRequired(true).addChoices({ name: "hall", value: "hall" }, { name: "vault", value: "vault" }, { name: "arsenal", value: "arsenal" }))).addSubcommand((sub) => sub.setName("raid").setDescription("Launch a cooldown-based clan raid.")).addSubcommand((sub) => sub.setName("donate").setDescription("Donate aura to your clan.").addIntegerOption((option) => option.setName("amount").setDescription("Amount").setRequired(true).setMinValue(1))).addSubcommand((sub) => sub.setName("war").setDescription("Fight another clan by code.").addStringOption((option) => option.setName("enemy").setDescription("Enemy clan code").setRequired(true))),
     new SlashCommandBuilder().setName("authority").setDescription("Rank-only blessing command.").addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true)),
   ].map((command) => command.toJSON());
@@ -2223,7 +2521,7 @@ async function routeInteraction(interaction) {
     return null;
   }
 
-  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, vault: handleVault, shop: handleShop, buy: handleBuy, gift: handleGift, inventory: handleInventory, craft: handleCraft, "crafting-guide": handleCraftingGuide, garden: handleGarden, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, clan: handleClan, authority: handleAuthority };
+  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, vault: handleVault, shop: handleShop, buy: handleBuy, gift: handleGift, inventory: handleInventory, craft: handleCraft, "crafting-guide": handleCraftingGuide, garden: handleGarden, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, premium: handlePremium, clan: handleClan, authority: handleAuthority };
   const handler = handlers[interaction.commandName];
   if (!handler) {
     return interaction.reply({ content: "Unknown command.", ephemeral: true });
