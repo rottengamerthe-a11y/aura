@@ -10,13 +10,35 @@ const COLORS = {
   neutral: 0x8491a3,
 };
 
+const EFFECT_CAPS = {
+  // Economy pacing: faster progression overall, but combat still has the strongest ceiling.
+  spinRewardBoost: 0.5,
+  vaultInterestBoost: 0.08,
+  coinflipWinBoost: 0.18,
+  workAuraBoost: 0.6,
+  workXpBoost: 0.6,
+
+  // Gathering: allow noticeable progression from gear/events, but keep material inflation manageable.
+  mineYieldBoost: 0.7,
+  mineXpBoost: 0.6,
+  mineIronBonus: 4,
+  gardenYieldBoost: 0.7,
+
+  // Combat payouts: strong enough to matter, below the point where battles outscale core loops.
+  bossRewardBoost: 0.55,
+  pvpRewardBoost: 0.45,
+
+  // Crates should feel like spikes, not the dominant source of income.
+  crateAuraBoost: 0.3,
+};
+
 const RANKS = [
   { name: "Sprout", xpRequired: 0, rewardAura: 250, rewardCrates: { common: 1 } },
-  { name: "Harvester", xpRequired: 500, rewardAura: 500, rewardCrates: { common: 1 } },
-  { name: "Warden", xpRequired: 1500, rewardAura: 900, rewardCrates: { rare: 1 } },
-  { name: "Oracle", xpRequired: 3500, rewardAura: 1500, rewardCrates: { rare: 1 } },
-  { name: "Mythic", xpRequired: 7000, rewardAura: 2600, rewardCrates: { epic: 1 } },
-  { name: "Ascendant", xpRequired: 12000, rewardAura: 4500, rewardCrates: { epic: 1, legendary: 1 } },
+  { name: "Harvester", xpRequired: 400, rewardAura: 650, rewardCrates: { common: 1 } },
+  { name: "Warden", xpRequired: 1200, rewardAura: 1100, rewardCrates: { rare: 1 } },
+  { name: "Oracle", xpRequired: 2800, rewardAura: 1800, rewardCrates: { rare: 1 } },
+  { name: "Mythic", xpRequired: 5600, rewardAura: 3100, rewardCrates: { epic: 1 } },
+  { name: "Ascendant", xpRequired: 9500, rewardAura: 5200, rewardCrates: { epic: 1, legendary: 1 } },
 ];
 
 const SHOP_ITEMS = [
@@ -110,32 +132,32 @@ const SKILLS = {
 
 const CRATES = {
   common: {
-    aura: [200, 550],
-    xp: [80, 180],
+    aura: [280, 700],
+    xp: [110, 220],
     drops: [
       { type: "item", id: "lucky_charm", chance: 0.08 },
       { type: "item", id: "vault_key", chance: 0.06 },
     ],
   },
   rare: {
-    aura: [600, 1300],
-    xp: [180, 350],
+    aura: [800, 1650],
+    xp: [240, 430],
     drops: [
       { type: "item", id: "coinflip_gloves", chance: 0.12 },
       { type: "item", id: "combat_manual", chance: 0.1 },
     ],
   },
   epic: {
-    aura: [1400, 2600],
-    xp: [350, 700],
+    aura: [1800, 3200],
+    xp: [450, 850],
     drops: [
       { type: "item", id: "guardian_core", chance: 0.14 },
       { type: "crate", id: "legendary", chance: 0.06 },
     ],
   },
   legendary: {
-    aura: [2800, 5000],
-    xp: [750, 1200],
+    aura: [3400, 6200],
+    xp: [900, 1500],
     drops: [
       { type: "item", id: "guardian_core", chance: 0.22 },
       { type: "item", id: "combat_manual", chance: 0.22 },
@@ -167,8 +189,8 @@ const GEAR_ITEMS = {
   oracle_relic: {
     name: "Oracle Relic",
     slot: "relic",
-    description: "+8% boss reward gain and +10% XP from work.",
-    effects: { bossRewardBoost: 0.08, workXpBoost: 0.1 },
+    description: "+12% boss reward gain and +12% XP from work.",
+    effects: { bossRewardBoost: 0.12, workXpBoost: 0.12 },
   },
 };
 
@@ -211,9 +233,9 @@ const WORLD_EVENTS = [
   {
     id: "war_drum",
     name: "War Drum",
-    description: "+15% boss rewards and +10% PvP aura rewards.",
+    description: "+22% boss rewards and +18% PvP aura rewards.",
     durationHours: 6,
-    effects: { bossRewardBoost: 0.15, pvpRewardBoost: 0.1 },
+    effects: { bossRewardBoost: 0.22, pvpRewardBoost: 0.18 },
   },
   {
     id: "lucky_skies",
@@ -228,59 +250,120 @@ const CRAFTING_RECIPES = [
   {
     id: "lucky_charm_recipe",
     name: "Lucky Charm",
-    description: "Craft a spin reward perk.",
+    description: "Craft a spin reward perk. Best supported by Ember Tyrant ember shard drops.",
     materials: { iron_ore: 4, ember_shard: 2 },
     result: { type: "item", id: "lucky_charm", quantity: 1 },
   },
   {
     id: "vault_key_recipe",
     name: "Vault Key",
-    description: "Craft a vault interest perk.",
+    description: "Craft a vault interest perk. Best supported by Vault Warden vault dust drops.",
     materials: { iron_ore: 2, vault_dust: 4 },
     result: { type: "item", id: "vault_key", quantity: 1 },
   },
   {
     id: "common_crate_recipe",
     name: "Common Crate",
-    description: "Bundle raw resources into a progression crate.",
+    description: "Bundle raw resources into a progression crate. Mix Ember Tyrant shards with Vault Warden dust.",
     materials: { iron_ore: 3, ember_shard: 1, vault_dust: 1 },
     result: { type: "crate", id: "common", quantity: 1 },
   },
   {
     id: "combat_manual_recipe",
     name: "Combat Manual",
-    description: "Craft a combat skill unlock.",
+    description: "Craft a combat skill unlock. Farm Ember Tyrant and Vault Warden for the core materials.",
     materials: { iron_ore: 6, ember_shard: 4, vault_dust: 2 },
     result: { type: "item", id: "combat_manual", quantity: 1 },
   },
   {
     id: "miners_lantern_recipe",
     name: "Miner's Lantern",
-    description: "Craft mining gear for deeper yields.",
+    description: "Craft mining gear for deeper yields. Vault Warden dust keeps this route moving.",
     materials: { iron_ore: 5, vault_dust: 2, bloom_fiber: 2 },
     result: { type: "gear", id: "miners_lantern", quantity: 1 },
   },
   {
     id: "bloom_satchel_recipe",
     name: "Bloom Satchel",
-    description: "Craft gardening gear for better harvests.",
+    description: "Craft gardening gear for better harvests. Ember Tyrant helps cover the shard cost.",
     materials: { bloom_fiber: 5, ember_shard: 2, vault_dust: 1 },
     result: { type: "gear", id: "bloom_satchel", quantity: 1 },
   },
   {
     id: "oracle_relic_recipe",
     name: "Oracle Relic",
-    description: "Craft a relic for late-game progression boosts.",
+    description: "Craft a relic for late-game progression boosts. Target Oracle of Static and Codex Prime for resin-heavy progress.",
     materials: { sun_resin: 2, vault_dust: 3, ember_shard: 3 },
     result: { type: "gear", id: "oracle_relic", quantity: 1 },
   },
 ];
 
 const BOSSES = [
-  { id: "ember", name: "Ember Tyrant", hp: 110, attack: [10, 18], rewardAura: 900, rewardXp: 240, visual: "boss-ember.svg" },
-  { id: "oracle", name: "Oracle of Static", hp: 140, attack: [13, 22], rewardAura: 1400, rewardXp: 360, visual: "boss-oracle.svg" },
-  { id: "warden", name: "Vault Warden", hp: 180, attack: [16, 28], rewardAura: 2200, rewardXp: 520, visual: "boss-warden.svg" },
-  { id: "codex", name: "Codex Prime", hp: 220, attack: [18, 32], rewardAura: 3200, rewardXp: 760, visual: "boss-codex.svg" },
+  {
+    id: "ember",
+    name: "Ember Tyrant",
+    hp: 110,
+    attack: [10, 18],
+    rewardAura: 1200,
+    rewardXp: 320,
+    visual: "boss-ember.svg",
+    loot: {
+      crateChance: { common: 0.35, rare: 0.08 },
+      materials: [
+        { id: "ember_shard", chance: 0.8, quantity: [2, 4] },
+        { id: "iron_ore", chance: 0.45, quantity: [1, 3] },
+      ],
+    },
+  },
+  {
+    id: "oracle",
+    name: "Oracle of Static",
+    hp: 140,
+    attack: [13, 22],
+    rewardAura: 1850,
+    rewardXp: 470,
+    visual: "boss-oracle.svg",
+    loot: {
+      crateChance: { common: 0.3, rare: 0.14 },
+      materials: [
+        { id: "sun_resin", chance: 0.55, quantity: [1, 2] },
+        { id: "ember_shard", chance: 0.4, quantity: [1, 2] },
+      ],
+    },
+  },
+  {
+    id: "warden",
+    name: "Vault Warden",
+    hp: 180,
+    attack: [16, 28],
+    rewardAura: 2850,
+    rewardXp: 680,
+    visual: "boss-warden.svg",
+    loot: {
+      crateChance: { common: 0.2, rare: 0.22 },
+      materials: [
+        { id: "vault_dust", chance: 0.85, quantity: [2, 4] },
+        { id: "iron_ore", chance: 0.35, quantity: [2, 4] },
+      ],
+    },
+  },
+  {
+    id: "codex",
+    name: "Codex Prime",
+    hp: 220,
+    attack: [18, 32],
+    rewardAura: 4200,
+    rewardXp: 980,
+    visual: "boss-codex.svg",
+    loot: {
+      crateChance: { rare: 0.32, epic: 0.1 },
+      materials: [
+        { id: "sun_resin", chance: 0.7, quantity: [1, 3] },
+        { id: "vault_dust", chance: 0.6, quantity: [2, 4] },
+        { id: "ember_shard", chance: 0.5, quantity: [2, 3] },
+      ],
+    },
+  },
 ];
 
 const QUEST_TEMPLATES = [
@@ -289,19 +372,19 @@ const QUEST_TEMPLATES = [
   { id: "deep_digger", name: "Deep Digger", description: "Mine 3 times.", goal: 3, metric: "mines", rewardAura: 460, rewardXp: 145 },
   { id: "green_thumb", name: "Green Thumb", description: "Harvest 2 garden plots.", goal: 2, metric: "harvests", rewardAura: 520, rewardXp: 180 },
   { id: "risk_runner", name: "Risk Runner", description: "Play 2 coinflips.", goal: 2, metric: "coinflips", rewardAura: 420, rewardXp: 130 },
-  { id: "shadow_hand", name: "Shadow Hand", description: "Win one robbery.", goal: 1, metric: "robWins", rewardAura: 520, rewardXp: 170 },
+  { id: "shadow_hand", name: "Shadow Hand", description: "Win one robbery.", goal: 1, metric: "robWins", rewardAura: 650, rewardXp: 220 },
   { id: "vault_keeper", name: "Vault Keeper", description: "Deposit 1,000 aura into your vault.", goal: 1000, metric: "vaultDeposit", rewardAura: 500, rewardXp: 150 },
-  { id: "gladiator", name: "Gladiator", description: "Win one PvP battle.", goal: 1, metric: "pvpWins", rewardAura: 600, rewardXp: 220 },
-  { id: "slayer", name: "Boss Slayer", description: "Defeat one boss.", goal: 1, metric: "bossWins", rewardAura: 750, rewardXp: 260 },
+  { id: "gladiator", name: "Gladiator", description: "Win one PvP battle.", goal: 1, metric: "pvpWins", rewardAura: 900, rewardXp: 320 },
+  { id: "slayer", name: "Boss Slayer", description: "Defeat one boss.", goal: 1, metric: "bossWins", rewardAura: 1150, rewardXp: 380 },
   { id: "merchant", name: "Merchant", description: "Buy 2 shop items.", goal: 2, metric: "shopBuys", rewardAura: 420, rewardXp: 120 },
 ];
 
 const COOLDOWNS = {
-  spinMs: 5 * 60 * 1000,
+  spinMs: 4 * 60 * 1000,
   coinflipMs: 2 * 60 * 1000,
-  workMs: 15 * 60 * 1000,
+  workMs: 12 * 60 * 1000,
   robMs: 20 * 60 * 1000,
-  mineMs: 12 * 60 * 1000,
+  mineMs: 10 * 60 * 1000,
   authorityMs: 10 * 60 * 1000,
   dailyMs: 24 * 60 * 60 * 1000,
 };
@@ -312,6 +395,7 @@ module.exports = {
   COOLDOWNS,
   CRATES,
   CRAFTING_RECIPES,
+  EFFECT_CAPS,
   GARDEN_CROPS,
   GEAR_ITEMS,
   MATERIALS,

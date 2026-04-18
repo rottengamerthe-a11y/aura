@@ -1,6 +1,6 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, SlashCommandBuilder } = require("discord.js");
 const crypto = require("crypto");
-const { BOSSES, COOLDOWNS, CRATES, CRAFTING_RECIPES, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
+const { BOSSES, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
 const { Clan, User } = require("../data/models");
 const { buildEmbedPayload } = require("../utils/visuals");
 
@@ -46,6 +46,125 @@ function getRecipe(recipeId) {
 
 function getInventoryLabel(id) {
   return getItem(id)?.name || getMaterial(id)?.name || getGearItem(id)?.name || id;
+}
+
+function formatEffectValue(value) {
+  return Number.isInteger(value) ? `${value}` : `+${(value * 100).toFixed(1)}%`;
+}
+
+function formatEffectCapValue(effectId) {
+  const cap = EFFECT_CAPS[effectId];
+  if (typeof cap !== "number") {
+    return "None";
+  }
+  return Number.isInteger(cap) ? `${cap}` : `+${(cap * 100).toFixed(1)}%`;
+}
+
+function applyEffectCaps(effects) {
+  return Object.entries(effects).reduce((acc, [key, value]) => {
+    const cap = EFFECT_CAPS[key];
+    acc[key] = typeof cap === "number" ? clamp(value, 0, cap) : value;
+    return acc;
+  }, {});
+}
+
+function sumEffectSources(...sources) {
+  const combined = {};
+  sources.forEach((source) => {
+    Object.entries(source || {}).forEach(([key, value]) => {
+      combined[key] = (combined[key] || 0) + value;
+    });
+  });
+  return applyEffectCaps(combined);
+}
+
+function buildEffectCapLines() {
+  return [
+    `Spin Reward: cap ${formatEffectCapValue("spinRewardBoost")}`,
+    `Vault Interest: cap ${formatEffectCapValue("vaultInterestBoost")}/hr`,
+    `Coinflip Win: cap ${formatEffectCapValue("coinflipWinBoost")}`,
+    `Work Aura: cap ${formatEffectCapValue("workAuraBoost")}`,
+    `Work XP: cap ${formatEffectCapValue("workXpBoost")}`,
+    `Mine Yield: cap ${formatEffectCapValue("mineYieldBoost")}`,
+    `Mine XP: cap ${formatEffectCapValue("mineXpBoost")}`,
+    `Mine Iron Bonus: cap +${formatEffectCapValue("mineIronBonus")} ore`,
+    `Garden Yield: cap ${formatEffectCapValue("gardenYieldBoost")}`,
+    `Boss Reward: cap ${formatEffectCapValue("bossRewardBoost")}`,
+    `PvP Reward: cap ${formatEffectCapValue("pvpRewardBoost")}`,
+    `Crate Aura: cap ${formatEffectCapValue("crateAuraBoost")}`,
+  ].join("\n");
+}
+
+function rollCombatLoot(kind, sourceId = null) {
+  const drops = [];
+
+  if (kind === "boss") {
+    const boss = BOSSES.find((entry) => entry.id === sourceId);
+    const lootTable = boss?.loot;
+    Object.entries(lootTable?.crateChance || {}).forEach(([crateId, chance]) => {
+      if (Math.random() < chance) {
+        drops.push({ type: "crate", id: crateId, quantity: 1, label: `${crateId} crate x1` });
+      }
+    });
+    (lootTable?.materials || []).forEach((material) => {
+      if (Math.random() < material.chance) {
+        const quantity = randInt(material.quantity[0], material.quantity[1]);
+        drops.push({ type: "material", id: material.id, quantity, label: `${getInventoryLabel(material.id)} x${quantity}` });
+      }
+    });
+  }
+
+  if (kind === "pvp") {
+    if (Math.random() < 0.2) {
+      drops.push({ type: "crate", id: "common", quantity: 1, label: "common crate x1" });
+    }
+    if (Math.random() < 0.5) {
+      const materialPool = [
+        { id: "iron_ore", quantity: randInt(1, 3) },
+        { id: "ember_shard", quantity: randInt(1, 2) },
+      ];
+      const reward = materialPool[randInt(0, materialPool.length - 1)];
+      drops.push({ type: "material", ...reward, label: `${getInventoryLabel(reward.id)} x${reward.quantity}` });
+    }
+  }
+
+  return drops;
+}
+
+function applyCombatLoot(user, loot) {
+  loot.forEach((drop) => {
+    if (drop.type === "crate") {
+      user.crates.set(drop.id, (user.crates.get(drop.id) || 0) + drop.quantity);
+      return;
+    }
+    addInventoryItem(user, drop.id, drop.quantity);
+  });
+}
+
+function getBossCraftingHint(boss) {
+  const hints = {
+    ember: "Drops ember-heavy loot for Lucky Charm, Combat Manual, and Bloom Satchel routes.",
+    oracle: "Best source for sun resin toward the Oracle Relic path.",
+    warden: "Best source for vault dust for Vault Key, Miner's Lantern, and mixed crate crafting.",
+    codex: "Late-game mixed loot source for Oracle Relic progress and higher crate spikes.",
+  };
+  return hints[boss.id] || "Fight this boss for crafting materials and combat loot.";
+}
+
+function buildCraftingGuidePayload() {
+  return buildEmbedPayload({
+    title: "Crafting Guide",
+    description: "Use this route map to decide which bosses to farm for each upgrade path.",
+    visual: "help-summary.svg",
+    fields: [
+      { name: "Ember Tyrant", value: "Lucky Charm\nCombat Manual\nBloom Satchel" },
+      { name: "Oracle of Static", value: "Oracle Relic\nSun resin support" },
+      { name: "Vault Warden", value: "Vault Key\nMiner's Lantern\nCommon Crate" },
+      { name: "Codex Prime", value: "Oracle Relic\nLate-game mixed loot\nHigher crate spikes" },
+      { name: "Best Mixed Routes", value: "Combat Manual: Ember + Warden\nCommon Crate: Ember + Warden\nOracle Relic: Oracle + Codex" },
+    ],
+    footer: "Check /boss before a fight and /craft when you are ready to spend materials.",
+  });
 }
 
 function getRankByXp(xp) {
@@ -101,10 +220,7 @@ function getCombinedEffects(user) {
   const perkEffects = getPerkEffects(user);
   const gearEffects = getGearEffects(user);
   const eventEffects = worldEvent.effects || {};
-  return Object.entries({ ...perkEffects, ...gearEffects, ...eventEffects }).reduce((acc, [key, value]) => {
-    acc[key] = (acc[key] || 0) + value;
-    return acc;
-  }, {});
+  return sumEffectSources(perkEffects, gearEffects, eventEffects);
 }
 
 function ensureInventoryEntry(user, id) {
@@ -325,7 +441,7 @@ const ACHIEVEMENTS = [
   { id: "shadow_winner", name: "Shadow Winner", description: "Win 5 robberies.", metric: (user) => user.stats.robWins, goal: 5, rewardAura: 2600, rewardXp: 650 },
   { id: "ore_runner", name: "Ore Runner", description: "Mine 10 times.", metric: (user) => user.stats.mines, goal: 10, rewardAura: 2100, rewardXp: 480 },
   { id: "artisan", name: "Artisan", description: "Craft 5 recipes.", metric: (user) => user.stats.crafts, goal: 5, rewardAura: 2800, rewardXp: 700 },
-  { id: "boss_hunter", name: "Boss Hunter", description: "Defeat 5 bosses.", metric: (user) => user.stats.bossWins, goal: 5, rewardAura: 3200, rewardXp: 780 },
+  { id: "boss_hunter", name: "Boss Hunter", description: "Defeat 5 bosses.", metric: (user) => user.stats.bossWins, goal: 5, rewardAura: 4300, rewardXp: 1050 },
   { id: "prestige_path", name: "Prestige Path", description: "Reach prestige 1.", metric: (user) => user.prestige, goal: 1, rewardAura: 5000, rewardXp: 1000 },
 ];
 
@@ -678,6 +794,10 @@ async function handleCraft(interaction) {
   }));
 }
 
+async function handleCraftingGuide(interaction) {
+  return interaction.reply(buildCraftingGuidePayload());
+}
+
 async function handleAchievements(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const available = getAvailableAchievements(user);
@@ -991,6 +1111,14 @@ async function handleDaily(interaction) {
 async function handleVault(interaction) {
   const subcommand = interaction.options.getSubcommand();
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const perkEffects = getPerkEffects(user);
+  const vaultPerkBonus = perkEffects.vaultInterestBoost || 0;
+  const vaultRate = 0.03 + vaultPerkBonus + user.prestige * 0.005;
+  const bonusLines = [
+    `Base: 3.0%/hr`,
+    `Perks: ${formatEffectValue(vaultPerkBonus)}/hr (cap ${formatEffectCapValue("vaultInterestBoost")}/hr)`,
+    `Prestige: +${(user.prestige * 0.5).toFixed(1)}%/hr`,
+  ];
   const interest = await claimVaultInterest(user);
 
   if (subcommand === "deposit") {
@@ -1022,7 +1150,8 @@ async function handleVault(interaction) {
     fields: [
       { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
       { name: "Vault", value: `${formatNumber(user.vaultAura)} aura`, inline: true },
-      { name: "Base Interest", value: "3% per hour", inline: true },
+      { name: "Current Interest", value: `${(vaultRate * 100).toFixed(1)}% per hour`, inline: true },
+      { name: "Rate Breakdown", value: bonusLines.join("\n") },
     ],
   }));
 }
@@ -1087,6 +1216,7 @@ async function handleInventory(interaction) {
       { name: "Items", value: perkLines },
       { name: "Skills", value: user.skills.map((skillId) => `- ${SKILLS[skillId]?.name || skillId}`).join("\n") || "No skills." },
       { name: "Crates", value: crateLines },
+      { name: "Effect Caps", value: buildEffectCapLines() },
     ],
   }));
 }
@@ -1285,57 +1415,97 @@ async function finishBattle(interaction, state, winnerId) {
     if (playerWon) {
       const effects = getCombinedEffects(first);
       const auraReward = Math.floor(state.rewardAura * (1 + (effects.bossRewardBoost || 0)));
+      const loot = rollCombatLoot("boss", state.playerTwo.id.replace("boss:", ""));
       first.aura += auraReward;
       first.xp += state.rewardXp;
       first.stats.bossWins += 1;
+      applyCombatLoot(first, loot);
       await applyQuestProgress(first, "bossWins", 1);
+      await syncRank(first);
+      await first.save();
+      return interaction.update({
+        ...buildEmbedPayload({
+          title: "Boss Defeated",
+          description: `You beat **${state.playerTwo.name}** and earned boss rewards plus ${formatNumber(state.rewardXp)} XP.`,
+          visual: state.visual,
+          fields: [
+            { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
+            { name: "Loot Drops", value: loot.length ? loot.map((entry) => entry.label).join(", ") : "None", inline: true },
+          ],
+        }),
+        components: [],
+      });
     } else {
       first.xp = Math.max(0, first.xp - Math.floor(state.rewardXp / 3));
       first.stats.bossLosses += 1;
+      await syncRank(first);
+      await first.save();
+      return interaction.update({
+        ...buildEmbedPayload({
+          title: "Boss Fight Lost",
+          description: "The boss held its ground. You lost XP and can challenge again any time.",
+          visual: state.visual,
+        }),
+        components: [],
+      });
     }
-    await syncRank(first);
-    await first.save();
-    return interaction.update({
-      ...buildEmbedPayload({
-        title: playerWon ? "Boss Defeated" : "Boss Fight Lost",
-        description: playerWon ? `You beat **${state.playerTwo.name}** and earned boss rewards plus ${formatNumber(state.rewardXp)} XP.` : "The boss held its ground. You lost XP and can challenge again any time.",
-        visual: state.visual,
-      }),
-      components: [],
-    });
   }
 
   if (playerWon) {
     const effects = getCombinedEffects(first);
-    first.aura += Math.floor(state.rewardAura * (1 + (effects.pvpRewardBoost || 0)));
+    const loot = rollCombatLoot("pvp");
+    const auraReward = Math.floor(state.rewardAura * (1 + (effects.pvpRewardBoost || 0)));
+    first.aura += auraReward;
     first.xp += state.rewardXp;
     second.xp = Math.max(0, second.xp - Math.floor(state.rewardXp / 2));
     first.stats.pvpWins += 1;
     second.stats.pvpLosses += 1;
+    applyCombatLoot(first, loot);
     await applyQuestProgress(first, "pvpWins", 1);
+    await syncRank(first);
+    await syncRank(second);
+    await first.save();
+    await second.save();
+
+    return interaction.update({
+      ...buildEmbedPayload({
+        title: "PvP Battle Finished",
+        description: `**${state.playerOne.name}** won the duel and claimed ${formatNumber(auraReward)} aura plus ${formatNumber(state.rewardXp)} XP.`,
+        visual: "pvp-victory.svg",
+        fields: [
+          { name: "Loot Drops", value: loot.length ? loot.map((entry) => entry.label).join(", ") : "None", inline: true },
+        ],
+      }),
+      components: [],
+    });
   } else {
-    second.aura += state.rewardAura;
+    const effects = getCombinedEffects(second);
+    const loot = rollCombatLoot("pvp");
+    const auraReward = Math.floor(state.rewardAura * (1 + (effects.pvpRewardBoost || 0)));
+    second.aura += auraReward;
     second.xp += state.rewardXp;
     first.xp = Math.max(0, first.xp - Math.floor(state.rewardXp / 2));
     second.stats.pvpWins += 1;
     first.stats.pvpLosses += 1;
+    applyCombatLoot(second, loot);
     await applyQuestProgress(second, "pvpWins", 1);
+    await syncRank(first);
+    await syncRank(second);
+    await first.save();
+    await second.save();
+
+    return interaction.update({
+      ...buildEmbedPayload({
+        title: "PvP Battle Finished",
+        description: `**${state.playerTwo.name}** won the duel and claimed ${formatNumber(auraReward)} aura plus ${formatNumber(state.rewardXp)} XP.`,
+        visual: "pvp-victory.svg",
+        fields: [
+          { name: "Loot Drops", value: loot.length ? loot.map((entry) => entry.label).join(", ") : "None", inline: true },
+        ],
+      }),
+      components: [],
+    });
   }
-
-  await syncRank(first);
-  await syncRank(second);
-  await first.save();
-  await second.save();
-
-  const winnerName = playerWon ? state.playerOne.name : state.playerTwo.name;
-  return interaction.update({
-    ...buildEmbedPayload({
-      title: "PvP Battle Finished",
-      description: `**${winnerName}** won the duel and claimed ${formatNumber(state.rewardAura)} aura plus ${formatNumber(state.rewardXp)} XP.`,
-      visual: "pvp-victory.svg",
-    }),
-    components: [],
-  });
 }
 
 async function handleBattleInteraction(interaction) {
@@ -1389,8 +1559,8 @@ async function handlePvp(interaction) {
     playerOne: { id: interaction.user.id, name: interaction.user.username, hp: 100, maxHp: 100, skill: pickBattleSkill(user) },
     playerTwo: { id: opponent.id, name: opponent.username, hp: 100, maxHp: 100, skill: pickBattleSkill(rival) },
     turnId: interaction.user.id,
-    rewardAura: randInt(500, 900),
-    rewardXp: randInt(140, 240),
+    rewardAura: randInt(750, 1250),
+    rewardXp: randInt(220, 340),
   };
   activeBattles.set(battleId, state);
   return interaction.reply({
@@ -1417,7 +1587,7 @@ async function handleBoss(interaction) {
   };
   activeBattles.set(battleId, state);
   return interaction.reply({
-    ...createBattleEmbed("Boss Encounter", `You challenged **${boss.name}**.`, boss.visual, state),
+    ...createBattleEmbed("Boss Encounter", `You challenged **${boss.name}**.\n${getBossCraftingHint(boss)}`, boss.visual, state),
     components: battleButtons(battleId, true),
   });
 }
@@ -2028,6 +2198,7 @@ function buildCommands() {
     new SlashCommandBuilder().setName("gift").setDescription("Send aura to another player.").addUserOption((option) => option.setName("user").setDescription("Receiving player").setRequired(true)).addIntegerOption((option) => option.setName("amount").setDescription("Aura to send").setRequired(true).setMinValue(1)),
     new SlashCommandBuilder().setName("inventory").setDescription("View your items, perks, skills, and crates."),
     new SlashCommandBuilder().setName("craft").setDescription("Craft something from mined materials.").addStringOption((option) => option.setName("recipe").setDescription("Recipe id").setRequired(true).addChoices(...CRAFTING_RECIPES.map((recipe) => ({ name: recipe.name, value: recipe.id })))),
+    new SlashCommandBuilder().setName("crafting-guide").setDescription("See which bosses feed each crafting path."),
     new SlashCommandBuilder().setName("garden").setDescription("Manage your growing garden.").addSubcommand((sub) => sub.setName("status").setDescription("View your garden plots.")).addSubcommand((sub) => sub.setName("plant").setDescription("Plant a crop in a plot.").addStringOption((option) => option.setName("crop").setDescription("Crop to plant").setRequired(true).addChoices(...Object.entries(GARDEN_CROPS).map(([cropId, crop]) => ({ name: crop.name, value: cropId })))).addIntegerOption((option) => option.setName("plot").setDescription("Optional plot number").setMinValue(1).setMaxValue(2))).addSubcommand((sub) => sub.setName("harvest").setDescription("Harvest any ready crops.")),
     new SlashCommandBuilder().setName("gear").setDescription("Manage your equipped gear.").addSubcommand((sub) => sub.setName("loadout").setDescription("View equipped gear.")).addSubcommand((sub) => sub.setName("equip").setDescription("Equip a crafted gear item.").addStringOption((option) => option.setName("item").setDescription("Gear item").setRequired(true).addChoices(...Object.entries(GEAR_ITEMS).map(([gearId, gear]) => ({ name: gear.name, value: gearId }))))),
     new SlashCommandBuilder().setName("rank").setDescription("View rank progression and prestige readiness."),
@@ -2052,7 +2223,7 @@ async function routeInteraction(interaction) {
     return null;
   }
 
-  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, vault: handleVault, shop: handleShop, buy: handleBuy, gift: handleGift, inventory: handleInventory, craft: handleCraft, garden: handleGarden, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, clan: handleClan, authority: handleAuthority };
+  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, vault: handleVault, shop: handleShop, buy: handleBuy, gift: handleGift, inventory: handleInventory, craft: handleCraft, "crafting-guide": handleCraftingGuide, garden: handleGarden, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, clan: handleClan, authority: handleAuthority };
   const handler = handlers[interaction.commandName];
   if (!handler) {
     return interaction.reply({ content: "Unknown command.", ephemeral: true });
