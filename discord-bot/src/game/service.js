@@ -7,6 +7,7 @@ const { buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCr
 const { buildEmbedPayload } = require("../utils/visuals");
 
 const activeBattles = new Map();
+const reminderIntervals = new WeakMap();
 const PREMIUM_EFFECTS = Object.freeze({
   spinRewardBoost: 0.12,
   vaultInterestBoost: 0.03,
@@ -20,6 +21,15 @@ const PREMIUM_EFFECTS = Object.freeze({
 });
 
 const PREMIUM_DAILY_MULTIPLIER = 1.25;
+const REMINDER_ACTIONS = Object.freeze({
+  spin: { label: "Spin", command: "/spin" },
+  work: { label: "Work", command: "/work" },
+  coinflip: { label: "Coinflip", command: "/coinflip" },
+  harvest: { label: "Harvest", command: "/garden harvest" },
+  daily: { label: "Daily", command: "/daily" },
+});
+const REMINDER_ACTION_CHOICES = Object.entries(REMINDER_ACTIONS).map(([value, action]) => ({ name: action.label, value }));
+const REMINDER_POLL_MS = 60 * 1000;
 
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -31,6 +41,10 @@ function clamp(value, min, max) {
 
 function formatNumber(value) {
   return Intl.NumberFormat("en-US").format(Math.floor(value));
+}
+
+function mapEntries(mapLike) {
+  return mapLike?.entries ? [...mapLike.entries()] : Object.entries(mapLike || {});
 }
 
 function progressBar(current, total, size = 12) {
@@ -76,6 +90,25 @@ function normalizePremiumState(user) {
     user.premium.active = false;
     user.premium.lifetime = false;
     user.premium.expiresAt = null;
+  }
+}
+
+function normalizeReminderState(user) {
+  if (!user.reminders) {
+    user.reminders = {
+      guildId: null,
+      channelId: null,
+      enabledActions: [],
+      lastNotifiedAt: new Map(),
+    };
+  }
+
+  if (!Array.isArray(user.reminders.enabledActions)) {
+    user.reminders.enabledActions = [];
+  }
+
+  if (!user.reminders.lastNotifiedAt?.get) {
+    user.reminders.lastNotifiedAt = new Map(mapEntries(user.reminders.lastNotifiedAt));
   }
 }
 
@@ -400,7 +433,158 @@ async function getOrCreatePlayer(guildId, userId) {
     user.lastVaultInterestAt = new Date();
   }
   normalizePremiumState(user);
+  normalizeReminderState(user);
   return user;
+}
+
+function getHarvestReadyAt(user) {
+  const readyTimes = (user.gardenPlots || [])
+    .filter((plot) => plot?.cropId && plot?.plantedAt)
+    .map((plot) => {
+      const crop = getGardenCrop(plot.cropId);
+      if (!crop) {
+        return null;
+      }
+      return plot.plantedAt.getTime() + crop.growMs;
+    })
+    .filter(Boolean);
+
+  if (!readyTimes.length) {
+    return null;
+  }
+
+  return Math.min(...readyTimes);
+}
+
+function getReminderReadyTimestamp(user, action) {
+  if (action === "spin" && user.lastSpinAt) {
+    return user.lastSpinAt.getTime() + COOLDOWNS.spinMs;
+  }
+  if (action === "work" && user.lastWorkAt) {
+    return user.lastWorkAt.getTime() + COOLDOWNS.workMs;
+  }
+  if (action === "coinflip" && user.lastCoinflipAt) {
+    return user.lastCoinflipAt.getTime() + COOLDOWNS.coinflipMs;
+  }
+  if (action === "daily" && user.lastDailyAt) {
+    return user.lastDailyAt.getTime() + COOLDOWNS.dailyMs;
+  }
+  if (action === "harvest") {
+    return getHarvestReadyAt(user);
+  }
+  return null;
+}
+
+function buildBalancePayload(user, targetUser) {
+  const combinedEffects = getCombinedEffects(user);
+  const vaultRate = 0.03 + (combinedEffects.vaultInterestBoost || 0) + user.prestige * 0.005;
+  return buildEmbedPayload({
+    title: `${targetUser.username}'s Balance`,
+    description: "A quick look at wallet, vault, and passive income.",
+    visual: "economy-vault.svg",
+    fields: [
+      { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+      { name: "Vault", value: `${formatNumber(user.vaultAura)} aura`, inline: true },
+      { name: "Vault Rate", value: `${(vaultRate * 100).toFixed(1)}% per hour`, inline: true },
+      { name: "Membership", value: formatPremiumStatus(user), inline: true },
+      { name: "Prestige", value: `${user.prestige}`, inline: true },
+      { name: "Daily Streak", value: `${user.streak} day${user.streak === 1 ? "" : "s"}`, inline: true },
+    ],
+  });
+}
+
+function buildReminderStatusPayload(user) {
+  normalizeReminderState(user);
+  const enabled = user.reminders.enabledActions
+    .map((action) => `\`${REMINDER_ACTIONS[action]?.command || action}\``)
+    .join(", ");
+
+  return buildEmbedPayload({
+    title: "Reminder Settings",
+    description: user.reminders.enabledActions.length
+      ? "The bot will tag you in the saved channel when these actions are ready."
+      : "No reminders are enabled right now.",
+    visual: "emblem-help.svg",
+    fields: [
+      { name: "Enabled", value: enabled || "None" },
+      { name: "Channel", value: user.reminders.channelId ? `<#${user.reminders.channelId}>` : "Not set", inline: true },
+      { name: "Server", value: user.reminders.guildId || "Not set", inline: true },
+    ],
+    footer: "Use /reminders enable or /reminders disable to manage tags.",
+  });
+}
+
+async function sendReadyReminder(client, user, action) {
+  normalizeReminderState(user);
+  if (!user.reminders.channelId || !REMINDER_ACTIONS[action]) {
+    return false;
+  }
+
+  try {
+    const channel = await client.channels.fetch(user.reminders.channelId);
+    if (!channel?.isTextBased?.() || !channel.send) {
+      return false;
+    }
+
+    await channel.send({
+      content: `<@${user.userId}> ${REMINDER_ACTIONS[action].command} is ready again.`,
+      allowedMentions: { users: [user.userId] },
+    });
+    return true;
+  } catch (error) {
+    console.error(`Failed to send reminder for ${user.userId} (${action}):`, error.message || error);
+    return false;
+  }
+}
+
+async function checkReminderQueue(client) {
+  const candidates = await User.find({
+    "reminders.channelId": { $ne: null },
+    "reminders.enabledActions.0": { $exists: true },
+  }).limit(500);
+
+  const now = Date.now();
+  for (const user of candidates) {
+    normalizeReminderState(user);
+    let changed = false;
+
+    for (const action of user.reminders.enabledActions) {
+      const readyAt = getReminderReadyTimestamp(user, action);
+      if (!readyAt || readyAt > now) {
+        continue;
+      }
+
+      const lastNotifiedAt = user.reminders.lastNotifiedAt.get(action);
+      if (lastNotifiedAt && lastNotifiedAt.getTime() >= readyAt) {
+        continue;
+      }
+
+      const sent = await sendReadyReminder(client, user, action);
+      if (sent) {
+        user.reminders.lastNotifiedAt.set(action, new Date(now));
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await user.save();
+    }
+  }
+}
+
+function startReminderLoop(client) {
+  if (reminderIntervals.has(client)) {
+    return;
+  }
+
+  const tick = () => checkReminderQueue(client).catch((error) => {
+    console.error("Reminder loop failed:", error);
+  });
+
+  tick();
+  const interval = setInterval(tick, REMINDER_POLL_MS);
+  interval.unref?.();
+  reminderIntervals.set(client, interval);
 }
 
 function getCooldownRemaining(lastDate, durationMs) {
@@ -674,6 +858,12 @@ async function handleProfile(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, target.id);
   await user.save();
   return interaction.reply(buildProfileEmbed(user, target));
+}
+
+async function handleBalance(interaction) {
+  const target = interaction.options.getUser("user") || interaction.user;
+  const user = await getOrCreatePlayer(interaction.guildId, target.id);
+  return interaction.reply(buildBalancePayload(user, target));
 }
 
 async function handleStats(interaction) {
@@ -1050,6 +1240,58 @@ async function handleGarden(interaction) {
     visual: "help-core.svg",
     fields: [
       { name: "Total Harvests", value: `${formatNumber(user.stats.harvests)}`, inline: true },
+    ],
+  }));
+}
+
+async function handleReminders(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  normalizeReminderState(user);
+
+  if (subcommand === "status") {
+    return interaction.reply(buildReminderStatusPayload(user));
+  }
+
+  const action = interaction.options.getString("action", true);
+  if (!REMINDER_ACTIONS[action]) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Reminder Failed", description: "That reminder action is not supported.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  if (subcommand === "enable") {
+    if (!user.reminders.enabledActions.includes(action)) {
+      user.reminders.enabledActions.push(action);
+    }
+    user.reminders.guildId = interaction.guildId;
+    user.reminders.channelId = interaction.channelId;
+    user.reminders.lastNotifiedAt.delete(action);
+    await user.save();
+
+    return interaction.reply(buildEmbedPayload({
+      title: "Reminder Enabled",
+      description: `You will be tagged in <#${interaction.channelId}> when ${REMINDER_ACTIONS[action].command} is ready.`,
+      visual: "emblem-success.svg",
+      fields: [
+        { name: "Action", value: REMINDER_ACTIONS[action].command, inline: true },
+        { name: "Channel", value: `<#${interaction.channelId}>`, inline: true },
+      ],
+    }));
+  }
+
+  user.reminders.enabledActions = user.reminders.enabledActions.filter((entry) => entry !== action);
+  user.reminders.lastNotifiedAt.delete(action);
+  if (!user.reminders.enabledActions.length) {
+    user.reminders.channelId = null;
+    user.reminders.guildId = null;
+  }
+  await user.save();
+
+  return interaction.reply(buildEmbedPayload({
+    title: "Reminder Disabled",
+    description: `You will no longer be tagged for ${REMINDER_ACTIONS[action].command}.`,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Still Enabled", value: user.reminders.enabledActions.length ? user.reminders.enabledActions.map((entry) => REMINDER_ACTIONS[entry].command).join(", ") : "None" },
     ],
   }));
 }
@@ -2479,12 +2721,17 @@ function buildCommands() {
     new SlashCommandBuilder().setName("start").setDescription("Create your save and unlock the game."),
     new SlashCommandBuilder().setName("profile").setDescription("View your or another player's profile.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
     new SlashCommandBuilder().setName("stats").setDescription("View deeper player stats.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
+    new SlashCommandBuilder().setName("balance").setDescription("Check wallet and vault balance.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
     new SlashCommandBuilder().setName("work").setDescription("Complete a shift for steady aura and XP."),
     new SlashCommandBuilder().setName("mine").setDescription("Gather crafting materials on a cooldown."),
     new SlashCommandBuilder().setName("spin").setDescription("Spin for aura every 5 minutes."),
     new SlashCommandBuilder().setName("coinflip").setDescription("Bet aura on heads or tails every 2 minutes.").addIntegerOption((option) => option.setName("amount").setDescription("Aura to bet").setRequired(true).setMinValue(1)).addStringOption((option) => option.setName("choice").setDescription("Choose heads or tails").setRequired(true).addChoices({ name: "heads", value: "heads" }, { name: "tails", value: "tails" })),
     new SlashCommandBuilder().setName("rob").setDescription("Attempt to steal aura from another player.").addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true)),
     new SlashCommandBuilder().setName("daily").setDescription("Claim your daily streak reward."),
+    new SlashCommandBuilder().setName("reminders").setDescription("Manage ready-state tag reminders.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("View your reminder settings."))
+      .addSubcommand((sub) => sub.setName("enable").setDescription("Tag me when an action is ready.").addStringOption((option) => option.setName("action").setDescription("Action to track").setRequired(true).addChoices(...REMINDER_ACTION_CHOICES)))
+      .addSubcommand((sub) => sub.setName("disable").setDescription("Stop tagging me for an action.").addStringOption((option) => option.setName("action").setDescription("Action to stop tracking").setRequired(true).addChoices(...REMINDER_ACTION_CHOICES))),
     new SlashCommandBuilder().setName("vault").setDescription("Manage your aura vault.").addSubcommand((sub) => sub.setName("deposit").setDescription("Deposit aura.").addIntegerOption((option) => option.setName("amount").setDescription("Amount").setRequired(true).setMinValue(1))).addSubcommand((sub) => sub.setName("withdraw").setDescription("Withdraw aura.").addIntegerOption((option) => option.setName("amount").setDescription("Amount").setRequired(true).setMinValue(1))).addSubcommand((sub) => sub.setName("interest").setDescription("Claim accumulated vault interest.")),
     new SlashCommandBuilder().setName("shop").setDescription("Browse shop items and perks."),
     new SlashCommandBuilder().setName("buy").setDescription("Buy an item from the shop.").addStringOption((option) => option.setName("item").setDescription("Item id").setRequired(true)),
@@ -2521,7 +2768,7 @@ async function routeInteraction(interaction) {
     return null;
   }
 
-  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, vault: handleVault, shop: handleShop, buy: handleBuy, gift: handleGift, inventory: handleInventory, craft: handleCraft, "crafting-guide": handleCraftingGuide, garden: handleGarden, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, premium: handlePremium, clan: handleClan, authority: handleAuthority };
+  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, gift: handleGift, inventory: handleInventory, craft: handleCraft, "crafting-guide": handleCraftingGuide, garden: handleGarden, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, premium: handlePremium, clan: handleClan, authority: handleAuthority };
   const handler = handlers[interaction.commandName];
   if (!handler) {
     return interaction.reply({ content: "Unknown command.", ephemeral: true });
@@ -2532,4 +2779,5 @@ async function routeInteraction(interaction) {
 module.exports = {
   buildCommands,
   routeInteraction,
+  startReminderLoop,
 };

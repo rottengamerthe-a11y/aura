@@ -5,7 +5,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const { getRazorpayConfig, processWebhookEvent, verifyWebhookSignature } = require("./src/billing/razorpay");
 const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigration");
-const { buildCommands, routeInteraction } = require("./src/game/service");
+const { buildCommands, routeInteraction, startReminderLoop } = require("./src/game/service");
 
 const requiredEnv = ["DISCORD_TOKEN", "DISCORD_CLIENT_ID", "MONGODB_URI"];
 
@@ -152,6 +152,7 @@ async function main() {
 
   client.once("ready", () => {
     console.log(`Bot ready as ${client.user.tag}`);
+    startReminderLoop(client);
   });
 
   client.on("interactionCreate", async (interaction) => {

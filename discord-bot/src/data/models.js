@@ -105,6 +105,12 @@ const userSchema = new mongoose.Schema(
       vaultDeposit: { type: Number, default: 0 },
       shopBuys: { type: Number, default: 0 },
     },
+    reminders: {
+      guildId: { type: String, default: null },
+      channelId: { type: String, default: null },
+      enabledActions: { type: [String], default: [] },
+      lastNotifiedAt: { type: Map, of: Date, default: {} },
+    },
     clanId: { type: mongoose.Schema.Types.ObjectId, ref: "Clan", default: null },
     clanMemberships: { type: Map, of: mongoose.Schema.Types.ObjectId, default: {} },
   },
