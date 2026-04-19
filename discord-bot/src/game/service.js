@@ -1,4 +1,4 @@
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField, SlashCommandBuilder } = require("discord.js");
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
 const crypto = require("crypto");
 const { createPremiumPaymentLink, getMissingPaymentConfig, getPremiumPlan, getPremiumPlanChoices } = require("../billing/razorpay");
 const { BOSSES, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
@@ -8,6 +8,12 @@ const { buildEmbedPayload } = require("../utils/visuals");
 
 const activeBattles = new Map();
 const reminderIntervals = new WeakMap();
+const BATTLE_TIMEOUT_MS = 15 * 60 * 1000;
+const BATTLE_GEAR_SLOTS = Object.freeze([
+  { id: "tool", label: "Tool" },
+  { id: "charm", label: "Charm" },
+  { id: "relic", label: "Relic" },
+]);
 const PREMIUM_EFFECTS = Object.freeze({
   spinRewardBoost: 0.12,
   vaultInterestBoost: 0.03,
@@ -64,6 +70,71 @@ const PVP_ARENAS = Object.freeze([
     finisherBonusDamage: 8,
   },
 ]);
+const BATTLE_ACTIONS = Object.freeze({
+  strike: {
+    label: "Strike",
+    style: ButtonStyle.Primary,
+    requirement: "Starter style",
+    description: "Balanced damage with steady combo growth.",
+    unlocked: () => true,
+  },
+  feint: {
+    label: "Feint",
+    style: ButtonStyle.Primary,
+    requirement: `Reach ${RANKS[1]?.name || "Harvester"}`,
+    description: "Light damage that exposes the target and boosts your next crit.",
+    unlocked: (user) => user.rankIndex >= 1 || user.prestige >= 1,
+  },
+  sidestep: {
+    label: "Sidestep",
+    style: ButtonStyle.Secondary,
+    requirement: `Reach ${RANKS[1]?.name || "Harvester"}`,
+    description: "Set up an evasive window and sharpen the next punish.",
+    unlocked: (user) => user.rankIndex >= 1 || user.prestige >= 1,
+  },
+  heavy: {
+    label: "Heavy",
+    style: ButtonStyle.Danger,
+    requirement: `Reach ${RANKS[2]?.name || "Warden"}`,
+    description: "Big damage with self-exposure if the target survives.",
+    unlocked: (user) => user.rankIndex >= 2 || user.prestige >= 1,
+  },
+  hook: {
+    label: "Hook",
+    style: ButtonStyle.Primary,
+    requirement: `Reach ${RANKS[2]?.name || "Warden"}`,
+    description: "Disrupt the target's combo and leave them weakened.",
+    unlocked: (user) => user.rankIndex >= 2 || user.prestige >= 1,
+  },
+  pierce: {
+    label: "Pierce",
+    style: ButtonStyle.Success,
+    requirement: `Reach ${RANKS[3]?.name || "Oracle"}`,
+    description: "Guard-piercing strike that punishes defensive opponents.",
+    unlocked: (user) => user.rankIndex >= 3 || user.prestige >= 1,
+  },
+  charge: {
+    label: "Charge",
+    style: ButtonStyle.Success,
+    requirement: `Reach ${RANKS[4]?.name || "Mythic"}`,
+    description: "Bank momentum for a stronger next damaging action.",
+    unlocked: (user) => user.rankIndex >= 4 || user.prestige >= 1,
+  },
+  disorient: {
+    label: "Disorient",
+    style: ButtonStyle.Secondary,
+    requirement: `Reach ${RANKS[5]?.name || "Ascendant"}`,
+    description: "Break guard, drain combo, and throw the foe off rhythm.",
+    unlocked: (user) => user.rankIndex >= 5 || user.prestige >= 1,
+  },
+  blitz: {
+    label: "Blitz",
+    style: ButtonStyle.Secondary,
+    requirement: "Reach Prestige 1",
+    description: "Two rapid hits that can break through a weakened enemy.",
+    unlocked: (user) => user.prestige >= 1,
+  },
+});
 
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -207,6 +278,226 @@ function getRecipe(recipeId) {
 
 function getInventoryLabel(id) {
   return getItem(id)?.name || getMaterial(id)?.name || getGearItem(id)?.name || id;
+}
+
+function getCombatItem(itemId) {
+  const item = getItem(itemId);
+  return item?.type === "combat" ? item : null;
+}
+
+function getBattleAction(actionId) {
+  return BATTLE_ACTIONS[actionId] || null;
+}
+
+function getUnlockedBattleActions(user) {
+  return Object.entries(BATTLE_ACTIONS)
+    .filter(([, action]) => action.unlocked(user))
+    .map(([actionId]) => actionId);
+}
+
+function formatBattleActionList(actionIds = []) {
+  return actionIds.map((actionId) => getBattleAction(actionId)?.label || actionId).join(", ") || "Strike";
+}
+
+function formatBattleActionProgress(user) {
+  return Object.entries(BATTLE_ACTIONS).map(([actionId, action]) => {
+    const status = action.unlocked(user) ? "Unlocked" : `Locked: ${action.requirement}`;
+    return `**${action.label}**\n${action.description}\n${status}`;
+  }).join("\n\n");
+}
+
+function chunkArray(values, size) {
+  const chunks = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function cloneLoadout(loadout = {}) {
+  return {
+    tool: loadout.tool || null,
+    charm: loadout.charm || null,
+    relic: loadout.relic || null,
+  };
+}
+
+function getInventoryQuantity(user, itemId) {
+  return user.inventory.find((entry) => entry.id === itemId)?.quantity || 0;
+}
+
+function userOwnsGearInSlot(user, gearId, slot) {
+  if (!gearId) {
+    return true;
+  }
+  const gear = getGearItem(gearId);
+  if (!gear || gear.slot !== slot) {
+    return false;
+  }
+  return getInventoryQuantity(user, gearId) > 0;
+}
+
+function normalizeBattleLoadout(user, loadout = {}) {
+  const normalized = cloneLoadout();
+  BATTLE_GEAR_SLOTS.forEach((slot) => {
+    const gearId = loadout[slot.id] || null;
+    normalized[slot.id] = userOwnsGearInSlot(user, gearId, slot.id) ? gearId : null;
+  });
+  return normalized;
+}
+
+function getLoadoutBattleBonuses(loadout = {}) {
+  return Object.values(cloneLoadout(loadout)).reduce((acc, gearId) => {
+    const gear = getGearItem(gearId);
+    if (!gear?.battle) {
+      return acc;
+    }
+    Object.entries(gear.battle).forEach(([key, value]) => {
+      acc[key] = (acc[key] || 0) + value;
+    });
+    return acc;
+  }, {});
+}
+
+function getPlayerCombatInventory(user) {
+  return user.inventory.reduce((acc, entry) => {
+    if (entry.quantity <= 0 || !getCombatItem(entry.id)) {
+      return acc;
+    }
+    acc[entry.id] = entry.quantity;
+    return acc;
+  }, {});
+}
+
+function summarizeCombatInventory(combatItems = {}) {
+  const lines = Object.entries(combatItems)
+    .filter(([, quantity]) => quantity > 0)
+    .map(([itemId, quantity]) => `${getInventoryLabel(itemId)} x${quantity}`);
+  return lines.length ? lines.join(", ") : "No battle items stocked.";
+}
+
+function formatLoadoutSummary(loadout = {}) {
+  return BATTLE_GEAR_SLOTS.map((slot) => {
+    const gearId = loadout[slot.id];
+    const gear = getGearItem(gearId);
+    const battleText = gear?.battleDescription ? ` (${gear.battleDescription})` : "";
+    return `${slot.label}: ${gear ? `${gear.name}${battleText}` : "None"}`;
+  }).join("\n");
+}
+
+function buildGearOptionsForSlot(state, slotId) {
+  const optionMap = new Map([["none", { label: `No ${slotId}`, value: "none", description: `Fight without ${slotId} gear.` }]]);
+  [state.playerOne, state.playerTwo].forEach((fighter) => {
+    Object.entries(fighter.availableGear?.[slotId] || {}).forEach(([gearId, gearName]) => {
+      optionMap.set(gearId, {
+        label: gearName.slice(0, 100),
+        value: gearId,
+        description: (getGearItem(gearId)?.battleDescription || getGearItem(gearId)?.description || "Gear option").slice(0, 100),
+      });
+    });
+  });
+  return [...optionMap.values()].slice(0, 25);
+}
+
+function createLoadoutParticipant(user, displayName) {
+  const loadout = normalizeBattleLoadout(user, user.equippedGear);
+  const availableGear = BATTLE_GEAR_SLOTS.reduce((acc, slot) => {
+    acc[slot.id] = Object.fromEntries(
+      user.inventory
+        .filter((entry) => entry.quantity > 0)
+        .map((entry) => [entry.id, getGearItem(entry.id)])
+        .filter(([, gear]) => gear?.slot === slot.id)
+        .map(([gearId, gear]) => [gearId, gear.name])
+    );
+    return acc;
+  }, {});
+
+  return {
+    id: user.userId,
+    name: displayName,
+    ready: false,
+    loadout,
+    combatItems: getPlayerCombatInventory(user),
+    unlockedActions: getUnlockedBattleActions(user),
+    availableGear,
+  };
+}
+
+function createLoadoutField(player) {
+  return [
+    formatLoadoutSummary(player.loadout),
+    `Attacks: ${formatBattleActionList(player.unlockedActions)}`,
+    `Items: ${summarizeCombatInventory(player.combatItems)}`,
+    `Ready: ${player.ready ? "Locked in" : "Choosing loadout"}`,
+  ].join("\n");
+}
+
+function buildInviteComponents(battleId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${battleId}:invite:accept`).setLabel("Accept").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${battleId}:invite:decline`).setLabel("Decline").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`${battleId}:invite:cancel`).setLabel("Cancel").setStyle(ButtonStyle.Secondary)
+    ),
+  ];
+}
+
+function createLoadoutEmbed(state, description) {
+  return buildEmbedPayload({
+    title: "PvP Duel Lobby",
+    description,
+    visual: "pvp-challenge.svg",
+    fields: [
+      { name: state.playerOne.name, value: createLoadoutField(state.playerOne), inline: true },
+      { name: state.playerTwo.name, value: createLoadoutField(state.playerTwo), inline: true },
+      { name: "Arena", value: `${state.arena.name}\n${state.arena.description}`, inline: false },
+    ],
+    footer: "Pick gear, review battle items, and press Ready Up when your loadout is set.",
+  });
+}
+
+function buildLoadoutComponents(state) {
+  const components = [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`${state.id}:loadout:ready`).setLabel("Ready Up").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`${state.id}:loadout:cancel`).setLabel("Cancel Duel").setStyle(ButtonStyle.Danger)
+    ),
+  ];
+
+  BATTLE_GEAR_SLOTS.forEach((slot) => {
+    components.push(
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`${state.id}:gear:${slot.id}`)
+          .setPlaceholder(`Choose your ${slot.label.toLowerCase()} gear`)
+          .addOptions(buildGearOptionsForSlot(state, slot.id))
+      )
+    );
+  });
+
+  return components;
+}
+
+function isBattleExpired(state) {
+  return !state?.createdAt || (Date.now() - state.createdAt) > BATTLE_TIMEOUT_MS;
+}
+
+function pruneExpiredBattles() {
+  for (const [battleId, state] of activeBattles.entries()) {
+    if (isBattleExpired(state)) {
+      activeBattles.delete(battleId);
+    }
+  }
+}
+
+function findBattleForUser(userId) {
+  pruneExpiredBattles();
+  for (const state of activeBattles.values()) {
+    if ([state.playerOne?.id, state.playerTwo?.id, state.challengerId, state.opponentId].includes(userId)) {
+      return state;
+    }
+  }
+  return null;
 }
 
 function formatEffectValue(value) {
@@ -723,7 +1014,7 @@ const HELP_SECTIONS = [
       { name: "/shop", description: "Browse perks, crates, and unlocks." },
       { name: "/buy item:<id>", description: "Purchase a shop item by id." },
       { name: "/gift user:<player> amount:<amount>", description: "Send aura to another player." },
-      { name: "/inventory", description: "Review owned items, skills, and crates." },
+      { name: "/inventory", description: "Review owned items, battle consumables, skills, and crates." },
       { name: "/craft recipe:<id>", description: "Turn mined materials into useful rewards." },
       { name: "/garden", description: "Plant and harvest real-time crops." },
       { name: "/gear", description: "Equip crafted gear and review your loadout." },
@@ -749,8 +1040,8 @@ const HELP_SECTIONS = [
     name: "Combat",
     visual: "help-bosses.svg",
     commands: [
-      { name: "/skills", description: "See unlocked battle skills." },
-      { name: "/pvp user:<player>", description: "Challenge another player to an interactive duel." },
+      { name: "/skills", description: "See unlocked battle skills and attack styles." },
+      { name: "/pvp user:<player>", description: "Send a duel invite, lock a loadout, and fight another player." },
       { name: "/boss [boss]", description: "Fight one of the available bosses." },
     ],
   },
@@ -1701,6 +1992,8 @@ async function handleBuy(interaction) {
       user.skills.push(item.grantsSkill);
     }
     addInventoryItem(user, item.id);
+  } else if (item.type === "combat") {
+    addInventoryItem(user, item.id);
   } else if (item.type === "crate") {
     user.crates.set(item.grantsCrate, (user.crates.get(item.grantsCrate) || 0) + 1);
   }
@@ -1870,19 +2163,29 @@ function rotateBattleSkill(fighter) {
   hydrateBattleSkill(fighter);
 }
 
-function createBattleFighter({ id, name, hp, maxHp, skillCycle, critBoost = 0 }) {
+function createBattleFighter({ id, name, hp, maxHp, skillCycle, critBoost = 0, loadout = {}, combatItems = {}, unlockedActions = ["strike"] }) {
+  const gearBonuses = getLoadoutBattleBonuses(loadout);
+  const totalMaxHp = maxHp + (gearBonuses.maxHpBonus || 0);
   const fighter = {
     id,
     name,
-    hp,
-    maxHp,
+    hp: totalMaxHp,
+    maxHp: totalMaxHp,
     skillCycle: skillCycle?.length ? skillCycle : ["focus"],
     skillIndex: 0,
     skill: null,
     critBoost,
+    passiveCritBoost: gearBonuses.critChanceBonus || 0,
+    loadout: cloneLoadout(loadout),
+    gearBonuses,
+    combatItems: { ...combatItems },
+    unlockedActions: unlockedActions.length ? [...unlockedActions] : ["strike"],
     combo: 0,
     guard: false,
     counterStance: false,
+    evasiveTurns: 0,
+    weakenedTurns: 0,
+    chargeStacks: 0,
     exposedTurns: 0,
     bleedTurns: 0,
     bleedDamage: 0,
@@ -1905,6 +2208,15 @@ function getBattleStatuses(fighter) {
   if (fighter.counterStance) {
     statuses.push("Counter Ready");
   }
+  if (fighter.evasiveTurns > 0) {
+    statuses.push(`Evasive x${fighter.evasiveTurns}`);
+  }
+  if (fighter.chargeStacks > 0) {
+    statuses.push(`Charged x${fighter.chargeStacks}`);
+  }
+  if (fighter.weakenedTurns > 0) {
+    statuses.push(`Weakened x${fighter.weakenedTurns}`);
+  }
   if (fighter.exposedTurns > 0) {
     statuses.push(`Exposed x${fighter.exposedTurns}`);
   }
@@ -1919,6 +2231,9 @@ function getBattleFighterField(fighter) {
     `HP: ${fighter.hp}/${fighter.maxHp}`,
     progressBar(fighter.hp, fighter.maxHp, 10),
     `Skill: ${fighter.skill?.name || "Focus"}`,
+    `Attacks: ${formatBattleActionList(fighter.unlockedActions)}`,
+    `Gear: ${Object.values(cloneLoadout(fighter.loadout)).map((gearId) => getInventoryLabel(gearId || "None")).join(" | ")}`,
+    `Items: ${summarizeCombatInventory(fighter.combatItems)}`,
     `State: ${getBattleStatuses(fighter)}`,
   ].join("\n");
 }
@@ -1951,7 +2266,44 @@ function resolveHit(attacker, defender, baseDamage, options = {}) {
 
   let damage = baseDamage;
   const notes = [];
-  const totalCritChance = clamp(critChance + (attacker.critBoost || 0) + Math.min(attacker.combo || 0, 4) * 0.05, 0, 0.8);
+  if (attacker.weakenedTurns > 0) {
+    damage = Math.floor(damage * 0.8);
+    attacker.weakenedTurns = Math.max(0, attacker.weakenedTurns - 1);
+    notes.push(`${attacker.name} was off-balance`);
+  }
+  if (attacker.chargeStacks > 0) {
+    damage += attacker.chargeStacks * 8;
+    notes.push(`charged x${attacker.chargeStacks}`);
+    attacker.chargeStacks = 0;
+  }
+
+  if (defender.evasiveTurns > 0) {
+    defender.evasiveTurns = Math.max(0, defender.evasiveTurns - 1);
+    const dodgeChance = pierceGuard ? 0.35 : 0.65;
+    if (Math.random() < dodgeChance) {
+      defender.guard = false;
+      defender.counterStance = false;
+      if (consumeCritBoost) {
+        attacker.critBoost = 0;
+      }
+      return {
+        damage: 0,
+        counterDamage: 0,
+        crit: false,
+        text: `${attacker.name} ${actionLabel} for 0 damage (${defender.name} sidestepped cleanly).`,
+      };
+    }
+    notes.push(`${defender.name} almost slipped clear`);
+  }
+
+  const totalCritChance = clamp(
+    critChance
+      + (attacker.critBoost || 0)
+      + (attacker.passiveCritBoost || 0)
+      + Math.min(attacker.combo || 0, 4) * 0.05,
+    0,
+    0.8
+  );
   const crit = Math.random() < totalCritChance;
   if (crit) {
     damage = Math.floor(damage * critMultiplier);
@@ -1966,7 +2318,8 @@ function resolveHit(attacker, defender, baseDamage, options = {}) {
 
   let guardTriggered = false;
   if (defender.guard && !pierceGuard) {
-    damage = Math.floor(damage * guardReduction);
+    const effectiveGuardReduction = Math.max(0.2, guardReduction - (defender.gearBonuses?.guardReductionBonus || 0));
+    damage = Math.floor(damage * effectiveGuardReduction);
     guardTriggered = true;
     notes.push(`${defender.name} blocked part of it`);
   } else if (defender.guard && pierceGuard) {
@@ -2005,6 +2358,10 @@ function runTurn(attacker, defender, action, state) {
   const arenaCritBonus = arena?.critBonus || 0;
   const arenaGuardReduction = arena?.guardReduction ?? 0.5;
   const arenaCounterBonus = arena?.counterBonus || 0;
+  const strikeBonus = attacker.gearBonuses?.strikeDamageBonus || 0;
+  const heavyBonus = attacker.gearBonuses?.heavyDamageBonus || 0;
+  const healBonus = attacker.gearBonuses?.healBonus || 0;
+  const finisherBonus = attacker.gearBonuses?.finisherBonusDamage || 0;
 
   if (action === "guard") {
     attacker.guard = true;
@@ -2012,11 +2369,18 @@ function runTurn(attacker, defender, action, state) {
     return { damage, text: `${attacker.name} raised their guard and prepared a counter${arena?.counterBonus ? " in the heavy arena" : ""}.` };
   }
 
+  if (action === "sidestep") {
+    attacker.evasiveTurns = Math.max(attacker.evasiveTurns, 1);
+    attacker.critBoost = clamp((attacker.critBoost || 0) + 0.08, 0, 0.6);
+    return { damage, text: `${attacker.name} slipped to the side, setting an evasive angle for the next exchange.` };
+  }
+
   if (action === "skill") {
     const skill = attacker.skill || { id: "focus", ...SKILLS.focus };
     if (skill.heal) {
       const cleared = [];
-      attacker.hp = clamp(attacker.hp + skill.heal, 0, attacker.maxHp);
+      const totalHeal = skill.heal + healBonus;
+      attacker.hp = clamp(attacker.hp + totalHeal, 0, attacker.maxHp);
       attacker.critBoost = clamp((attacker.critBoost || 0) + (skill.critBoost || 0), 0, 0.6);
       attacker.combo = clamp((attacker.combo || 0) + 1, 0, 4);
       if (attacker.bleedTurns > 0) {
@@ -2031,7 +2395,7 @@ function runTurn(attacker, defender, action, state) {
       rotateBattleSkill(attacker);
       return {
         damage,
-        text: `${attacker.name} used ${skill.name}, healed ${skill.heal}, and sharpened their next strike${cleared.length ? ` while clearing ${cleared.join(" and ")}` : ""}.`,
+        text: `${attacker.name} used ${skill.name}, healed ${totalHeal}, and sharpened their next strike${cleared.length ? ` while clearing ${cleared.join(" and ")}` : ""}.`,
       };
     }
 
@@ -2065,7 +2429,7 @@ function runTurn(attacker, defender, action, state) {
 
   if (action === "finish") {
     const comboBonus = (attacker.combo || 0) * 6;
-    damage = randInt(20, 34) + comboBonus + (arena?.finisherBonusDamage || 0);
+    damage = randInt(20, 34) + comboBonus + (arena?.finisherBonusDamage || 0) + finisherBonus;
     if (defender.hp > defender.maxHp * (arena?.finisherThreshold || 0.35)) {
       damage = Math.floor(damage * 0.55);
       const hit = resolveHit(attacker, defender, damage, {
@@ -2090,9 +2454,123 @@ function runTurn(attacker, defender, action, state) {
     return { damage: hit.damage, text: hit.text };
   }
 
+  if (action === "heavy") {
+    const heavyBase = randInt(18, 26) + heavyBonus + Math.floor((attacker.combo || 0) * 1.5);
+    const hit = resolveHit(attacker, defender, heavyBase, {
+      actionLabel: "swung a heavy blow",
+      critChance: 0.08 + arenaCritBonus,
+      critMultiplier: 1.55,
+      guardReduction: arenaGuardReduction,
+      counterBonus: arenaCounterBonus,
+    });
+    attacker.combo = clamp((attacker.combo || 0) + 1, 0, 4);
+    if (defender.hp > 0) {
+      attacker.exposedTurns = Math.max(attacker.exposedTurns, 1);
+      return { damage: hit.damage, text: `${hit.text} ${attacker.name} is slightly exposed after the commitment.` };
+    }
+    return { damage: hit.damage, text: hit.text };
+  }
+
+  if (action === "hook") {
+    const hit = resolveHit(attacker, defender, randInt(11, 17) + Math.floor((attacker.combo || 0) * 1.2), {
+      actionLabel: "whipped in a hook",
+      critChance: 0.1 + arenaCritBonus,
+      critMultiplier: 1.35,
+      guardReduction: arenaGuardReduction,
+      counterBonus: arenaCounterBonus,
+    });
+    attacker.combo = clamp((attacker.combo || 0) + 1, 0, 4);
+    defender.combo = Math.max(0, (defender.combo || 0) - 2);
+    defender.weakenedTurns = Math.max(defender.weakenedTurns, 1);
+    return { damage: hit.damage, text: `${hit.text} ${defender.name}'s rhythm was broken.` };
+  }
+
+  if (action === "feint") {
+    const hit = resolveHit(attacker, defender, randInt(7, 12) + Math.floor((attacker.combo || 0) / 2), {
+      actionLabel: "darted in with a feint",
+      critChance: 0.14 + arenaCritBonus,
+      critMultiplier: 1.3,
+      guardReduction: arenaGuardReduction,
+      counterBonus: arenaCounterBonus,
+    });
+    attacker.critBoost = clamp((attacker.critBoost || 0) + 0.15, 0, 0.6);
+    attacker.combo = clamp((attacker.combo || 0) + 1, 0, 4);
+    defender.exposedTurns = Math.max(defender.exposedTurns, 1);
+    return { damage: hit.damage, text: `${hit.text} ${defender.name} was drawn out of position.` };
+  }
+
+  if (action === "pierce") {
+    const hit = resolveHit(attacker, defender, randInt(12, 20) + Math.floor((attacker.combo || 0) * 1.5), {
+      actionLabel: "drove in a piercing strike",
+      critChance: 0.11 + arenaCritBonus,
+      critMultiplier: 1.45,
+      pierceGuard: true,
+      guardReduction: arenaGuardReduction,
+      counterBonus: arenaCounterBonus,
+    });
+    attacker.combo = clamp((attacker.combo || 0) + 1, 0, 4);
+    if (defender.hp > 0) {
+      defender.exposedTurns = Math.max(defender.exposedTurns, 1);
+    }
+    return { damage: hit.damage, text: `${hit.text}${defender.hp > 0 ? ` ${defender.name} was opened up.` : ""}` };
+  }
+
+  if (action === "charge") {
+    attacker.chargeStacks = clamp((attacker.chargeStacks || 0) + 1, 0, 2);
+    attacker.combo = clamp((attacker.combo || 0) + 1, 0, 4);
+    return {
+      damage,
+      text: `${attacker.name} gathered force and stored it for the next strike${attacker.chargeStacks > 1 ? ", now heavily charged" : ""}.`,
+    };
+  }
+
+  if (action === "disorient") {
+    const hit = resolveHit(attacker, defender, randInt(9, 15) + Math.floor((attacker.combo || 0) * 0.8), {
+      actionLabel: "lashed out with a disorienting burst",
+      critChance: 0.12 + arenaCritBonus,
+      critMultiplier: 1.32,
+      pierceGuard: true,
+      guardReduction: arenaGuardReduction,
+      counterBonus: arenaCounterBonus,
+    });
+    attacker.combo = clamp((attacker.combo || 0) + 1, 0, 4);
+    defender.guard = false;
+    defender.counterStance = false;
+    defender.combo = Math.max(0, (defender.combo || 0) - 2);
+    defender.weakenedTurns = Math.max(defender.weakenedTurns, 1);
+    defender.exposedTurns = Math.max(defender.exposedTurns, 1);
+    return { damage: hit.damage, text: `${hit.text} ${defender.name} lost their footing and guard.` };
+  }
+
+  if (action === "blitz") {
+    const comboBeforeBlitz = attacker.combo || 0;
+    const firstHit = resolveHit(attacker, defender, randInt(8, 12) + Math.floor((attacker.combo || 0) * 0.5), {
+      actionLabel: "opened with a blitz",
+      critChance: 0.09 + arenaCritBonus,
+      critMultiplier: 1.3,
+      guardReduction: arenaGuardReduction,
+      counterBonus: arenaCounterBonus,
+    });
+    let totalDamage = firstHit.damage;
+    let textSummary = firstHit.text;
+    if (defender.hp > 0) {
+      const secondHit = resolveHit(attacker, defender, randInt(8, 14) + Math.floor((attacker.combo || 0) * 0.5), {
+        actionLabel: "followed through with a second hit",
+        critChance: 0.09 + arenaCritBonus,
+        critMultiplier: 1.35,
+        guardReduction: arenaGuardReduction,
+        counterBonus: arenaCounterBonus,
+      });
+      totalDamage += secondHit.damage;
+      textSummary = `${textSummary} ${secondHit.text}`;
+    }
+    attacker.combo = clamp(comboBeforeBlitz + 2, 0, 4);
+    return { damage: totalDamage, text: textSummary };
+  }
+
   const comboBeforeHit = attacker.combo || 0;
-  const hit = resolveHit(attacker, defender, randInt(10, 18) + comboBeforeHit * 2, {
-    actionLabel: "attacked",
+  const hit = resolveHit(attacker, defender, randInt(10, 18) + comboBeforeHit * 2 + strikeBonus, {
+    actionLabel: action === "attack" ? "attacked" : "struck",
     critChance: 0.1 + arenaCritBonus,
     critMultiplier: 1.4,
     guardReduction: arenaGuardReduction,
@@ -2126,17 +2604,47 @@ function resolveArenaPulse(state) {
   };
 }
 
-function battleButtons(prefix, fighter) {
+function buildBattleComponents(state, fighter) {
   const canUseSkill = Boolean(fighter?.skill);
   const skillLabel = fighter?.skill?.name ? `Skill: ${fighter.skill.name}` : "Skill";
-  return [
+  const actionButtons = (fighter?.unlockedActions || ["strike"])
+    .map((actionId) => ({ actionId, action: getBattleAction(actionId) }))
+    .filter(({ action }) => Boolean(action))
+    .map(({ actionId, action }) => new ButtonBuilder().setCustomId(`${state.id}:${actionId}`).setLabel(action.label).setStyle(action.style));
+  const actionRows = chunkArray(actionButtons, 5).map((rowButtons) => new ActionRowBuilder().addComponents(...rowButtons));
+  const components = [
+    ...actionRows,
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${prefix}:attack`).setLabel("Attack").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`${prefix}:guard`).setLabel("Guard").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`${prefix}:skill`).setLabel(skillLabel.slice(0, 80)).setStyle(ButtonStyle.Success).setDisabled(!canUseSkill),
-      new ButtonBuilder().setCustomId(`${prefix}:finish`).setLabel("Finisher").setStyle(ButtonStyle.Danger)
+      new ButtonBuilder().setCustomId(`${state.id}:skill`).setLabel(skillLabel.slice(0, 80)).setStyle(ButtonStyle.Success).setDisabled(!canUseSkill),
+      new ButtonBuilder().setCustomId(`${state.id}:guard`).setLabel("Guard").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`${state.id}:finish`).setLabel("Finisher").setStyle(ButtonStyle.Danger)
     ),
   ];
+
+  const itemOptions = Object.entries(fighter?.combatItems || {})
+    .filter(([, quantity]) => quantity > 0)
+    .map(([itemId, quantity]) => {
+      const item = getCombatItem(itemId);
+      return {
+        label: `${item?.name || itemId} x${quantity}`.slice(0, 100),
+        value: itemId,
+        description: (item?.description || "Battle item").slice(0, 100),
+      };
+    })
+    .slice(0, 25);
+
+  if (itemOptions.length) {
+    components.push(
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`${state.id}:item`)
+          .setPlaceholder("Use a battle item")
+          .addOptions(itemOptions)
+      )
+    );
+  }
+
+  return components;
 }
 
 function createBattleEmbed(title, description, visual, state) {
@@ -2162,6 +2670,92 @@ function createBattleEmbed(title, description, visual, state) {
       ...extraFields,
     ],
   });
+}
+
+async function useBattleItem(interaction, fighter, defender, itemId) {
+  const item = getCombatItem(itemId);
+  if (!item) {
+    return { error: "That battle item is not available." };
+  }
+  if ((fighter.combatItems?.[itemId] || 0) <= 0) {
+    return { error: `You do not have any ${item.name} left.` };
+  }
+
+  const user = await getOrCreatePlayer(interaction.guildId, fighter.id);
+  const entry = user.inventory.find((inventoryItem) => inventoryItem.id === itemId);
+  if (!entry || entry.quantity <= 0) {
+    fighter.combatItems[itemId] = 0;
+    return { error: `You do not have any ${item.name} left in your inventory.` };
+  }
+
+  entry.quantity -= 1;
+  if (entry.quantity < 0) {
+    entry.quantity = 0;
+  }
+  user.markModified("inventory");
+  await user.save();
+  fighter.combatItems[itemId] = Math.max(0, (fighter.combatItems[itemId] || 0) - 1);
+
+  if (item.battle?.effect === "heal") {
+    const totalHeal = item.battle.heal + (fighter.gearBonuses?.healBonus || 0);
+    fighter.hp = clamp(fighter.hp + totalHeal, 0, fighter.maxHp);
+    return { text: `${fighter.name} used ${item.name} and restored ${totalHeal} HP.` };
+  }
+
+  if (item.battle?.effect === "smoke") {
+    const damage = randInt(item.battle.damage[0], item.battle.damage[1]);
+    defender.hp = clamp(defender.hp - damage, 0, defender.maxHp);
+    defender.exposedTurns = Math.max(defender.exposedTurns, item.battle.exposeTurns || 1);
+    return { text: `${fighter.name} used ${item.name}, dealt ${damage} damage, and left ${defender.name} exposed.` };
+  }
+
+  if (item.battle?.effect === "adrenaline") {
+    const cleared = [];
+    fighter.critBoost = clamp((fighter.critBoost || 0) + (item.battle.critBoost || 0), 0, 0.6);
+    fighter.combo = clamp((fighter.combo || 0) + (item.battle.combo || 0), 0, 4);
+    if (item.battle.clearBleed && fighter.bleedTurns > 0) {
+      fighter.bleedTurns = 0;
+      fighter.bleedDamage = 0;
+      cleared.push("bleed");
+    }
+    if (item.battle.clearExpose && fighter.exposedTurns > 0) {
+      fighter.exposedTurns = 0;
+      cleared.push("exposed");
+    }
+    return { text: `${fighter.name} used ${item.name}, surged forward, and primed the next attack${cleared.length ? ` while clearing ${cleared.join(" and ")}` : ""}.` };
+  }
+
+  return { text: `${fighter.name} used ${item.name}.` };
+}
+
+function initializePvpBattleFromLoadout(state, challenger, rival) {
+  state.phase = "battle";
+  state.title = "PvP Duel";
+  state.visual = "pvp-battle.svg";
+  state.playerOne = createBattleFighter({
+    id: challenger.userId,
+    name: state.playerOne.name,
+    hp: 100,
+    maxHp: 100,
+    skillCycle: getBattleSkillRotation(challenger),
+    loadout: state.playerOne.loadout,
+    combatItems: state.playerOne.combatItems,
+    unlockedActions: getUnlockedBattleActions(challenger),
+  });
+  state.playerTwo = createBattleFighter({
+    id: rival.userId,
+    name: state.playerTwo.name,
+    hp: 100,
+    maxHp: 100,
+    skillCycle: getBattleSkillRotation(rival),
+    loadout: state.playerTwo.loadout,
+    combatItems: state.playerTwo.combatItems,
+    unlockedActions: getUnlockedBattleActions(rival),
+  });
+  state.turnId = challenger.userId;
+  state.rewardAura = randInt(750, 1250);
+  state.rewardXp = randInt(220, 340);
+  state.exchangeCount = 0;
 }
 
 async function finishBattle(interaction, state, winnerId) {
@@ -2279,29 +2873,8 @@ async function finishBattle(interaction, state, winnerId) {
   }
 }
 
-async function handleBattleInteraction(interaction) {
-  const [battleId, action] = interaction.customId.split(":");
-  const state = activeBattles.get(battleId);
-  if (!state) {
-    return interaction.reply({ content: "That battle session has expired.", ephemeral: true });
-  }
-  if (interaction.user.id !== state.turnId) {
-    return interaction.reply({ content: "It is not your turn yet.", ephemeral: true });
-  }
-
-  const acting = state.playerOne.id === interaction.user.id ? state.playerOne : state.playerTwo;
-  const defending = acting.id === state.playerOne.id ? state.playerTwo : state.playerOne;
-  hydrateBattleSkill(acting);
-  hydrateBattleSkill(defending);
-
-  const turnStart = resolveTurnStart(acting);
-  let summary = turnStart.text;
-  if (turnStart.defeated) {
-    return finishBattle(interaction, state, defending.id);
-  }
-
-  const playerResult = runTurn(acting, defending, action, state);
-  summary = summary ? `${summary}\n${playerResult.text}` : playerResult.text;
+async function advanceBattle(interaction, state, acting, defending, actionSummary) {
+  let summary = actionSummary;
   state.exchangeCount = (state.exchangeCount || 0) + 1;
 
   if (defending.hp <= 0) {
@@ -2340,8 +2913,192 @@ async function handleBattleInteraction(interaction) {
 
   return interaction.update({
     ...createBattleEmbed(state.title, summary, state.visual, state),
-    components: battleButtons(state.id, nextActor),
+    components: buildBattleComponents(state, nextActor),
   });
+}
+
+async function handleInviteButton(interaction, state, action) {
+  if (action === "accept") {
+    if (interaction.user.id !== state.opponentId) {
+      return interaction.reply({ content: "Only the challenged player can accept this duel.", ephemeral: true });
+    }
+
+    const challenger = await getOrCreatePlayer(interaction.guildId, state.challengerId);
+    const rival = await getOrCreatePlayer(interaction.guildId, state.opponentId);
+    state.phase = "loadout";
+    state.playerOne = createLoadoutParticipant(challenger, state.challengerName);
+    state.playerTwo = createLoadoutParticipant(rival, state.opponentName);
+
+    return interaction.update({
+      ...createLoadoutEmbed(state, `${state.opponentName} accepted the duel. Both fighters can now choose gear and review battle items before the match starts.`),
+      components: buildLoadoutComponents(state),
+    });
+  }
+
+  if (action === "decline") {
+    if (interaction.user.id !== state.opponentId) {
+      return interaction.reply({ content: "Only the challenged player can decline this duel.", ephemeral: true });
+    }
+    activeBattles.delete(state.id);
+    return interaction.update({
+      ...buildEmbedPayload({
+        title: "PvP Duel Declined",
+        description: `${state.opponentName} declined ${state.challengerName}'s challenge.`,
+        visual: "emblem-alert.svg",
+      }),
+      components: [],
+    });
+  }
+
+  if (interaction.user.id !== state.challengerId) {
+    return interaction.reply({ content: "Only the challenger can cancel this invite.", ephemeral: true });
+  }
+  activeBattles.delete(state.id);
+  return interaction.update({
+    ...buildEmbedPayload({
+      title: "PvP Duel Cancelled",
+      description: `${state.challengerName} cancelled the pending challenge.`,
+      visual: "emblem-alert.svg",
+    }),
+    components: [],
+  });
+}
+
+async function handleLoadoutButton(interaction, state, action) {
+  if (![state.playerOne.id, state.playerTwo.id].includes(interaction.user.id)) {
+    return interaction.reply({ content: "Only the two duelists can change this lobby.", ephemeral: true });
+  }
+
+  if (action === "cancel") {
+    activeBattles.delete(state.id);
+    return interaction.update({
+      ...buildEmbedPayload({
+        title: "PvP Duel Cancelled",
+        description: `${interaction.user.username} cancelled the duel lobby.`,
+        visual: "emblem-alert.svg",
+      }),
+      components: [],
+    });
+  }
+
+  const fighter = state.playerOne.id === interaction.user.id ? state.playerOne : state.playerTwo;
+  fighter.ready = !fighter.ready;
+
+  if (!state.playerOne.ready || !state.playerTwo.ready) {
+    return interaction.update({
+      ...createLoadoutEmbed(state, `${fighter.name} ${fighter.ready ? "locked in their loadout" : "unreadied to make changes"}.`),
+      components: buildLoadoutComponents(state),
+    });
+  }
+
+  const challenger = await getOrCreatePlayer(interaction.guildId, state.playerOne.id);
+  const rival = await getOrCreatePlayer(interaction.guildId, state.playerTwo.id);
+  initializePvpBattleFromLoadout(state, challenger, rival);
+
+  return interaction.update({
+    ...createBattleEmbed("PvP Duel Started", `${state.playerOne.name} and ${state.playerTwo.name} locked in their loadouts.\nArena: **${state.arena.name}**\n${state.arena.description}`, "pvp-battle.svg", state),
+    components: buildBattleComponents(state, state.playerOne),
+  });
+}
+
+async function handleLoadoutSelect(interaction, state, slotId) {
+  if (![state.playerOne.id, state.playerTwo.id].includes(interaction.user.id)) {
+    return interaction.reply({ content: "Only the duelists can change battle gear.", ephemeral: true });
+  }
+
+  const fighter = state.playerOne.id === interaction.user.id ? state.playerOne : state.playerTwo;
+  const selected = interaction.values[0] === "none" ? null : interaction.values[0];
+  if (selected && !fighter.availableGear?.[slotId]?.[selected]) {
+    return interaction.reply({ content: "You do not own that gear option for this duel.", ephemeral: true });
+  }
+
+  fighter.loadout[slotId] = selected;
+  fighter.ready = false;
+
+  return interaction.update({
+    ...createLoadoutEmbed(state, `${fighter.name} updated their ${slotId} slot.`),
+    components: buildLoadoutComponents(state),
+  });
+}
+
+async function handleBattleButton(interaction, state, action) {
+  if (interaction.user.id !== state.turnId) {
+    return interaction.reply({ content: "It is not your turn yet.", ephemeral: true });
+  }
+
+  const acting = state.playerOne.id === interaction.user.id ? state.playerOne : state.playerTwo;
+  const defending = acting.id === state.playerOne.id ? state.playerTwo : state.playerOne;
+  if (getBattleAction(action) && !acting.unlockedActions.includes(action)) {
+    return interaction.reply({ content: "That attack style is still locked for your current progression.", ephemeral: true });
+  }
+  hydrateBattleSkill(acting);
+  hydrateBattleSkill(defending);
+
+  const turnStart = resolveTurnStart(acting);
+  let summary = turnStart.text;
+  if (turnStart.defeated) {
+    return finishBattle(interaction, state, defending.id);
+  }
+
+  const playerResult = runTurn(acting, defending, action, state);
+  summary = summary ? `${summary}\n${playerResult.text}` : playerResult.text;
+  return advanceBattle(interaction, state, acting, defending, summary);
+}
+
+async function handleBattleItemSelect(interaction, state) {
+  if (interaction.user.id !== state.turnId) {
+    return interaction.reply({ content: "It is not your turn yet.", ephemeral: true });
+  }
+
+  const acting = state.playerOne.id === interaction.user.id ? state.playerOne : state.playerTwo;
+  const defending = acting.id === state.playerOne.id ? state.playerTwo : state.playerOne;
+  const turnStart = resolveTurnStart(acting);
+  let summary = turnStart.text;
+  if (turnStart.defeated) {
+    return finishBattle(interaction, state, defending.id);
+  }
+
+  const itemResult = await useBattleItem(interaction, acting, defending, interaction.values[0]);
+  if (itemResult.error) {
+    return interaction.reply({ content: itemResult.error, ephemeral: true });
+  }
+
+  summary = summary ? `${summary}\n${itemResult.text}` : itemResult.text;
+  return advanceBattle(interaction, state, acting, defending, summary);
+}
+
+async function handleBattleComponentInteraction(interaction) {
+  const parts = interaction.customId.split(":");
+  const battleId = parts.shift();
+  const scope = parts.shift();
+  const state = activeBattles.get(battleId);
+  if (!state || isBattleExpired(state)) {
+    activeBattles.delete(battleId);
+    return interaction.reply({ content: "That battle session has expired.", ephemeral: true });
+  }
+
+  state.createdAt = Date.now();
+
+  if (interaction.isButton()) {
+    if (scope === "invite") {
+      return handleInviteButton(interaction, state, parts[0]);
+    }
+    if (scope === "loadout") {
+      return handleLoadoutButton(interaction, state, parts[0]);
+    }
+    return handleBattleButton(interaction, state, scope);
+  }
+
+  if (interaction.isStringSelectMenu()) {
+    if (scope === "gear") {
+      return handleLoadoutSelect(interaction, state, parts[0]);
+    }
+    if (scope === "item") {
+      return handleBattleItemSelect(interaction, state);
+    }
+  }
+
+  return interaction.reply({ content: "That action is not supported for this battle.", ephemeral: true });
 }
 
 async function handlePvp(interaction) {
@@ -2349,26 +3106,33 @@ async function handlePvp(interaction) {
   if (opponent.id === interaction.user.id || opponent.bot) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Invalid Opponent", description: "Choose another human player for PvP.", visual: "emblem-pvp.svg" }), ephemeral: true });
   }
-  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  const rival = await getOrCreatePlayer(interaction.guildId, opponent.id);
+  const existingBattle = findBattleForUser(interaction.user.id) || findBattleForUser(opponent.id);
+  if (existingBattle) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "PvP Busy", description: "One of these players is already in a pending or active duel.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
   const battleId = crypto.randomUUID();
   const state = {
     id: battleId,
-    title: "PvP Duel",
+    phase: "invite",
     isBoss: false,
-    visual: "pvp-battle.svg",
+    challengerId: interaction.user.id,
+    challengerName: interaction.user.username,
+    opponentId: opponent.id,
+    opponentName: opponent.username,
     arena: pickPvpArena(),
-    playerOne: createBattleFighter({ id: interaction.user.id, name: interaction.user.username, hp: 100, maxHp: 100, skillCycle: getBattleSkillRotation(user) }),
-    playerTwo: createBattleFighter({ id: opponent.id, name: opponent.username, hp: 100, maxHp: 100, skillCycle: getBattleSkillRotation(rival) }),
-    turnId: interaction.user.id,
-    rewardAura: randInt(750, 1250),
-    rewardXp: randInt(220, 340),
-    exchangeCount: 0,
+    createdAt: Date.now(),
   };
   activeBattles.set(battleId, state);
+
   return interaction.reply({
-    ...createBattleEmbed("PvP Duel Started", `${interaction.user.username} challenged ${opponent.username}.\nArena: **${state.arena.name}**\n${state.arena.description}`, "pvp-challenge.svg", state),
-    components: battleButtons(battleId, state.playerOne),
+    ...buildEmbedPayload({
+      title: "PvP Duel Invite",
+      description: `${interaction.user.username} challenged ${opponent.username}.\nArena: **${state.arena.name}**\n${state.arena.description}\n\n${opponent.username} must accept before the duel can begin.`,
+      visual: "pvp-challenge.svg",
+      footer: "After accepting, both players can choose gear and review battle items before the first turn.",
+    }),
+    components: buildInviteComponents(battleId),
   });
 }
 
@@ -2381,8 +3145,10 @@ async function handleBoss(interaction) {
     id: battleId,
     title: "Boss Encounter",
     isBoss: true,
+    phase: "battle",
     visual: boss.visual,
-    playerOne: createBattleFighter({ id: interaction.user.id, name: interaction.user.username, hp: 120, maxHp: 120, skillCycle: getBattleSkillRotation(user) }),
+    createdAt: Date.now(),
+    playerOne: createBattleFighter({ id: interaction.user.id, name: interaction.user.username, hp: 120, maxHp: 120, skillCycle: getBattleSkillRotation(user), loadout: normalizeBattleLoadout(user, user.equippedGear), combatItems: getPlayerCombatInventory(user), unlockedActions: getUnlockedBattleActions(user) }),
     playerTwo: createBattleFighter({ id: `boss:${boss.id}`, name: boss.name, hp: boss.hp, maxHp: boss.hp, skillCycle: ["focus"], critBoost: 0.12 }),
     turnId: interaction.user.id,
     rewardAura: boss.rewardAura,
@@ -2393,14 +3159,24 @@ async function handleBoss(interaction) {
   activeBattles.set(battleId, state);
   return interaction.reply({
     ...createBattleEmbed("Boss Encounter", `You challenged **${boss.name}**.\n${getBossCraftingHint(boss)}`, boss.visual, state),
-    components: battleButtons(battleId, state.playerOne),
+    components: buildBattleComponents(state, state.playerOne),
   });
 }
 
 async function handleSkills(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  const lines = user.skills.map((skillId) => `**${SKILLS[skillId].name}**\n${SKILLS[skillId].description}`).join("\n\n");
-  return interaction.reply(buildEmbedPayload({ title: "Skills", description: lines, visual: "help-skills.svg", footer: "Unlock more skill actions from the shop and crates." }));
+  const skillLines = user.skills.map((skillId) => `**${SKILLS[skillId].name}**\n${SKILLS[skillId].description}`).join("\n\n");
+  return interaction.reply(buildEmbedPayload({
+    title: "Combat Kit",
+    description: "Skills come from items and crates. Attack styles unlock automatically as your rank and prestige rise.",
+    visual: "help-skills.svg",
+    fields: [
+      { name: "Skills", value: skillLines || "No skills unlocked yet." },
+      { name: "Attack Styles", value: formatBattleActionProgress(user) },
+      { name: "Current Loadout", value: `Unlocked attacks: ${formatBattleActionList(getUnlockedBattleActions(user))}` },
+    ],
+    footer: "Rank up and prestige to unlock more attack buttons in PvP and boss fights.",
+  }));
 }
 
 async function handleHelp(interaction) {
@@ -3089,8 +3865,8 @@ function buildCommands() {
     new SlashCommandBuilder().setName("achievements").setDescription("Claim any achievement rewards you have unlocked."),
     new SlashCommandBuilder().setName("quests").setDescription("View your daily quests."),
     new SlashCommandBuilder().setName("crate").setDescription("Open a crate.").addStringOption((option) => option.setName("type").setDescription("Crate type").setRequired(true).addChoices({ name: "common", value: "common" }, { name: "rare", value: "rare" }, { name: "epic", value: "epic" }, { name: "legendary", value: "legendary" })),
-    new SlashCommandBuilder().setName("skills").setDescription("View unlocked combat skills."),
-    new SlashCommandBuilder().setName("pvp").setDescription("Challenge another player to an interactive battle.").addUserOption((option) => option.setName("user").setDescription("Opponent").setRequired(true)),
+    new SlashCommandBuilder().setName("skills").setDescription("View unlocked combat skills and attack styles."),
+    new SlashCommandBuilder().setName("pvp").setDescription("Invite another player into a loadout-based interactive battle.").addUserOption((option) => option.setName("user").setDescription("Opponent").setRequired(true)),
     new SlashCommandBuilder().setName("boss").setDescription("Fight a boss.").addStringOption((option) => option.setName("boss").setDescription("Boss id").addChoices({ name: "ember", value: "ember" }, { name: "oracle", value: "oracle" }, { name: "warden", value: "warden" }, { name: "codex", value: "codex" })),
     new SlashCommandBuilder().setName("leaderboard").setDescription("View top players and clans.").addStringOption((option) => option.setName("category").setDescription("Leaderboard type").setRequired(true).addChoices({ name: "aura", value: "aura" }, { name: "vault", value: "vault" }, { name: "xp", value: "xp" }, { name: "prestige", value: "prestige" }, { name: "clans", value: "clans" })),
     new SlashCommandBuilder().setName("premium").setDescription("Open the premium purchase flow.").addStringOption((option) => option.setName("plan").setDescription("Premium plan").setRequired(true).addChoices(...getPremiumPlanChoices())),
@@ -3100,8 +3876,8 @@ function buildCommands() {
 }
 
 async function routeInteraction(interaction) {
-  if (interaction.isButton()) {
-    return handleBattleInteraction(interaction);
+  if (interaction.isButton() || interaction.isStringSelectMenu()) {
+    return handleBattleComponentInteraction(interaction);
   }
   if (!interaction.isChatInputCommand()) {
     return null;
