@@ -76,6 +76,7 @@ const BATTLE_ACTIONS = Object.freeze({
     style: ButtonStyle.Primary,
     requirement: "Starter style",
     description: "Balanced damage with steady combo growth.",
+    cooldownRounds: 0,
     unlocked: () => true,
   },
   feint: {
@@ -83,6 +84,7 @@ const BATTLE_ACTIONS = Object.freeze({
     style: ButtonStyle.Primary,
     requirement: `Reach ${RANKS[1]?.name || "Harvester"}`,
     description: "Light damage that exposes the target and boosts your next crit.",
+    cooldownRounds: 1,
     unlocked: (user) => user.rankIndex >= 1 || user.prestige >= 1,
   },
   sidestep: {
@@ -90,6 +92,7 @@ const BATTLE_ACTIONS = Object.freeze({
     style: ButtonStyle.Secondary,
     requirement: `Reach ${RANKS[1]?.name || "Harvester"}`,
     description: "Set up an evasive window and sharpen the next punish.",
+    cooldownRounds: 1,
     unlocked: (user) => user.rankIndex >= 1 || user.prestige >= 1,
   },
   heavy: {
@@ -97,6 +100,7 @@ const BATTLE_ACTIONS = Object.freeze({
     style: ButtonStyle.Danger,
     requirement: `Reach ${RANKS[2]?.name || "Warden"}`,
     description: "Big damage with self-exposure if the target survives.",
+    cooldownRounds: 2,
     unlocked: (user) => user.rankIndex >= 2 || user.prestige >= 1,
   },
   hook: {
@@ -104,6 +108,7 @@ const BATTLE_ACTIONS = Object.freeze({
     style: ButtonStyle.Primary,
     requirement: `Reach ${RANKS[2]?.name || "Warden"}`,
     description: "Disrupt the target's combo and leave them weakened.",
+    cooldownRounds: 1,
     unlocked: (user) => user.rankIndex >= 2 || user.prestige >= 1,
   },
   pierce: {
@@ -111,6 +116,7 @@ const BATTLE_ACTIONS = Object.freeze({
     style: ButtonStyle.Success,
     requirement: `Reach ${RANKS[3]?.name || "Oracle"}`,
     description: "Guard-piercing strike that punishes defensive opponents.",
+    cooldownRounds: 1,
     unlocked: (user) => user.rankIndex >= 3 || user.prestige >= 1,
   },
   charge: {
@@ -118,6 +124,7 @@ const BATTLE_ACTIONS = Object.freeze({
     style: ButtonStyle.Success,
     requirement: `Reach ${RANKS[4]?.name || "Mythic"}`,
     description: "Bank momentum for a stronger next damaging action.",
+    cooldownRounds: 1,
     unlocked: (user) => user.rankIndex >= 4 || user.prestige >= 1,
   },
   disorient: {
@@ -125,6 +132,7 @@ const BATTLE_ACTIONS = Object.freeze({
     style: ButtonStyle.Secondary,
     requirement: `Reach ${RANKS[5]?.name || "Ascendant"}`,
     description: "Break guard, drain combo, and throw the foe off rhythm.",
+    cooldownRounds: 2,
     unlocked: (user) => user.rankIndex >= 5 || user.prestige >= 1,
   },
   blitz: {
@@ -132,8 +140,15 @@ const BATTLE_ACTIONS = Object.freeze({
     style: ButtonStyle.Secondary,
     requirement: "Reach Prestige 1",
     description: "Two rapid hits that can break through a weakened enemy.",
+    cooldownRounds: 2,
     unlocked: (user) => user.prestige >= 1,
   },
+});
+
+const BATTLE_SPECIAL_ACTIONS = Object.freeze({
+  skill: { label: "Skill", cooldownRounds: 2 },
+  finish: { label: "Finisher", cooldownRounds: 2 },
+  guard: { label: "Guard", cooldownRounds: 0 },
 });
 
 function randInt(min, max) {
@@ -286,7 +301,7 @@ function getCombatItem(itemId) {
 }
 
 function getBattleAction(actionId) {
-  return BATTLE_ACTIONS[actionId] || null;
+  return BATTLE_ACTIONS[actionId] || BATTLE_SPECIAL_ACTIONS[actionId] || null;
 }
 
 function getUnlockedBattleActions(user) {
@@ -498,6 +513,58 @@ function findBattleForUser(userId) {
     }
   }
   return null;
+}
+
+function getBattleActionCooldownRemaining(fighter, actionId) {
+  const nextAvailableTurn = fighter?.actionCooldowns?.[actionId] || 0;
+  const turnsTaken = fighter?.turnsTaken || 0;
+  return Math.max(0, nextAvailableTurn - turnsTaken);
+}
+
+function getBattleActionCooldownLabel(fighter, actionId) {
+  const remaining = getBattleActionCooldownRemaining(fighter, actionId);
+  if (remaining <= 0) {
+    return "";
+  }
+  return `${remaining}r`;
+}
+
+function isBattleActionOnCooldown(state, fighter, actionId) {
+  if (state?.isBoss) {
+    return false;
+  }
+  return getBattleActionCooldownRemaining(fighter, actionId) > 0;
+}
+
+function applyBattleActionCooldown(state, fighter, actionId) {
+  if (state?.isBoss) {
+    return;
+  }
+  const action = getBattleAction(actionId);
+  const cooldownRounds = action?.cooldownRounds || 0;
+  if (cooldownRounds <= 0) {
+    return;
+  }
+  fighter.actionCooldowns = fighter.actionCooldowns || {};
+  fighter.actionCooldowns[actionId] = (fighter.turnsTaken || 0) + cooldownRounds + 1;
+}
+
+function trackBattleTurn(fighter) {
+  fighter.turnsTaken = (fighter.turnsTaken || 0) + 1;
+}
+
+function summarizeBattleCooldowns(fighter) {
+  return Object.keys(fighter?.actionCooldowns || {})
+    .map((actionId) => {
+      const remaining = getBattleActionCooldownRemaining(fighter, actionId);
+      if (remaining <= 0) {
+        return null;
+      }
+      const action = getBattleAction(actionId);
+      return `${action?.label || actionId} ${remaining}r`;
+    })
+    .filter(Boolean)
+    .join(", ");
 }
 
 function formatEffectValue(value) {
@@ -2180,6 +2247,8 @@ function createBattleFighter({ id, name, hp, maxHp, skillCycle, critBoost = 0, l
     gearBonuses,
     combatItems: { ...combatItems },
     unlockedActions: unlockedActions.length ? [...unlockedActions] : ["strike"],
+    actionCooldowns: {},
+    turnsTaken: 0,
     combo: 0,
     guard: false,
     counterStance: false,
@@ -2227,6 +2296,7 @@ function getBattleStatuses(fighter) {
 }
 
 function getBattleFighterField(fighter) {
+  const cooldownSummary = summarizeBattleCooldowns(fighter);
   return [
     `HP: ${fighter.hp}/${fighter.maxHp}`,
     progressBar(fighter.hp, fighter.maxHp, 10),
@@ -2235,6 +2305,7 @@ function getBattleFighterField(fighter) {
     `Gear: ${Object.values(cloneLoadout(fighter.loadout)).map((gearId) => getInventoryLabel(gearId || "None")).join(" | ")}`,
     `Items: ${summarizeCombatInventory(fighter.combatItems)}`,
     `State: ${getBattleStatuses(fighter)}`,
+    `Cooldowns: ${cooldownSummary || "Ready"}`,
   ].join("\n");
 }
 
@@ -2606,18 +2677,29 @@ function resolveArenaPulse(state) {
 
 function buildBattleComponents(state, fighter) {
   const canUseSkill = Boolean(fighter?.skill);
-  const skillLabel = fighter?.skill?.name ? `Skill: ${fighter.skill.name}` : "Skill";
+  const skillCooldownLabel = getBattleActionCooldownLabel(fighter, "skill");
+  const finishCooldownLabel = getBattleActionCooldownLabel(fighter, "finish");
+  const guardCooldownLabel = getBattleActionCooldownLabel(fighter, "guard");
+  const skillLabelBase = fighter?.skill?.name ? `Skill: ${fighter.skill.name}` : "Skill";
+  const skillLabel = skillCooldownLabel ? `${skillLabelBase} ${skillCooldownLabel}` : skillLabelBase;
   const actionButtons = (fighter?.unlockedActions || ["strike"])
     .map((actionId) => ({ actionId, action: getBattleAction(actionId) }))
     .filter(({ action }) => Boolean(action))
-    .map(({ actionId, action }) => new ButtonBuilder().setCustomId(`${state.id}:${actionId}`).setLabel(action.label).setStyle(action.style));
+    .map(({ actionId, action }) => {
+      const cooldownLabel = getBattleActionCooldownLabel(fighter, actionId);
+      return new ButtonBuilder()
+        .setCustomId(`${state.id}:${actionId}`)
+        .setLabel(cooldownLabel ? `${action.label} ${cooldownLabel}` : action.label)
+        .setStyle(action.style)
+        .setDisabled(isBattleActionOnCooldown(state, fighter, actionId));
+    });
   const actionRows = chunkArray(actionButtons, 5).map((rowButtons) => new ActionRowBuilder().addComponents(...rowButtons));
   const components = [
     ...actionRows,
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${state.id}:skill`).setLabel(skillLabel.slice(0, 80)).setStyle(ButtonStyle.Success).setDisabled(!canUseSkill),
-      new ButtonBuilder().setCustomId(`${state.id}:guard`).setLabel("Guard").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`${state.id}:finish`).setLabel("Finisher").setStyle(ButtonStyle.Danger)
+      new ButtonBuilder().setCustomId(`${state.id}:skill`).setLabel(skillLabel.slice(0, 80)).setStyle(ButtonStyle.Success).setDisabled(!canUseSkill || isBattleActionOnCooldown(state, fighter, "skill")),
+      new ButtonBuilder().setCustomId(`${state.id}:guard`).setLabel(guardCooldownLabel ? `Guard ${guardCooldownLabel}` : "Guard").setStyle(ButtonStyle.Secondary).setDisabled(isBattleActionOnCooldown(state, fighter, "guard")),
+      new ButtonBuilder().setCustomId(`${state.id}:finish`).setLabel(finishCooldownLabel ? `Finisher ${finishCooldownLabel}` : "Finisher").setStyle(ButtonStyle.Danger).setDisabled(isBattleActionOnCooldown(state, fighter, "finish"))
     ),
   ];
 
@@ -3028,8 +3110,12 @@ async function handleBattleButton(interaction, state, action) {
 
   const acting = state.playerOne.id === interaction.user.id ? state.playerOne : state.playerTwo;
   const defending = acting.id === state.playerOne.id ? state.playerTwo : state.playerOne;
-  if (getBattleAction(action) && !acting.unlockedActions.includes(action)) {
+  if (BATTLE_ACTIONS[action] && !acting.unlockedActions.includes(action)) {
     return interaction.reply({ content: "That attack style is still locked for your current progression.", ephemeral: true });
+  }
+  if (isBattleActionOnCooldown(state, acting, action)) {
+    const remaining = getBattleActionCooldownRemaining(acting, action);
+    return interaction.reply({ content: `${getBattleAction(action)?.label || "That move"} is on cooldown for ${remaining} more round${remaining === 1 ? "" : "s"}.`, ephemeral: true });
   }
   hydrateBattleSkill(acting);
   hydrateBattleSkill(defending);
@@ -3041,6 +3127,8 @@ async function handleBattleButton(interaction, state, action) {
   }
 
   const playerResult = runTurn(acting, defending, action, state);
+  applyBattleActionCooldown(state, acting, action);
+  trackBattleTurn(acting);
   summary = summary ? `${summary}\n${playerResult.text}` : playerResult.text;
   return advanceBattle(interaction, state, acting, defending, summary);
 }
