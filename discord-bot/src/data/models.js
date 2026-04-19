@@ -100,6 +100,8 @@ const userSchema = new mongoose.Schema(
       robLosses: { type: Number, default: 0 },
       pvpWins: { type: Number, default: 0 },
       pvpLosses: { type: Number, default: 0 },
+      pvpStreak: { type: Number, default: 0 },
+      bestPvpStreak: { type: Number, default: 0 },
       bossWins: { type: Number, default: 0 },
       bossLosses: { type: Number, default: 0 },
       vaultDeposit: { type: Number, default: 0 },

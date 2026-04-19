@@ -5,7 +5,7 @@ const express = require("express");
 const mongoose = require("mongoose");
 const { getRazorpayConfig, processWebhookEvent, verifyWebhookSignature } = require("./src/billing/razorpay");
 const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigration");
-const { buildCommands, routeInteraction, startReminderLoop } = require("./src/game/service");
+const { buildCommands, routeInteraction, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
 
 const requiredEnv = ["DISCORD_TOKEN", "DISCORD_CLIENT_ID", "MONGODB_URI"];
 
@@ -153,6 +153,17 @@ async function main() {
   client.once("ready", () => {
     console.log(`Bot ready as ${client.user.tag}`);
     startReminderLoop(client);
+  });
+
+  client.on("guildCreate", async (guild) => {
+    try {
+      const channel = await sendServerSetupMessage(guild);
+      console.log(channel
+        ? `Posted setup guide in ${guild.name} (#${channel.name}).`
+        : `Joined ${guild.name}, but no writable setup channel was found.`);
+    } catch (error) {
+      console.error(`Failed to post setup guide in ${guild.name}:`, error);
+    }
   });
 
   client.on("interactionCreate", async (interaction) => {

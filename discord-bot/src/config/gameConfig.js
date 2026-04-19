@@ -138,20 +138,20 @@ const SHOP_ITEMS = [
 const SKILLS = {
   slash: {
     name: "Slash",
-    description: "Deal 18-28 damage.",
+    description: "Deal 18-28 damage. At 2+ combo, inflicts bleed.",
     minDamage: 18,
     maxDamage: 28,
   },
   guard_break: {
     name: "Guard Break",
-    description: "Deal 14-22 damage and pierce guard.",
+    description: "Deal 14-22 damage, pierce guard, and expose the target.",
     minDamage: 14,
     maxDamage: 22,
     pierceGuard: true,
   },
   focus: {
     name: "Focus",
-    description: "Gain crit chance and heal 8 HP.",
+    description: "Heal 8 HP, gain crit chance, and clear exposed or bleed.",
     heal: 8,
     critBoost: 0.2,
   },

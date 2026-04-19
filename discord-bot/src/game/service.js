@@ -24,12 +24,46 @@ const PREMIUM_DAILY_MULTIPLIER = 1.25;
 const REMINDER_ACTIONS = Object.freeze({
   spin: { label: "Spin", command: "/spin" },
   work: { label: "Work", command: "/work" },
+  mine: { label: "Mine", command: "/mine" },
   coinflip: { label: "Coinflip", command: "/coinflip" },
+  rob: { label: "Rob", command: "/rob" },
   harvest: { label: "Harvest", command: "/garden harvest" },
   daily: { label: "Daily", command: "/daily" },
+  authority: { label: "Authority", command: "/authority" },
 });
 const REMINDER_ACTION_CHOICES = Object.entries(REMINDER_ACTIONS).map(([value, action]) => ({ name: action.label, value }));
 const REMINDER_POLL_MS = 60 * 1000;
+const PVP_ARENAS = Object.freeze([
+  {
+    id: "bloodmoon",
+    name: "Bloodmoon Ring",
+    description: "Crit chains are stronger here, and bleed effects bite deeper.",
+    critBonus: 0.05,
+    bleedBonus: 3,
+  },
+  {
+    id: "citadel",
+    name: "Citadel Steps",
+    description: "Guarding is stronger and counters hit harder than usual.",
+    guardReduction: 0.38,
+    counterBonus: 3,
+  },
+  {
+    id: "tempest",
+    name: "Tempest Cage",
+    description: "Every third exchange, the storm shocks the weaker fighter.",
+    hazardEvery: 3,
+    hazardDamage: [7, 11],
+    exposeOnHazard: 1,
+  },
+  {
+    id: "pit",
+    name: "Execution Pit",
+    description: "Finishers become deadlier and can connect earlier.",
+    finisherThreshold: 0.45,
+    finisherBonusDamage: 8,
+  },
+]);
 
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -43,6 +77,14 @@ function formatNumber(value) {
   return Intl.NumberFormat("en-US").format(Math.floor(value));
 }
 
+function getPvpStreak(user) {
+  return user?.stats?.pvpStreak || 0;
+}
+
+function getBestPvpStreak(user) {
+  return user?.stats?.bestPvpStreak || 0;
+}
+
 function mapEntries(mapLike) {
   return mapLike?.entries ? [...mapLike.entries()] : Object.entries(mapLike || {});
 }
@@ -51,6 +93,11 @@ function progressBar(current, total, size = 12) {
   const ratio = total <= 0 ? 1 : clamp(current / total, 0, 1);
   const filled = Math.round(ratio * size);
   return `${"#".repeat(filled)}${"-".repeat(size - filled)} ${Math.round(ratio * 100)}%`;
+}
+
+function pickPvpArena() {
+  const arena = PVP_ARENAS[randInt(0, PVP_ARENAS.length - 1)];
+  return { ...arena };
 }
 
 function getItem(itemId) {
@@ -444,16 +491,39 @@ function getReminderReadyTimestamp(user, action) {
   if (action === "work" && user.lastWorkAt) {
     return user.lastWorkAt.getTime() + COOLDOWNS.workMs;
   }
+  if (action === "mine" && user.lastMineAt) {
+    return user.lastMineAt.getTime() + COOLDOWNS.mineMs;
+  }
   if (action === "coinflip" && user.lastCoinflipAt) {
     return user.lastCoinflipAt.getTime() + COOLDOWNS.coinflipMs;
   }
+  if (action === "rob" && user.lastRobAt) {
+    return user.lastRobAt.getTime() + COOLDOWNS.robMs;
+  }
   if (action === "daily" && user.lastDailyAt) {
     return user.lastDailyAt.getTime() + COOLDOWNS.dailyMs;
+  }
+  if (action === "authority" && user.lastAuthorityAt) {
+    return user.lastAuthorityAt.getTime() + COOLDOWNS.authorityMs;
   }
   if (action === "harvest") {
     return getHarvestReadyAt(user);
   }
   return null;
+}
+
+function getReminderArmingNote(user, action) {
+  const readyAt = getReminderReadyTimestamp(user, action);
+  if (readyAt && readyAt > Date.now()) {
+    return `Next ping in about ${humanizeMs(readyAt - Date.now())}.`;
+  }
+  if (readyAt) {
+    return "That action is already ready, so the next reminder should go out on the next poll.";
+  }
+  if (action === "harvest") {
+    return "Plant something first, then the reminder will ping you when a crop is ready.";
+  }
+  return `Use ${REMINDER_ACTIONS[action].command} once to start its cooldown cycle, then the reminder can tag you when it is ready again.`;
 }
 
 function buildBalancePayload(user, targetUser) {
@@ -548,6 +618,7 @@ async function checkReminderQueue(client) {
     }
 
     if (changed) {
+      user.markModified("reminders");
       await user.save();
     }
   }
@@ -615,6 +686,7 @@ function buildProfileEmbed(user, targetUser) {
       { name: "Daily Streak", value: `${user.streak} days`, inline: true },
       { name: "Rank Progress", value: `${progressBar(rankProgressCurrent, rankProgressTotal)}\n${formatNumber(rankProgressCurrent)} / ${formatNumber(rankProgressTotal)} XP` },
       { name: "Battle Record", value: `PvP ${user.stats.pvpWins}-${user.stats.pvpLosses} | Boss ${user.stats.bossWins}-${user.stats.bossLosses}` },
+      { name: "PvP Streak", value: `${formatNumber(getPvpStreak(user))} current | ${formatNumber(getBestPvpStreak(user))} best`, inline: true },
     ],
     footer: "Ranks can go down if your XP drops below the current tier threshold.",
   });
@@ -626,11 +698,11 @@ const HELP_SECTIONS = [
     name: "Getting Started",
     visual: "help-core.svg",
     commands: [
-      { name: "/start", description: "Create your save and unlock the game." },
+      { name: "/start", description: "Create your save and open the quick-start guide." },
       { name: "/profile [user]", description: "View your or another player's profile." },
       { name: "/stats [user]", description: "See a fuller breakdown of player activity." },
       { name: "/event", description: "View the current rotating world event." },
-      { name: "/setup", description: "See the fastest way to get your account rolling." },
+      { name: "/setup", description: "Admin/mod command to repost the server setup guide." },
       { name: "/help", description: "Browse every command grouped by category." },
     ],
   },
@@ -732,6 +804,93 @@ function getHelpSection(categoryId) {
   return HELP_SECTIONS.find((section) => section.id === categoryId) || null;
 }
 
+function getOfficialServerUrl() {
+  const value = process.env.OFFICIAL_SERVER_URL;
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function hasSetupAccess(memberPermissions) {
+  if (!memberPermissions) {
+    return false;
+  }
+  return memberPermissions.has(PermissionsBitField.Flags.Administrator)
+    || memberPermissions.has(PermissionsBitField.Flags.ManageGuild)
+    || memberPermissions.has(PermissionsBitField.Flags.ManageMessages)
+    || memberPermissions.has(PermissionsBitField.Flags.ModerateMembers);
+}
+
+function buildOfficialServerValue() {
+  return getOfficialServerUrl() || "Not configured yet. Set OFFICIAL_SERVER_URL in `.env`.";
+}
+
+function buildPlayerStartPayload(user) {
+  return buildEmbedPayload({
+    title: "Aura Garden Online",
+    description: `Your save is ready with ${formatNumber(user.aura)} starter aura. Here is the fastest way to get moving.`,
+    visual: "help-core.svg",
+    fields: [
+      { name: "1. Build Income", value: "Run `/daily`, `/work`, `/spin`, and `/mine` whenever they are ready." },
+      { name: "2. Track Progress", value: "Check `/profile`, `/rank`, `/quests`, and `/achievements` to keep your build growing." },
+      { name: "3. Expand Systems", value: "Use `/garden`, `/craft`, `/gear`, and `/shop` to stack more long-term power." },
+      { name: "4. Enter Combat", value: "Try `/boss` and `/pvp` once your economy and skills are in a good spot." },
+      { name: "Need Commands?", value: "Open `/help` to browse the full command list by category." },
+    ],
+    footer: "Use /help if you want the full command list.",
+  });
+}
+
+function buildServerSetupPayload(guildName) {
+  return buildEmbedPayload({
+    title: "Server Setup Guide",
+    description: `Thanks for adding Aura Garden to **${guildName}**. Use this guide to get the server ready fast.`,
+    visual: "help-core.svg",
+    fields: [
+      { name: "Player Onboarding", value: "Members should run `/start` to create their save and see the quick-start path." },
+      { name: "Best First Commands", value: "`/daily`, `/work`, `/spin`, `/mine`, `/profile`, `/help`" },
+      { name: "Admin Tools", value: "Admins or moderators can run `/setup` any time to repost this guide." },
+      { name: "Official Server", value: buildOfficialServerValue() },
+    ],
+    footer: "Tip: post this in a welcome or bot-commands channel so new members can find it easily.",
+  });
+}
+
+async function sendServerSetupMessage(guild, preferredChannel = null) {
+  const payload = buildServerSetupPayload(guild.name);
+  const candidates = [];
+
+  if (preferredChannel?.isTextBased?.() && preferredChannel.send) {
+    candidates.push(preferredChannel);
+  }
+  if (guild.systemChannel?.isTextBased?.() && guild.systemChannel.send) {
+    candidates.push(guild.systemChannel);
+  }
+
+  if (!candidates.length) {
+    const fetchedChannels = await guild.channels.fetch().catch(() => null);
+    if (fetchedChannels) {
+      const textChannels = [...fetchedChannels.values()]
+        .filter((channel) => channel?.isTextBased?.() && channel.send && !channel.isThread?.())
+        .sort((left, right) => (left.rawPosition || 0) - (right.rawPosition || 0));
+      candidates.push(...textChannels);
+    }
+  }
+
+  const uniqueCandidates = [...new Set(candidates.filter(Boolean))];
+  for (const channel of uniqueCandidates) {
+    const permissions = channel.permissionsFor(guild.client.user);
+    if (permissions && permissions.has(PermissionsBitField.Flags.ViewChannel) && permissions.has(PermissionsBitField.Flags.SendMessages)) {
+      await channel.send(payload);
+      return channel;
+    }
+  }
+
+  return null;
+}
+
 function getAvailableAchievements(user) {
   return ACHIEVEMENTS.filter((achievement) => !user.claimedAchievements.includes(achievement.id) && achievement.metric(user) >= achievement.goal);
 }
@@ -821,15 +980,7 @@ async function handleStart(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   await user.save();
   return interaction.reply({
-    ...buildEmbedPayload({
-      title: "Aura Garden Online",
-      description: `Your save is ready. You started with ${formatNumber(user.aura)} aura, access to daily rewards, vaulting, ranks, and combat.`,
-      visual: "help-core.svg",
-      fields: [
-        { name: "Try Next", value: "`/work`, `/spin`, `/daily`, `/profile`" },
-        { name: "Core Loop", value: "Farm aura, level XP, rank up, prestige, then climb the leaderboard." },
-      ],
-    }),
+    ...buildPlayerStartPayload(user),
     ephemeral: true,
   });
 }
@@ -863,6 +1014,7 @@ async function handleStats(interaction) {
       { name: "Shop Buys", value: `${formatNumber(user.stats.shopBuys)}`, inline: true },
       { name: "PvP Record", value: `${user.stats.pvpWins}W - ${user.stats.pvpLosses}L`, inline: true },
       { name: "Boss Record", value: `${user.stats.bossWins}W - ${user.stats.bossLosses}L`, inline: true },
+      { name: "PvP Streak", value: `${formatNumber(getPvpStreak(user))} current | ${formatNumber(getBestPvpStreak(user))} best`, inline: true },
       { name: "Battles Played", value: `${formatNumber(totalBattles)}`, inline: true },
       { name: "Vault Deposited", value: `${formatNumber(user.stats.vaultDeposit)} aura`, inline: true },
       { name: "Owned Perks", value: `${formatNumber(user.ownedPerks.length)}`, inline: true },
@@ -1246,6 +1398,7 @@ async function handleReminders(interaction) {
     user.reminders.guildId = interaction.guildId;
     user.reminders.channelId = interaction.channelId;
     user.reminders.lastNotifiedAt.delete(action);
+    user.markModified("reminders");
     await user.save();
 
     return interaction.reply(buildEmbedPayload({
@@ -1255,6 +1408,7 @@ async function handleReminders(interaction) {
       fields: [
         { name: "Action", value: REMINDER_ACTIONS[action].command, inline: true },
         { name: "Channel", value: `<#${interaction.channelId}>`, inline: true },
+        { name: "Status", value: getReminderArmingNote(user, action) },
       ],
     }));
   }
@@ -1265,6 +1419,7 @@ async function handleReminders(interaction) {
     user.reminders.channelId = null;
     user.reminders.guildId = null;
   }
+  user.markModified("reminders");
   await user.save();
 
   return interaction.reply(buildEmbedPayload({
@@ -1692,80 +1847,319 @@ async function handleCrate(interaction) {
   }));
 }
 
-function battleButtons(prefix, canUseSkill = true) {
+function getBattleSkillRotation(user) {
+  const ownedSkills = Array.from(new Set((user.skills || []).filter((skillId) => SKILLS[skillId])));
+  const unlocked = ownedSkills.filter((skillId) => skillId !== "focus");
+  return unlocked.length ? [...unlocked, "focus"] : ["focus"];
+}
+
+function hydrateBattleSkill(fighter) {
+  const fallbackCycle = fighter.skill?.id ? [fighter.skill.id] : ["focus"];
+  fighter.skillCycle = fighter.skillCycle?.length ? fighter.skillCycle.filter((skillId) => SKILLS[skillId]) : fallbackCycle;
+  fighter.skillIndex = clamp(fighter.skillIndex || 0, 0, Math.max(0, fighter.skillCycle.length - 1));
+  const skillId = fighter.skillCycle[fighter.skillIndex] || "focus";
+  fighter.skill = { id: skillId, ...SKILLS[skillId] };
+}
+
+function rotateBattleSkill(fighter) {
+  if (!fighter.skillCycle?.length || fighter.skillCycle.length === 1) {
+    hydrateBattleSkill(fighter);
+    return;
+  }
+  fighter.skillIndex = (fighter.skillIndex + 1) % fighter.skillCycle.length;
+  hydrateBattleSkill(fighter);
+}
+
+function createBattleFighter({ id, name, hp, maxHp, skillCycle, critBoost = 0 }) {
+  const fighter = {
+    id,
+    name,
+    hp,
+    maxHp,
+    skillCycle: skillCycle?.length ? skillCycle : ["focus"],
+    skillIndex: 0,
+    skill: null,
+    critBoost,
+    combo: 0,
+    guard: false,
+    counterStance: false,
+    exposedTurns: 0,
+    bleedTurns: 0,
+    bleedDamage: 0,
+  };
+  if (fighter.skillCycle.length > 1) {
+    fighter.skillIndex = randInt(0, fighter.skillCycle.length - 1);
+  }
+  hydrateBattleSkill(fighter);
+  return fighter;
+}
+
+function getBattleStatuses(fighter) {
+  const statuses = [];
+  if (fighter.combo > 0) {
+    statuses.push(`Combo ${fighter.combo}`);
+  }
+  if (fighter.guard) {
+    statuses.push("Guarded");
+  }
+  if (fighter.counterStance) {
+    statuses.push("Counter Ready");
+  }
+  if (fighter.exposedTurns > 0) {
+    statuses.push(`Exposed x${fighter.exposedTurns}`);
+  }
+  if (fighter.bleedTurns > 0) {
+    statuses.push(`Bleeding ${fighter.bleedDamage}/turn`);
+  }
+  return statuses.length ? statuses.join(" | ") : "Stable";
+}
+
+function getBattleFighterField(fighter) {
+  return [
+    `HP: ${fighter.hp}/${fighter.maxHp}`,
+    progressBar(fighter.hp, fighter.maxHp, 10),
+    `Skill: ${fighter.skill?.name || "Focus"}`,
+    `State: ${getBattleStatuses(fighter)}`,
+  ].join("\n");
+}
+
+function resolveTurnStart(fighter) {
+  const notes = [];
+  if (fighter.bleedTurns > 0 && fighter.bleedDamage > 0) {
+    const damage = Math.min(fighter.hp, fighter.bleedDamage);
+    fighter.hp = clamp(fighter.hp - damage, 0, fighter.maxHp);
+    fighter.bleedTurns -= 1;
+    if (fighter.bleedTurns <= 0) {
+      fighter.bleedDamage = 0;
+    }
+    notes.push(`${fighter.name} bleeds for ${damage} damage.`);
+  }
+  return { text: notes.join("\n"), defeated: fighter.hp <= 0 };
+}
+
+function resolveHit(attacker, defender, baseDamage, options = {}) {
+  const {
+    actionLabel = "struck",
+    critChance = 0.1,
+    critMultiplier = 1.45,
+    pierceGuard = false,
+    guardReduction = 0.5,
+    exposeMultiplier = 1.3,
+    consumeCritBoost = true,
+    counterBonus = 0,
+  } = options;
+
+  let damage = baseDamage;
+  const notes = [];
+  const totalCritChance = clamp(critChance + (attacker.critBoost || 0) + Math.min(attacker.combo || 0, 4) * 0.05, 0, 0.8);
+  const crit = Math.random() < totalCritChance;
+  if (crit) {
+    damage = Math.floor(damage * critMultiplier);
+    notes.push("critical hit");
+  }
+
+  if (defender.exposedTurns > 0) {
+    damage = Math.floor(damage * exposeMultiplier);
+    defender.exposedTurns = Math.max(0, defender.exposedTurns - 1);
+    notes.push(`${defender.name} was exposed`);
+  }
+
+  let guardTriggered = false;
+  if (defender.guard && !pierceGuard) {
+    damage = Math.floor(damage * guardReduction);
+    guardTriggered = true;
+    notes.push(`${defender.name} blocked part of it`);
+  } else if (defender.guard && pierceGuard) {
+    notes.push(`${defender.name}'s guard was shattered`);
+  }
+
+  damage = Math.max(0, damage);
+  defender.hp = clamp(defender.hp - damage, 0, defender.maxHp);
+
+  let counterDamage = 0;
+  if (guardTriggered && defender.counterStance && defender.hp > 0) {
+    counterDamage = randInt(5, 9) + counterBonus;
+    attacker.hp = clamp(attacker.hp - counterDamage, 0, attacker.maxHp);
+    attacker.combo = Math.max(0, (attacker.combo || 0) - 1);
+    notes.push(`${defender.name} countered for ${counterDamage}`);
+  }
+
+  defender.guard = false;
+  defender.counterStance = false;
+  if (consumeCritBoost) {
+    attacker.critBoost = 0;
+  }
+
+  return {
+    damage,
+    counterDamage,
+    crit,
+    text: `${attacker.name} ${actionLabel} for ${damage} damage${notes.length ? ` (${notes.join(", ")})` : ""}.`,
+  };
+}
+
+function runTurn(attacker, defender, action, state) {
+  let damage = 0;
+  let text = "";
+  const arena = state?.arena || null;
+  const arenaCritBonus = arena?.critBonus || 0;
+  const arenaGuardReduction = arena?.guardReduction ?? 0.5;
+  const arenaCounterBonus = arena?.counterBonus || 0;
+
+  if (action === "guard") {
+    attacker.guard = true;
+    attacker.counterStance = true;
+    return { damage, text: `${attacker.name} raised their guard and prepared a counter${arena?.counterBonus ? " in the heavy arena" : ""}.` };
+  }
+
+  if (action === "skill") {
+    const skill = attacker.skill || { id: "focus", ...SKILLS.focus };
+    if (skill.heal) {
+      const cleared = [];
+      attacker.hp = clamp(attacker.hp + skill.heal, 0, attacker.maxHp);
+      attacker.critBoost = clamp((attacker.critBoost || 0) + (skill.critBoost || 0), 0, 0.6);
+      attacker.combo = clamp((attacker.combo || 0) + 1, 0, 4);
+      if (attacker.bleedTurns > 0) {
+        attacker.bleedTurns = 0;
+        attacker.bleedDamage = 0;
+        cleared.push("bleed");
+      }
+      if (attacker.exposedTurns > 0) {
+        attacker.exposedTurns = 0;
+        cleared.push("exposed");
+      }
+      rotateBattleSkill(attacker);
+      return {
+        damage,
+        text: `${attacker.name} used ${skill.name}, healed ${skill.heal}, and sharpened their next strike${cleared.length ? ` while clearing ${cleared.join(" and ")}` : ""}.`,
+      };
+    }
+
+    const comboBeforeHit = attacker.combo || 0;
+    const hit = resolveHit(attacker, defender, randInt(skill.minDamage, skill.maxDamage), {
+      actionLabel: `used ${skill.name}`,
+      critChance: 0.12 + arenaCritBonus,
+      pierceGuard: Boolean(skill.pierceGuard),
+      guardReduction: arena?.guardReduction ?? 0.45,
+      counterBonus: arenaCounterBonus,
+    });
+
+    damage = hit.damage;
+    text = hit.text;
+    attacker.combo = clamp(comboBeforeHit + 1, 0, 4);
+
+    if (skill.id === "slash" && comboBeforeHit >= 2 && defender.hp > 0) {
+      defender.bleedTurns = Math.max(defender.bleedTurns, 2);
+      defender.bleedDamage = Math.max(defender.bleedDamage, 6 + comboBeforeHit + (arena?.bleedBonus || 0));
+      text += ` ${defender.name} started bleeding.`;
+    }
+
+    if (skill.id === "guard_break") {
+      defender.exposedTurns = Math.max(defender.exposedTurns, 2);
+      text += ` ${defender.name} is exposed for the next exchanges.`;
+    }
+
+    rotateBattleSkill(attacker);
+    return { damage, text };
+  }
+
+  if (action === "finish") {
+    const comboBonus = (attacker.combo || 0) * 6;
+    damage = randInt(20, 34) + comboBonus + (arena?.finisherBonusDamage || 0);
+    if (defender.hp > defender.maxHp * (arena?.finisherThreshold || 0.35)) {
+      damage = Math.floor(damage * 0.55);
+      const hit = resolveHit(attacker, defender, damage, {
+        actionLabel: "went for an early finisher",
+        critChance: 0.08 + arenaCritBonus,
+        critMultiplier: 1.35,
+        guardReduction: arenaGuardReduction,
+        counterBonus: arenaCounterBonus,
+      });
+      attacker.combo = 0;
+      return { damage: hit.damage, text: `${hit.text} The timing was not ideal.` };
+    }
+
+    const hit = resolveHit(attacker, defender, damage, {
+      actionLabel: "landed a finisher",
+      critChance: 0.1 + arenaCritBonus,
+      critMultiplier: 1.5,
+      guardReduction: arenaGuardReduction,
+      counterBonus: arenaCounterBonus,
+    });
+    attacker.combo = 0;
+    return { damage: hit.damage, text: hit.text };
+  }
+
+  const comboBeforeHit = attacker.combo || 0;
+  const hit = resolveHit(attacker, defender, randInt(10, 18) + comboBeforeHit * 2, {
+    actionLabel: "attacked",
+    critChance: 0.1 + arenaCritBonus,
+    critMultiplier: 1.4,
+    guardReduction: arenaGuardReduction,
+    counterBonus: arenaCounterBonus,
+  });
+  attacker.combo = clamp(comboBeforeHit + 1, 0, 4);
+  return { damage: hit.damage, text: hit.text };
+}
+
+function resolveArenaPulse(state) {
+  if (state.isBoss || !state.arena?.hazardEvery) {
+    return { text: "", winnerId: null };
+  }
+  if ((state.exchangeCount || 0) % state.arena.hazardEvery !== 0) {
+    return { text: "", winnerId: null };
+  }
+
+  const target = state.playerOne.hp === state.playerTwo.hp
+    ? (Math.random() < 0.5 ? state.playerOne : state.playerTwo)
+    : (state.playerOne.hp < state.playerTwo.hp ? state.playerOne : state.playerTwo);
+  const other = target.id === state.playerOne.id ? state.playerTwo : state.playerOne;
+  const damage = randInt(state.arena.hazardDamage[0], state.arena.hazardDamage[1]);
+  target.hp = clamp(target.hp - damage, 0, target.maxHp);
+  if (target.hp > 0 && state.arena.exposeOnHazard) {
+    target.exposedTurns = Math.max(target.exposedTurns, state.arena.exposeOnHazard);
+  }
+
+  return {
+    text: `${state.arena.name} surged and struck ${target.name} for ${damage} damage${state.arena.exposeOnHazard && target.hp > 0 ? ", leaving them exposed" : ""}.`,
+    winnerId: target.hp <= 0 ? other.id : null,
+  };
+}
+
+function battleButtons(prefix, fighter) {
+  const canUseSkill = Boolean(fighter?.skill);
+  const skillLabel = fighter?.skill?.name ? `Skill: ${fighter.skill.name}` : "Skill";
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`${prefix}:attack`).setLabel("Attack").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`${prefix}:guard`).setLabel("Guard").setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`${prefix}:skill`).setLabel("Skill").setStyle(ButtonStyle.Success).setDisabled(!canUseSkill),
-      new ButtonBuilder().setCustomId(`${prefix}:finish`).setLabel("Finish").setStyle(ButtonStyle.Danger)
+      new ButtonBuilder().setCustomId(`${prefix}:skill`).setLabel(skillLabel.slice(0, 80)).setStyle(ButtonStyle.Success).setDisabled(!canUseSkill),
+      new ButtonBuilder().setCustomId(`${prefix}:finish`).setLabel("Finisher").setStyle(ButtonStyle.Danger)
     ),
   ];
 }
 
-function pickBattleSkill(user) {
-  const unlocked = user.skills.filter((skillId) => skillId !== "focus");
-  return unlocked.length ? SKILLS[unlocked[0]] : SKILLS.focus;
-}
-
-function runTurn(attacker, defender, action) {
-  let damage = 0;
-  let text = "";
-
-  if (action === "guard") {
-    attacker.guard = true;
-    return { damage, text: `${attacker.name} braced for the next hit.` };
-  }
-
-  if (action === "skill") {
-    const skill = attacker.skill;
-    if (skill.heal) {
-      attacker.hp = clamp(attacker.hp + skill.heal, 0, attacker.maxHp);
-      attacker.critBoost = clamp((attacker.critBoost || 0) + (skill.critBoost || 0), 0, 0.6);
-      return { damage, text: `${attacker.name} focused, healed ${skill.heal}, and sharpened their next strike.` };
-    }
-    damage = randInt(skill.minDamage, skill.maxDamage);
-    if (Math.random() < (attacker.critBoost || 0.15)) {
-      damage = Math.floor(damage * 1.5);
-    }
-    if (defender.guard && !skill.pierceGuard) {
-      damage = Math.floor(damage * 0.45);
-    }
-    text = `${attacker.name} used ${skill.name} for ${damage} damage.`;
-  } else if (action === "finish") {
-    damage = randInt(20, 34);
-    if (defender.hp > defender.maxHp * 0.35) {
-      damage = Math.floor(damage * 0.55);
-      text = `${attacker.name} tried to finish early and only dealt ${damage}.`;
-    } else {
-      text = `${attacker.name} landed a finisher for ${damage}.`;
-    }
-  } else {
-    damage = randInt(10, 18);
-    if (Math.random() < (attacker.critBoost || 0.1)) {
-      damage = Math.floor(damage * 1.4);
-    }
-    if (defender.guard) {
-      damage = Math.floor(damage * 0.5);
-    }
-    text = `${attacker.name} attacked for ${damage} damage.`;
-  }
-
-  defender.hp = clamp(defender.hp - damage, 0, defender.maxHp);
-  defender.guard = false;
-  attacker.critBoost = 0;
-  return { damage, text };
-}
-
 function createBattleEmbed(title, description, visual, state) {
+  const turnLabel = state.turnId === state.playerOne.id
+    ? `${state.playerOne.name} (${state.playerOne.skill?.name || "Focus"})`
+    : `${state.playerTwo.name} (${state.playerTwo.skill?.name || "Focus"})`;
+  const extraFields = [];
+  if (state.arena) {
+    extraFields.push({
+      name: "Arena",
+      value: `${state.arena.name}\n${state.arena.description}`,
+      inline: false,
+    });
+  }
   return buildEmbedPayload({
     title,
     description,
     visual,
     fields: [
-      { name: state.playerOne.name, value: `HP: ${state.playerOne.hp}/${state.playerOne.maxHp}\n${progressBar(state.playerOne.hp, state.playerOne.maxHp, 10)}`, inline: true },
-      { name: state.playerTwo.name, value: `HP: ${state.playerTwo.hp}/${state.playerTwo.maxHp}\n${progressBar(state.playerTwo.hp, state.playerTwo.maxHp, 10)}`, inline: true },
-      { name: "Turn", value: state.turnId === state.playerOne.id ? state.playerOne.name : state.playerTwo.name, inline: false },
+      { name: state.playerOne.name, value: getBattleFighterField(state.playerOne), inline: true },
+      { name: state.playerTwo.name, value: getBattleFighterField(state.playerTwo), inline: true },
+      { name: "Turn", value: `${turnLabel}\nExchange ${(state.exchangeCount || 0) + 1}`, inline: false },
+      ...extraFields,
     ],
   });
 }
@@ -1819,7 +2213,11 @@ async function finishBattle(interaction, state, winnerId) {
   if (playerWon) {
     const effects = getCombinedEffects(first);
     const loot = rollCombatLoot("pvp");
-    const auraReward = Math.floor(state.rewardAura * (1 + (effects.pvpRewardBoost || 0)));
+    first.stats.pvpStreak = getPvpStreak(first) + 1;
+    first.stats.bestPvpStreak = Math.max(getBestPvpStreak(first), first.stats.pvpStreak);
+    second.stats.pvpStreak = 0;
+    const streakBonus = Math.min(Math.max(0, first.stats.pvpStreak - 1), 5) * 0.04;
+    const auraReward = Math.floor(state.rewardAura * (1 + (effects.pvpRewardBoost || 0) + streakBonus));
     first.aura += auraReward;
     first.xp += state.rewardXp;
     second.xp = Math.max(0, second.xp - Math.floor(state.rewardXp / 2));
@@ -1835,10 +2233,12 @@ async function finishBattle(interaction, state, winnerId) {
     return interaction.update({
       ...buildEmbedPayload({
         title: "PvP Battle Finished",
-        description: `**${state.playerOne.name}** won the duel and claimed ${formatNumber(auraReward)} aura plus ${formatNumber(state.rewardXp)} XP.`,
+        description: `**${state.playerOne.name}** won the duel in **${state.arena?.name || "the arena"}** and claimed ${formatNumber(auraReward)} aura plus ${formatNumber(state.rewardXp)} XP.`,
         visual: "pvp-victory.svg",
         fields: [
           { name: "Loot Drops", value: loot.length ? loot.map((entry) => entry.label).join(", ") : "None", inline: true },
+          { name: "Win Streak", value: `${formatNumber(first.stats.pvpStreak)} current | ${formatNumber(first.stats.bestPvpStreak)} best`, inline: true },
+          { name: "Aura Bonus", value: streakBonus > 0 ? `+${Math.round(streakBonus * 100)}% streak bonus` : "No streak bonus", inline: true },
         ],
       }),
       components: [],
@@ -1846,7 +2246,11 @@ async function finishBattle(interaction, state, winnerId) {
   } else {
     const effects = getCombinedEffects(second);
     const loot = rollCombatLoot("pvp");
-    const auraReward = Math.floor(state.rewardAura * (1 + (effects.pvpRewardBoost || 0)));
+    second.stats.pvpStreak = getPvpStreak(second) + 1;
+    second.stats.bestPvpStreak = Math.max(getBestPvpStreak(second), second.stats.pvpStreak);
+    first.stats.pvpStreak = 0;
+    const streakBonus = Math.min(Math.max(0, second.stats.pvpStreak - 1), 5) * 0.04;
+    const auraReward = Math.floor(state.rewardAura * (1 + (effects.pvpRewardBoost || 0) + streakBonus));
     second.aura += auraReward;
     second.xp += state.rewardXp;
     first.xp = Math.max(0, first.xp - Math.floor(state.rewardXp / 2));
@@ -1862,10 +2266,12 @@ async function finishBattle(interaction, state, winnerId) {
     return interaction.update({
       ...buildEmbedPayload({
         title: "PvP Battle Finished",
-        description: `**${state.playerTwo.name}** won the duel and claimed ${formatNumber(auraReward)} aura plus ${formatNumber(state.rewardXp)} XP.`,
+        description: `**${state.playerTwo.name}** won the duel in **${state.arena?.name || "the arena"}** and claimed ${formatNumber(auraReward)} aura plus ${formatNumber(state.rewardXp)} XP.`,
         visual: "pvp-victory.svg",
         fields: [
           { name: "Loot Drops", value: loot.length ? loot.map((entry) => entry.label).join(", ") : "None", inline: true },
+          { name: "Win Streak", value: `${formatNumber(second.stats.pvpStreak)} current | ${formatNumber(second.stats.bestPvpStreak)} best`, inline: true },
+          { name: "Aura Bonus", value: streakBonus > 0 ? `+${Math.round(streakBonus * 100)}% streak bonus` : "No streak bonus", inline: true },
         ],
       }),
       components: [],
@@ -1885,15 +2291,43 @@ async function handleBattleInteraction(interaction) {
 
   const acting = state.playerOne.id === interaction.user.id ? state.playerOne : state.playerTwo;
   const defending = acting.id === state.playerOne.id ? state.playerTwo : state.playerOne;
-  const playerResult = runTurn(acting, defending, action);
-  let summary = playerResult.text;
+  hydrateBattleSkill(acting);
+  hydrateBattleSkill(defending);
+
+  const turnStart = resolveTurnStart(acting);
+  let summary = turnStart.text;
+  if (turnStart.defeated) {
+    return finishBattle(interaction, state, defending.id);
+  }
+
+  const playerResult = runTurn(acting, defending, action, state);
+  summary = summary ? `${summary}\n${playerResult.text}` : playerResult.text;
+  state.exchangeCount = (state.exchangeCount || 0) + 1;
 
   if (defending.hp <= 0) {
     return finishBattle(interaction, state, acting.id);
   }
+  if (acting.hp <= 0) {
+    return finishBattle(interaction, state, defending.id);
+  }
+
+  const arenaPulse = resolveArenaPulse(state);
+  if (arenaPulse.text) {
+    summary += `\n${arenaPulse.text}`;
+  }
+  if (arenaPulse.winnerId) {
+    return finishBattle(interaction, state, arenaPulse.winnerId);
+  }
 
   if (state.isBoss) {
-    const bossResult = runTurn(defending, acting, "attack");
+    const bossStart = resolveTurnStart(defending);
+    if (bossStart.text) {
+      summary += `\n${bossStart.text}`;
+    }
+    if (bossStart.defeated) {
+      return finishBattle(interaction, state, acting.id);
+    }
+    const bossResult = runTurn(defending, acting, "attack", state);
     summary += `\n${bossResult.text}`;
     if (acting.hp <= 0) {
       return finishBattle(interaction, state, defending.id);
@@ -1902,9 +2336,11 @@ async function handleBattleInteraction(interaction) {
     state.turnId = defending.id;
   }
 
+  const nextActor = state.turnId === state.playerOne.id ? state.playerOne : state.playerTwo;
+
   return interaction.update({
     ...createBattleEmbed(state.title, summary, state.visual, state),
-    components: battleButtons(state.id, Boolean(acting.skill)),
+    components: battleButtons(state.id, nextActor),
   });
 }
 
@@ -1921,16 +2357,18 @@ async function handlePvp(interaction) {
     title: "PvP Duel",
     isBoss: false,
     visual: "pvp-battle.svg",
-    playerOne: { id: interaction.user.id, name: interaction.user.username, hp: 100, maxHp: 100, skill: pickBattleSkill(user) },
-    playerTwo: { id: opponent.id, name: opponent.username, hp: 100, maxHp: 100, skill: pickBattleSkill(rival) },
+    arena: pickPvpArena(),
+    playerOne: createBattleFighter({ id: interaction.user.id, name: interaction.user.username, hp: 100, maxHp: 100, skillCycle: getBattleSkillRotation(user) }),
+    playerTwo: createBattleFighter({ id: opponent.id, name: opponent.username, hp: 100, maxHp: 100, skillCycle: getBattleSkillRotation(rival) }),
     turnId: interaction.user.id,
     rewardAura: randInt(750, 1250),
     rewardXp: randInt(220, 340),
+    exchangeCount: 0,
   };
   activeBattles.set(battleId, state);
   return interaction.reply({
-    ...createBattleEmbed("PvP Duel Started", `${interaction.user.username} challenged ${opponent.username}.`, "pvp-challenge.svg", state),
-    components: battleButtons(battleId, true),
+    ...createBattleEmbed("PvP Duel Started", `${interaction.user.username} challenged ${opponent.username}.\nArena: **${state.arena.name}**\n${state.arena.description}`, "pvp-challenge.svg", state),
+    components: battleButtons(battleId, state.playerOne),
   });
 }
 
@@ -1944,16 +2382,18 @@ async function handleBoss(interaction) {
     title: "Boss Encounter",
     isBoss: true,
     visual: boss.visual,
-    playerOne: { id: interaction.user.id, name: interaction.user.username, hp: 120, maxHp: 120, skill: pickBattleSkill(user) },
-    playerTwo: { id: `boss:${boss.id}`, name: boss.name, hp: boss.hp, maxHp: boss.hp, skill: { ...SKILLS.focus, heal: 0 }, critBoost: 0.12 },
+    playerOne: createBattleFighter({ id: interaction.user.id, name: interaction.user.username, hp: 120, maxHp: 120, skillCycle: getBattleSkillRotation(user) }),
+    playerTwo: createBattleFighter({ id: `boss:${boss.id}`, name: boss.name, hp: boss.hp, maxHp: boss.hp, skillCycle: ["focus"], critBoost: 0.12 }),
     turnId: interaction.user.id,
     rewardAura: boss.rewardAura,
     rewardXp: boss.rewardXp,
+    exchangeCount: 0,
   };
+  state.playerTwo.skill.heal = 0;
   activeBattles.set(battleId, state);
   return interaction.reply({
     ...createBattleEmbed("Boss Encounter", `You challenged **${boss.name}**.\n${getBossCraftingHint(boss)}`, boss.visual, state),
-    components: battleButtons(battleId, true),
+    components: battleButtons(battleId, state.playerOne),
   });
 }
 
@@ -1977,7 +2417,7 @@ async function handleHelp(interaction) {
         title: `${section.name} Commands`,
         description: formatHelpSection(section),
         visual: section.visual,
-        footer: "Use /setup for a recommended progression path.",
+        footer: "Use /start to create a save and see the quick-start path.",
       }),
       ephemeral: true,
     });
@@ -1999,24 +2439,18 @@ async function handleHelp(interaction) {
 }
 
 async function handleSetup(interaction) {
-  return interaction.reply({
-    ...buildEmbedPayload({
-      title: "Quick Setup Guide",
-      description: "Use this path to get a fresh profile moving quickly without guessing what comes next.",
-      visual: "help-core.svg",
-      fields: [
-        { name: "1. Create Your Save", value: "Run `/start` once to generate your profile, starter aura, and quest set." },
-        { name: "2. Build Income", value: "Use `/daily`, `/work`, `/spin`, and `/mine` on cooldown to stack aura, XP, and crafting resources." },
-        { name: "3. Grow Side Systems", value: "Plant crops with `/garden plant`, then harvest them later for extra materials and progression." },
-        { name: "4. Spend Intentionally", value: "Open `/shop`, craft rewards with `/craft`, and equip bonuses with `/gear equip`." },
-        { name: "5. Push Progression", value: "Watch `/rank`, clear `/quests`, claim `/achievements`, and check `/event` for rotating bonuses." },
-        { name: "6. Take Risks", value: "Use `/rob` for high-risk steals, practice with `/boss`, and duel with `/pvp` when your build is stronger." },
-        { name: "7. Build a Clan", value: "Create a clan once you can afford the 50,000 aura cost and start funding upgrades, wars, and raids." },
-      ],
-      footer: "Use /help to see the full command list.",
-    }),
-    ephemeral: true,
-  });
+  if (!hasSetupAccess(interaction.memberPermissions)) {
+    return interaction.reply({
+      ...buildEmbedPayload({
+        title: "Setup Locked",
+        description: "Only admins or moderators can use `/setup` to repost the server setup guide.",
+        visual: "emblem-alert.svg",
+      }),
+      ephemeral: true,
+    });
+  }
+
+  return interaction.reply(buildServerSetupPayload(interaction.guild?.name || "this server"));
 }
 
 async function handlePremium(interaction) {
@@ -2626,8 +3060,8 @@ function buildCommands() {
   return [
     new SlashCommandBuilder().setName("help").setDescription("Browse game commands by category.").addStringOption((option) => option.setName("category").setDescription("Open one help category").addChoices(...HELP_SECTIONS.map((section) => ({ name: section.name, value: section.id })))),
     new SlashCommandBuilder().setName("event").setDescription("View the current rotating world event."),
-    new SlashCommandBuilder().setName("setup").setDescription("Show a recommended setup and progression path."),
-    new SlashCommandBuilder().setName("start").setDescription("Create your save and unlock the game."),
+    new SlashCommandBuilder().setName("setup").setDescription("Admin/mod command to post the server setup guide."),
+    new SlashCommandBuilder().setName("start").setDescription("Create your save and open the quick-start guide."),
     new SlashCommandBuilder().setName("profile").setDescription("View your or another player's profile.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
     new SlashCommandBuilder().setName("stats").setDescription("View deeper player stats.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
     new SlashCommandBuilder().setName("balance").setDescription("Check wallet and vault balance.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
@@ -2684,5 +3118,6 @@ async function routeInteraction(interaction) {
 module.exports = {
   buildCommands,
   routeInteraction,
+  sendServerSetupMessage,
   startReminderLoop,
 };
