@@ -264,6 +264,20 @@ function formatPremiumPlanLabel(planId) {
   return plan?.label || planId;
 }
 
+function buildPremiumFeatureSummary() {
+  return [
+    "+12% spin rewards",
+    "+12% work aura and +10% work XP",
+    "+12% mining yield and +8% mining XP",
+    "+25% daily aura and XP",
+    "+1 extra rare crate from /daily",
+    "+3%/hr vault interest",
+    "+10% boss rewards and +8% PvP rewards",
+    "+10% crate aura rewards",
+    "Premium-only shop items: Premium Supply Drop, Executive Badge, Storm Pass",
+  ].join("\n");
+}
+
 function isPremiumOnlyItem(item) {
   return Boolean(item?.premiumOnly);
 }
@@ -3356,11 +3370,12 @@ async function handlePremium(interaction) {
     return interaction.reply({
       ...buildEmbedPayload({
         title: "Premium Payment Link Ready",
-        description: `Open the Razorpay link below to purchase the **${formatPremiumPlanLabel(planId)}** premium plan.`,
+        description: `Open the Razorpay link below to purchase the **${formatPremiumPlanLabel(planId)}** premium plan and unlock the active premium benefits.`,
         visual: "emblem-success.svg",
         fields: [
           { name: "Plan", value: formatPremiumPlanLabel(planId), inline: true },
           { name: "Current Status", value: formatPremiumStatus(user), inline: true },
+          { name: "Premium Features", value: buildPremiumFeatureSummary() },
           { name: "Payment Link", value: paymentLink.short_url || paymentLink.id },
         ],
         footer: "Premium will update automatically after Razorpay confirms the payment.",
