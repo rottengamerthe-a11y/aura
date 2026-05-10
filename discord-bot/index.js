@@ -3,13 +3,21 @@ const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 const { Client, GatewayIntentBits, REST, Routes } = require("discord.js");
+const crypto = require("crypto");
 const express = require("express");
+const session = require("express-session");
 const mongoose = require("mongoose");
-const { getRazorpayConfig, processWebhookEvent, verifyWebhookSignature } = require("./src/billing/razorpay");
 const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigration");
-const { buildCommands, routeInteraction, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
+const { applyPaddleWebhookEvent, buildCommands, routeInteraction, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
 
-const requiredEnv = ["DISCORD_TOKEN", "DISCORD_CLIENT_ID", "MONGODB_URI"];
+const requiredEnv = [
+  "DISCORD_TOKEN",
+  "DISCORD_CLIENT_ID",
+  "DISCORD_CLIENT_SECRET",
+  "DISCORD_REDIRECT_URI",
+  "MONGODB_URI",
+  "SESSION_SECRET",
+];
 
 requiredEnv.forEach((key) => {
   if (typeof process.env[key] === "string") {
@@ -60,40 +68,203 @@ async function verifyDiscordConfiguration() {
   console.log(`Discord bot user verified: ${currentUser.username} (${currentUser.id})`);
 }
 
+function parsePaddleSignatureHeader(headerValue) {
+  return String(headerValue || "").split(";").reduce((parts, piece) => {
+    const [key, value] = piece.split("=");
+    if (key && value) {
+      parts[key.trim()] = value.trim();
+    }
+    return parts;
+  }, {});
+}
+
+function verifyPaddleWebhookSignature(rawBody, signatureHeader, secret) {
+  if (!signatureHeader || !secret) {
+    return false;
+  }
+
+  const signatureParts = parsePaddleSignatureHeader(signatureHeader);
+  const timestamp = signatureParts.ts;
+  const signatures = String(signatureParts.h1 || "").split(",").filter(Boolean);
+
+  if (!timestamp || signatures.length === 0) {
+    return false;
+  }
+
+  const toleranceSeconds = Number(process.env.PADDLE_WEBHOOK_TOLERANCE_SECONDS) || 300;
+  if (Math.abs(Date.now() / 1000 - Number(timestamp)) > toleranceSeconds) {
+    return false;
+  }
+
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(`${timestamp}:${rawBody}`)
+    .digest("hex");
+
+  return signatures.some((signature) => {
+    const expectedBuffer = Buffer.from(expected, "hex");
+    const signatureBuffer = Buffer.from(signature, "hex");
+    return expectedBuffer.length === signatureBuffer.length && crypto.timingSafeEqual(expectedBuffer, signatureBuffer);
+  });
+}
+
+function buildDiscordAuthUrl(state) {
+  const authUrl = new URL("https://discord.com/oauth2/authorize");
+  authUrl.searchParams.set("client_id", process.env.DISCORD_CLIENT_ID);
+  authUrl.searchParams.set("redirect_uri", process.env.DISCORD_REDIRECT_URI);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("scope", "identify");
+  authUrl.searchParams.set("state", state);
+  return authUrl.toString();
+}
+
+async function exchangeDiscordCode(code) {
+  const body = new URLSearchParams({
+    client_id: process.env.DISCORD_CLIENT_ID,
+    client_secret: process.env.DISCORD_CLIENT_SECRET,
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: process.env.DISCORD_REDIRECT_URI,
+  });
+
+  const response = await fetch("https://discord.com/api/oauth2/token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(`Discord token exchange failed: ${payload.error || response.status}`);
+  }
+
+  return payload;
+}
+
+async function fetchDiscordUser(accessToken) {
+  const response = await fetch("https://discord.com/api/users/@me", {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(`Discord user lookup failed: ${payload.message || response.status}`);
+  }
+
+  return payload;
+}
+
 function startWebServer() {
   const app = express();
   const port = Number(process.env.PORT) || 3000;
-  const razorpayWebhookSecret = getRazorpayConfig().webhookSecret;
+  const paddleWebhookSecret = process.env.PADDLE_WEBHOOK_SECRET?.trim();
+  const isProduction = process.env.NODE_ENV === "production";
 
-  app.post("/razorpay/webhook", express.raw({ type: "application/json" }), async (req, res) => {
-    if (!razorpayWebhookSecret) {
-      return res.status(503).json({ ok: false, error: "razorpay_not_configured" });
+  app.set("trust proxy", 1);
+
+  app.post("/paddle/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+    if (!paddleWebhookSecret) {
+      return res.status(503).json({ ok: false, error: "paddle_not_configured" });
     }
 
-    const signature = req.headers["x-razorpay-signature"];
-    if (!signature) {
-      return res.status(400).json({ ok: false, error: "missing_signature" });
-    }
-
+    const signature = req.headers["paddle-signature"];
     const rawBody = req.body.toString("utf8");
-    if (!verifyWebhookSignature(rawBody, signature)) {
-      console.error("Razorpay webhook signature verification failed.");
+
+    if (!verifyPaddleWebhookSignature(rawBody, signature, paddleWebhookSecret)) {
+      console.error("Paddle webhook signature verification failed.");
       return res.status(400).json({ ok: false, error: "invalid_signature" });
     }
 
     try {
       const event = JSON.parse(rawBody);
-      const eventId = req.headers["x-razorpay-event-id"];
-      const result = await processWebhookEvent(event, eventId);
+      const result = await applyPaddleWebhookEvent(event, event.event_id || event.eventId || null);
       return res.status(200).json({ ok: true, ...result });
     } catch (error) {
-      console.error("Razorpay webhook processing failed:", error);
+      console.error("Paddle webhook processing failed:", error);
       return res.status(500).json({ ok: false, error: "webhook_processing_failed" });
     }
   });
 
+  app.use(session({
+    name: "aura.sid",
+    secret: process.env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: isProduction,
+      maxAge: 1000 * 60 * 60 * 24 * 7,
+    },
+  }));
+
+  app.get("/auth/discord", (req, res) => {
+    const state = crypto.randomBytes(24).toString("hex");
+    req.session.oauthState = state;
+    res.redirect(buildDiscordAuthUrl(state));
+  });
+
+  app.get("/auth/discord/callback", async (req, res) => {
+    const { code, state } = req.query;
+
+    if (!code || !state || state !== req.session.oauthState) {
+      return res.status(400).send("Discord login failed. Please try again.");
+    }
+
+    delete req.session.oauthState;
+
+    try {
+      const token = await exchangeDiscordCode(String(code));
+      const user = await fetchDiscordUser(token.access_token);
+
+      req.session.discordUser = {
+        id: user.id,
+        username: user.username,
+        globalName: user.global_name || null,
+        avatar: user.avatar || null,
+      };
+
+      return res.redirect("/me");
+    } catch (error) {
+      console.error("Discord OAuth callback failed:", error);
+      return res.status(500).send("Discord login failed. Please try again.");
+    }
+  });
+
+  app.get("/api/me", (req, res) => {
+    if (!req.session.discordUser) {
+      return res.status(401).json({ ok: false, error: "not_logged_in" });
+    }
+
+    return res.status(200).json({ ok: true, user: req.session.discordUser });
+  });
+
+  app.post("/logout", (req, res) => {
+    req.session.destroy((error) => {
+      if (error) {
+        return res.status(500).json({ ok: false, error: "logout_failed" });
+      }
+
+      res.clearCookie("aura.sid");
+      return res.status(200).json({ ok: true });
+    });
+  });
+
+  app.get("/me", (req, res) => {
+    if (!req.session.discordUser) {
+      return res.redirect("/auth/discord");
+    }
+
+    const name = req.session.discordUser.globalName || req.session.discordUser.username;
+    res.status(200).send(`Logged in as ${name}. Your Discord user id is ${req.session.discordUser.id}.`);
+  });
+
   app.get("/", (_req, res) => {
-    res.status(200).send("Aura bot is running.");
+    res.status(200).send('Aura bot is running. <a href="/auth/discord">Login with Discord</a>');
   });
 
   app.get("/health", (_req, res) => {

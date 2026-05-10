@@ -266,13 +266,6 @@ function mergeUsers(users) {
   };
   primary.billing = {
     provider: chooseBillingValue(orderedUsers, "provider"),
-    razorpayPaymentLinkId: chooseBillingValue(orderedUsers, "razorpayPaymentLinkId"),
-    razorpayPaymentId: chooseBillingValue(orderedUsers, "razorpayPaymentId"),
-    razorpayOrderId: chooseBillingValue(orderedUsers, "razorpayOrderId"),
-    razorpayReferenceId: chooseBillingValue(orderedUsers, "razorpayReferenceId"),
-    razorpayLastEventId: chooseBillingValue(orderedUsers, "razorpayLastEventId"),
-    razorpayPlanId: chooseBillingValue(orderedUsers, "razorpayPlanId"),
-    razorpayLinkStatus: chooseBillingValue(orderedUsers, "razorpayLinkStatus"),
   };
   primary.stats = mergedStats;
   primary.clanId = null;

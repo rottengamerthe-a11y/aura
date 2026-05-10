@@ -1,6 +1,5 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
 const crypto = require("crypto");
-const { createPremiumPaymentLink, getMissingPaymentConfig, getPremiumPlan, getPremiumPlanChoices } = require("../billing/razorpay");
 const { BOSSES, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
 const { Clan, User } = require("../data/models");
 const { buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
@@ -14,19 +13,73 @@ const BATTLE_GEAR_SLOTS = Object.freeze([
   { id: "charm", label: "Charm" },
   { id: "relic", label: "Relic" },
 ]);
-const PREMIUM_EFFECTS = Object.freeze({
-  spinRewardBoost: 0.12,
-  vaultInterestBoost: 0.03,
-  workAuraBoost: 0.12,
-  workXpBoost: 0.1,
-  mineYieldBoost: 0.12,
-  mineXpBoost: 0.08,
-  bossRewardBoost: 0.1,
-  pvpRewardBoost: 0.08,
-  crateAuraBoost: 0.1,
+const PREMIUM_PLANS = Object.freeze({
+  monthly: {
+    id: "monthly",
+    label: "Monthly",
+    priceLabel: "$5/month",
+    durationDays: 30,
+    dailyMultiplier: 1.25,
+    dailyRareCrates: 1,
+    cooldownReduction: 0.1,
+    effects: Object.freeze({
+      spinRewardBoost: 0.12,
+      vaultInterestBoost: 0.03,
+      workAuraBoost: 0.12,
+      workXpBoost: 0.1,
+      mineYieldBoost: 0.12,
+      mineXpBoost: 0.08,
+      bossRewardBoost: 0.1,
+      pvpRewardBoost: 0.08,
+      crateAuraBoost: 0.1,
+    }),
+  },
+  yearly: {
+    id: "yearly",
+    label: "Yearly",
+    priceLabel: "$20/year",
+    durationDays: 365,
+    dailyMultiplier: 1.4,
+    dailyRareCrates: 2,
+    cooldownReduction: 0.2,
+    effects: Object.freeze({
+      spinRewardBoost: 0.18,
+      vaultInterestBoost: 0.045,
+      workAuraBoost: 0.18,
+      workXpBoost: 0.15,
+      mineYieldBoost: 0.18,
+      mineXpBoost: 0.12,
+      bossRewardBoost: 0.15,
+      pvpRewardBoost: 0.12,
+      crateAuraBoost: 0.15,
+    }),
+  },
+  lifetime: {
+    id: "lifetime",
+    label: "Lifetime",
+    priceLabel: "$50 one-time",
+    durationDays: null,
+    dailyMultiplier: 1.6,
+    dailyRareCrates: 3,
+    cooldownReduction: 0.3,
+    effects: Object.freeze({
+      spinRewardBoost: 0.25,
+      vaultInterestBoost: 0.06,
+      workAuraBoost: 0.25,
+      workXpBoost: 0.2,
+      mineYieldBoost: 0.25,
+      mineXpBoost: 0.16,
+      bossRewardBoost: 0.22,
+      pvpRewardBoost: 0.18,
+      crateAuraBoost: 0.22,
+    }),
+  },
 });
-
-const PREMIUM_DAILY_MULTIPLIER = 1.25;
+const PADDLE_PRICE_PLAN_ENV = Object.freeze({
+  monthly: "PADDLE_MONTHLY_PRICE_ID",
+  yearly: "PADDLE_YEARLY_PRICE_ID",
+  lifetime: "PADDLE_LIFETIME_PRICE_ID",
+});
 const REMINDER_ACTIONS = Object.freeze({
   spin: { label: "Spin", command: "/spin" },
   work: { label: "Work", command: "/work" },
@@ -210,13 +263,13 @@ function normalizePremiumState(user) {
   if (!user.billing) {
     user.billing = {
       provider: null,
-      razorpayPaymentLinkId: null,
-      razorpayPaymentId: null,
-      razorpayOrderId: null,
-      razorpayReferenceId: null,
-      razorpayLastEventId: null,
-      razorpayPlanId: null,
-      razorpayLinkStatus: null,
+      paddleCustomerId: null,
+      paddleSubscriptionId: null,
+      paddleTransactionId: null,
+      paddlePriceId: null,
+      paddleLastEventId: null,
+      paddlePlanId: null,
+      paddleStatus: null,
     };
   }
   if (!isPremiumActive(user) && user.premium.active) {
@@ -224,6 +277,148 @@ function normalizePremiumState(user) {
     user.premium.lifetime = false;
     user.premium.expiresAt = null;
   }
+}
+
+function getPremiumPlan(planId) {
+  return PREMIUM_PLANS[planId] || null;
+}
+
+function getPaddlePlanByPriceId(priceId) {
+  if (!priceId) {
+    return null;
+  }
+  const planId = Object.entries(PADDLE_PRICE_PLAN_ENV).find(([, envKey]) => process.env[envKey] === priceId)?.[0];
+  return planId ? getPremiumPlan(planId) : null;
+}
+
+function getPaddleCustomData(data) {
+  return data?.custom_data || data?.customData || {};
+}
+
+function getPaddleFirstPriceId(data) {
+  const item = data?.items?.[0] || data?.details?.line_items?.[0];
+  return item?.price?.id || item?.price_id || item?.priceId || null;
+}
+
+function getPaddlePlan(data, existingUser = null) {
+  const customData = getPaddleCustomData(data);
+  const customPlan = getPremiumPlan(customData.planId || customData.plan_id || customData.plan);
+  if (customPlan) {
+    return customPlan;
+  }
+
+  const pricePlan = getPaddlePlanByPriceId(getPaddleFirstPriceId(data));
+  if (pricePlan) {
+    return pricePlan;
+  }
+
+  return getPremiumPlan(existingUser?.billing?.paddlePlanId) || getPremiumPlan(existingUser?.premium?.source);
+}
+
+function getPaddleBillingPeriodEnd(data) {
+  const rawDate = data?.current_billing_period?.ends_at
+    || data?.billing_period?.ends_at
+    || data?.items?.[0]?.billing_period?.ends_at
+    || null;
+  const date = rawDate ? new Date(rawDate) : null;
+  return date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+function getPaddleIds(data) {
+  return {
+    customerId: typeof data?.customer_id === "string" ? data.customer_id : data?.customer?.id || null,
+    subscriptionId: typeof data?.subscription_id === "string" ? data.subscription_id : data?.subscription?.id || (typeof data?.id === "string" && data.id.startsWith("sub_") ? data.id : null),
+    transactionId: typeof data?.transaction_id === "string" ? data.transaction_id : (typeof data?.id === "string" && data.id.startsWith("txn_") ? data.id : null),
+    priceId: getPaddleFirstPriceId(data),
+    status: data?.status || null,
+  };
+}
+
+async function findPaddleUser(data) {
+  const customData = getPaddleCustomData(data);
+  const discordUserId = customData.discordUserId || customData.discord_user_id || customData.userId || customData.user_id;
+  if (discordUserId) {
+    return getOrCreatePlayer(customData.guildId || customData.guild_id || null, discordUserId);
+  }
+
+  const ids = getPaddleIds(data);
+  const query = ids.subscriptionId
+    ? { "billing.paddleSubscriptionId": ids.subscriptionId }
+    : ids.customerId
+      ? { "billing.paddleCustomerId": ids.customerId }
+      : null;
+
+  return query ? User.findOne(query).sort({ updatedAt: -1, createdAt: 1 }) : null;
+}
+
+function mergePaddleBilling(user, data, eventId, plan) {
+  const ids = getPaddleIds(data);
+  user.billing = user.billing || {};
+  user.billing.provider = "paddle";
+  user.billing.paddleCustomerId = ids.customerId || user.billing.paddleCustomerId || null;
+  user.billing.paddleSubscriptionId = ids.subscriptionId || user.billing.paddleSubscriptionId || null;
+  user.billing.paddleTransactionId = ids.transactionId || user.billing.paddleTransactionId || null;
+  user.billing.paddlePriceId = ids.priceId || user.billing.paddlePriceId || null;
+  user.billing.paddleLastEventId = eventId || user.billing.paddleLastEventId || null;
+  user.billing.paddlePlanId = plan?.id || user.billing.paddlePlanId || null;
+  user.billing.paddleStatus = ids.status || user.billing.paddleStatus || null;
+}
+
+async function applyPaddleWebhookEvent(event, eventId = null) {
+  const eventType = event?.event_type || event?.eventType || event?.type;
+  const data = event?.data || {};
+  const user = await findPaddleUser(data);
+
+  if (!user) {
+    return { action: "ignored", reason: "missing_user_mapping", eventType };
+  }
+
+  normalizePremiumState(user);
+  const plan = getPaddlePlan(data, user);
+  mergePaddleBilling(user, data, eventId || event?.event_id || event?.eventId || null, plan);
+
+  const activeSubscriptionStatuses = new Set(["active", "trialing"]);
+  const inactiveSubscriptionStatuses = new Set(["canceled", "paused", "past_due"]);
+  const status = data?.status;
+  const shouldDeactivate = eventType?.startsWith("subscription.")
+    && (inactiveSubscriptionStatuses.has(status) || ["subscription.canceled", "subscription.paused"].includes(eventType));
+
+  if (shouldDeactivate) {
+    user.premium.active = false;
+    user.premium.lifetime = false;
+    user.premium.expiresAt = null;
+    await user.save();
+    return { action: "deactivated", userId: user.userId, eventType };
+  }
+
+  const shouldActivate = ["transaction.completed", "transaction.billed", "subscription.activated", "subscription.resumed", "subscription.updated"].includes(eventType)
+    && (!eventType.startsWith("subscription.") || activeSubscriptionStatuses.has(status));
+
+  if (!shouldActivate || !plan) {
+    await user.save();
+    return { action: "recorded", userId: user.userId, eventType };
+  }
+
+  user.premium.active = true;
+  user.premium.lifetime = plan.id === "lifetime";
+  user.premium.expiresAt = plan.id === "lifetime"
+    ? null
+    : getPaddleBillingPeriodEnd(data) || new Date(Date.now() + plan.durationDays * 24 * 60 * 60 * 1000);
+  user.premium.grantedBy = "paddle";
+  user.premium.source = plan.id;
+
+  await user.save();
+  return { action: "activated", userId: user.userId, planId: plan.id, eventType };
+}
+
+function getUserPremiumPlan(user) {
+  if (!isPremiumActive(user)) {
+    return null;
+  }
+  if (user.premium?.lifetime) {
+    return PREMIUM_PLANS.lifetime;
+  }
+  return getPremiumPlan(user.premium?.source) || PREMIUM_PLANS.monthly;
 }
 
 function normalizeReminderState(user) {
@@ -246,17 +441,33 @@ function normalizeReminderState(user) {
 }
 
 function getPremiumEffects(user) {
-  return isPremiumActive(user) ? PREMIUM_EFFECTS : {};
+  return getUserPremiumPlan(user)?.effects || {};
+}
+
+function getPremiumDailyMultiplier(user) {
+  return getUserPremiumPlan(user)?.dailyMultiplier || 1;
+}
+
+function getPremiumDailyRareCrates(user) {
+  return getUserPremiumPlan(user)?.dailyRareCrates || 0;
+}
+
+function getPremiumCooldownReduction(user) {
+  return getUserPremiumPlan(user)?.cooldownReduction || 0;
 }
 
 function formatPremiumStatus(user) {
-  if (isPremiumActive(user) && user.premium?.lifetime) {
-    return "Lifetime Premium";
+  const plan = getUserPremiumPlan(user);
+  if (!plan) {
+    return "Free";
   }
-  if (isPremiumActive(user) && user.premium?.expiresAt) {
-    return `Active until ${user.premium.expiresAt.toLocaleDateString("en-US")}`;
+  if (user.premium?.lifetime) {
+    return `${plan.label} Premium`;
   }
-  return "Free";
+  if (user.premium?.expiresAt) {
+    return `${plan.label} Premium until ${user.premium.expiresAt.toLocaleDateString("en-US")}`;
+  }
+  return `${plan.label} Premium`;
 }
 
 function formatPremiumPlanLabel(planId) {
@@ -265,17 +476,36 @@ function formatPremiumPlanLabel(planId) {
 }
 
 function buildPremiumFeatureSummary() {
+  return "Premium-only shop items: Premium Supply Drop, Executive Badge, Storm Pass";
+}
+
+function formatPercent(value) {
+  const percent = value * 100;
+  return `${Number.isInteger(percent) ? percent : percent.toFixed(1)}%`;
+}
+
+function formatPremiumPlanSummary(plan) {
+  const effects = plan.effects;
   return [
-    "+12% spin rewards",
-    "+12% work aura and +10% work XP",
-    "+12% mining yield and +8% mining XP",
-    "+25% daily aura and XP",
-    "+1 extra rare crate from /daily",
-    "+3%/hr vault interest",
-    "+10% boss rewards and +8% PvP rewards",
-    "+10% crate aura rewards",
-    "Premium-only shop items: Premium Supply Drop, Executive Badge, Storm Pass",
+    `${plan.priceLabel}`,
+    `+${formatPercent(effects.spinRewardBoost)} spin rewards`,
+    `+${formatPercent(effects.workAuraBoost)} work aura, +${formatPercent(effects.workXpBoost)} work XP`,
+    `+${formatPercent(effects.mineYieldBoost)} mining yield, +${formatPercent(effects.mineXpBoost)} mining XP`,
+    `+${formatPercent(plan.dailyMultiplier - 1)} daily aura and XP`,
+    `+${plan.dailyRareCrates} rare ${plan.dailyRareCrates === 1 ? "crate" : "crates"} from /daily`,
+    `${formatPercent(plan.cooldownReduction)} shorter cooldowns`,
+    `+${formatPercent(effects.vaultInterestBoost)}/hr vault interest`,
+    `+${formatPercent(effects.bossRewardBoost)} boss rewards, +${formatPercent(effects.pvpRewardBoost)} PvP rewards`,
+    `+${formatPercent(effects.crateAuraBoost)} crate aura rewards`,
   ].join("\n");
+}
+
+function buildPremiumPlanFields() {
+  return Object.values(PREMIUM_PLANS).map((plan) => ({
+    name: plan.label,
+    value: formatPremiumPlanSummary(plan),
+    inline: false,
+  }));
 }
 
 function isPremiumOnlyItem(item) {
@@ -858,25 +1088,25 @@ function getHarvestReadyAt(user) {
 
 function getReminderReadyTimestamp(user, action) {
   if (action === "spin" && user.lastSpinAt) {
-    return user.lastSpinAt.getTime() + COOLDOWNS.spinMs;
+    return user.lastSpinAt.getTime() + getEffectiveCooldownMs(user, COOLDOWNS.spinMs);
   }
   if (action === "work" && user.lastWorkAt) {
-    return user.lastWorkAt.getTime() + COOLDOWNS.workMs;
+    return user.lastWorkAt.getTime() + getEffectiveCooldownMs(user, COOLDOWNS.workMs);
   }
   if (action === "mine" && user.lastMineAt) {
-    return user.lastMineAt.getTime() + COOLDOWNS.mineMs;
+    return user.lastMineAt.getTime() + getEffectiveCooldownMs(user, COOLDOWNS.mineMs);
   }
   if (action === "coinflip" && user.lastCoinflipAt) {
-    return user.lastCoinflipAt.getTime() + COOLDOWNS.coinflipMs;
+    return user.lastCoinflipAt.getTime() + getEffectiveCooldownMs(user, COOLDOWNS.coinflipMs);
   }
   if (action === "rob" && user.lastRobAt) {
-    return user.lastRobAt.getTime() + COOLDOWNS.robMs;
+    return user.lastRobAt.getTime() + getEffectiveCooldownMs(user, COOLDOWNS.robMs);
   }
   if (action === "daily" && user.lastDailyAt) {
-    return user.lastDailyAt.getTime() + COOLDOWNS.dailyMs;
+    return user.lastDailyAt.getTime() + getEffectiveCooldownMs(user, COOLDOWNS.dailyMs);
   }
   if (action === "authority" && user.lastAuthorityAt) {
-    return user.lastAuthorityAt.getTime() + COOLDOWNS.authorityMs;
+    return user.lastAuthorityAt.getTime() + getEffectiveCooldownMs(user, COOLDOWNS.authorityMs);
   }
   if (action === "harvest") {
     return getHarvestReadyAt(user);
@@ -1011,11 +1241,16 @@ function startReminderLoop(client) {
   reminderIntervals.set(client, interval);
 }
 
-function getCooldownRemaining(lastDate, durationMs) {
+function getEffectiveCooldownMs(user, durationMs) {
+  const reduction = getPremiumCooldownReduction(user);
+  return Math.max(1000, Math.floor(durationMs * (1 - reduction)));
+}
+
+function getCooldownRemaining(lastDate, durationMs, user = null) {
   if (!lastDate) {
     return 0;
   }
-  return Math.max(0, lastDate.getTime() + durationMs - Date.now());
+  return Math.max(0, lastDate.getTime() + getEffectiveCooldownMs(user, durationMs) - Date.now());
 }
 
 function humanizeMs(ms) {
@@ -1086,8 +1321,8 @@ const HELP_SECTIONS = [
       { name: "/daily", description: "Claim your streak reward and refresh quests." },
       { name: "/work", description: "Complete a shift for steady aura and XP." },
       { name: "/mine", description: "Gather crafting materials on a cooldown." },
-      { name: "/spin", description: "Spin for aura and XP every 5 minutes." },
-      { name: "/coinflip", description: "Bet aura on heads or tails every 2 minutes." },
+      { name: "/spin", description: "Spin for aura and XP on a cooldown." },
+      { name: "/coinflip", description: "Bet aura on heads or tails on a cooldown." },
       { name: "/rob user:<player>", description: "Risk a cooldown to steal aura from another player." },
       { name: "/vault deposit", description: "Move aura into the vault." },
       { name: "/vault withdraw", description: "Take aura back from the vault." },
@@ -1113,7 +1348,7 @@ const HELP_SECTIONS = [
       { name: "/achievements", description: "Claim milestone rewards you have unlocked." },
       { name: "/leaderboard category:<type>", description: "See the top players or clans." },
       { name: "/authority user:<player>", description: "Use the Warden+ blessing command." },
-      { name: "/premium", description: "Open the premium purchase flow." },
+      { name: "/premium", description: "View premium plans and your current status." },
     ],
   },
   {
@@ -1428,7 +1663,7 @@ async function handleGift(interaction) {
 
 async function handleWork(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  const remaining = getCooldownRemaining(user.lastWorkAt, COOLDOWNS.workMs);
+  const remaining = getCooldownRemaining(user.lastWorkAt, COOLDOWNS.workMs, user);
   if (remaining > 0) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Work Cooling Down", description: `Your next shift opens in ${humanizeMs(remaining)}.`, visual: "economy-vault.svg" }), ephemeral: true });
   }
@@ -1450,7 +1685,7 @@ async function handleWork(interaction) {
     visual: "economy-vault.svg",
     fields: [
       { name: "Total Shifts", value: `${formatNumber(user.stats.works)}`, inline: true },
-      { name: "Next Shift", value: "15 minutes", inline: true },
+      { name: "Next Shift", value: humanizeMs(getEffectiveCooldownMs(user, COOLDOWNS.workMs)), inline: true },
       { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
       { name: "Premium", value: isPremiumActive(user) ? "Work boost applied" : "No premium boost", inline: true },
     ],
@@ -1459,7 +1694,7 @@ async function handleWork(interaction) {
 
 async function handleMine(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  const remaining = getCooldownRemaining(user.lastMineAt, COOLDOWNS.mineMs);
+  const remaining = getCooldownRemaining(user.lastMineAt, COOLDOWNS.mineMs, user);
   if (remaining > 0) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Mine Cooling Down", description: `The mine resets in ${humanizeMs(remaining)}.`, visual: "economy-vault.svg" }), ephemeral: true });
   }
@@ -1501,7 +1736,7 @@ async function handleMine(interaction) {
 async function handleRob(interaction) {
   const thief = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const target = interaction.options.getUser("user", true);
-  const remaining = getCooldownRemaining(thief.lastRobAt, COOLDOWNS.robMs);
+  const remaining = getCooldownRemaining(thief.lastRobAt, COOLDOWNS.robMs, thief);
   if (remaining > 0) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Rob Cooling Down", description: `You can attempt another robbery in ${humanizeMs(remaining)}.`, visual: "emblem-alert.svg" }), ephemeral: true });
   }
@@ -1842,7 +2077,7 @@ async function handleGear(interaction) {
 
 async function handleSpin(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  const remaining = getCooldownRemaining(user.lastSpinAt, COOLDOWNS.spinMs);
+  const remaining = getCooldownRemaining(user.lastSpinAt, COOLDOWNS.spinMs, user);
   if (remaining > 0) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Spin Cooling Down", description: `Your aura spinner will recharge in ${humanizeMs(remaining)}.`, visual: "core-arcade.svg" }), ephemeral: true });
   }
@@ -1866,7 +2101,7 @@ async function handleSpin(interaction) {
     visual: "core-arcade.svg",
     fields: [
       { name: "Jackpot", value: jackpot > 0 ? `Triggered for ${formatNumber(jackpot)} aura` : "Not this time", inline: true },
-      { name: "Next Spin", value: "5 minutes", inline: true },
+      { name: "Next Spin", value: humanizeMs(getEffectiveCooldownMs(user, COOLDOWNS.spinMs)), inline: true },
       { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
       { name: "Premium", value: isPremiumActive(user) ? "Spin boost applied" : "No premium boost", inline: true },
     ],
@@ -1877,7 +2112,7 @@ async function handleCoinflip(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const amount = interaction.options.getInteger("amount", true);
   const choice = interaction.options.getString("choice", true);
-  const remaining = getCooldownRemaining(user.lastCoinflipAt, COOLDOWNS.coinflipMs);
+  const remaining = getCooldownRemaining(user.lastCoinflipAt, COOLDOWNS.coinflipMs, user);
   if (remaining > 0) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Coinflip Cooling Down", description: `You can flip again in ${humanizeMs(remaining)}.`, visual: "emblem-core-arcade.svg" }), ephemeral: true });
   }
@@ -1931,13 +2166,13 @@ async function handleCoinflip(interaction) {
       { name: "Multiplier", value: choiceWins ? `${multiplier}x` : "0x", inline: true },
       { name: "XP Delta", value: `${xpDelta >= 0 ? "+" : ""}${formatNumber(xpDelta)}`, inline: true },
     ],
-    footer: "Coinflip cooldown: 2 minutes",
+    footer: `Coinflip cooldown: ${humanizeMs(getEffectiveCooldownMs(user, COOLDOWNS.coinflipMs))}`,
   }));
 }
 
 async function handleDaily(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  const remaining = getCooldownRemaining(user.lastDailyAt, COOLDOWNS.dailyMs);
+  const remaining = getCooldownRemaining(user.lastDailyAt, COOLDOWNS.dailyMs, user);
   if (remaining > 0) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Daily Already Claimed", description: `Your next daily reward unlocks in ${humanizeMs(remaining)}.`, visual: "emblem-help.svg" }), ephemeral: true });
   }
@@ -1946,7 +2181,8 @@ async function handleDaily(interaction) {
   const streakContinues = Date.now() - last <= COOLDOWNS.dailyMs * 2;
   user.streak = streakContinues ? user.streak + 1 : 1;
   user.lastDailyAt = new Date();
-  const premiumMultiplier = isPremiumActive(user) ? PREMIUM_DAILY_MULTIPLIER : 1;
+  const premiumRareCrates = getPremiumDailyRareCrates(user);
+  const premiumMultiplier = getPremiumDailyMultiplier(user);
   const auraReward = Math.floor((700 + user.streak * 90 + user.prestige * 140) * premiumMultiplier);
   const xpReward = Math.floor((180 + user.streak * 40) * premiumMultiplier);
   user.aura += auraReward;
@@ -1955,8 +2191,8 @@ async function handleDaily(interaction) {
   if (user.streak % 7 === 0) {
     user.crates.set("rare", (user.crates.get("rare") || 0) + 1);
   }
-  if (isPremiumActive(user)) {
-    user.crates.set("rare", (user.crates.get("rare") || 0) + 1);
+  if (premiumRareCrates > 0) {
+    user.crates.set("rare", (user.crates.get("rare") || 0) + premiumRareCrates);
   }
 
   user.quests = [];
@@ -1971,7 +2207,7 @@ async function handleDaily(interaction) {
     fields: [
       { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
       { name: "XP", value: `${formatNumber(xpReward)}`, inline: true },
-      { name: "Bonus", value: isPremiumActive(user) ? `Premium bonus rare crate + ${user.streak % 7 === 0 ? "streak rare crate" : "common crate"}` : user.streak % 7 === 0 ? "Rare crate earned" : "Common crate earned", inline: true },
+      { name: "Bonus", value: premiumRareCrates > 0 ? `Premium bonus ${premiumRareCrates} rare ${premiumRareCrates === 1 ? "crate" : "crates"} + ${user.streak % 7 === 0 ? "streak rare crate" : "common crate"}` : user.streak % 7 === 0 ? "Rare crate earned" : "Common crate earned", inline: true },
     ],
   }));
 }
@@ -2055,7 +2291,7 @@ async function handleBuy(interaction) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Item Not Found", description: "That shop item id does not exist.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
   if (isPremiumOnlyItem(item) && !isPremiumActive(user)) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Premium Required", description: "That item is reserved for premium members. Use `/premium buy` to purchase access.", visual: "emblem-alert.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "Premium Required", description: "That item is reserved for premium members. Use `/premium` to view available plans.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
   if (user.aura < item.price) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: "You do not have enough aura for that purchase.", visual: "emblem-economy.svg" }), ephemeral: true });
@@ -3333,67 +3569,22 @@ async function handleSetup(interaction) {
 
 async function handlePremium(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  const planId = interaction.options.getString("plan", true);
-  const missing = getMissingPaymentConfig(planId);
-
-  if (missing.length) {
-    return interaction.reply({
-      ...buildEmbedPayload({
-        title: "Razorpay Setup Incomplete",
-        description: `The payment flow is missing: ${missing.join(", ")}.`,
-        visual: "emblem-alert.svg",
-        footer: "Add the missing Razorpay environment variables, then try again.",
-      }),
-      ephemeral: true,
-    });
-  }
-
-  getPremiumPlan(planId);
-
-  try {
-    const { paymentLink, referenceId } = await createPremiumPaymentLink({
-      guildId: interaction.guildId,
-      discordUserId: interaction.user.id,
-      planId,
-      username: interaction.user.username,
-    });
-
-    if (user.billing) {
-      user.billing.provider = "razorpay";
-      user.billing.razorpayPaymentLinkId = paymentLink.id;
-      user.billing.razorpayReferenceId = referenceId;
-      user.billing.razorpayPlanId = planId;
-      user.billing.razorpayLinkStatus = paymentLink.status || "created";
-      await user.save();
-    }
-
-    return interaction.reply({
-      ...buildEmbedPayload({
-        title: "Premium Payment Link Ready",
-        description: `Open the Razorpay link below to purchase the **${formatPremiumPlanLabel(planId)}** premium plan and unlock the active premium benefits.`,
-        visual: "emblem-success.svg",
-        fields: [
-          { name: "Plan", value: formatPremiumPlanLabel(planId), inline: true },
-          { name: "Current Status", value: formatPremiumStatus(user), inline: true },
-          { name: "Premium Features", value: buildPremiumFeatureSummary() },
-          { name: "Payment Link", value: paymentLink.short_url || paymentLink.id },
-        ],
-        footer: "Premium will update automatically after Razorpay confirms the payment.",
-      }),
-      ephemeral: true,
-    });
-  } catch (error) {
-    console.error("Razorpay payment link creation failed:", error);
-    return interaction.reply({
-      ...buildEmbedPayload({
-        title: "Payment Link Failed",
-        description: "I could not create the Razorpay payment link right now.",
-        visual: "emblem-alert.svg",
-        footer: "Check your Razorpay keys and premium amount environment variables.",
-      }),
-      ephemeral: true,
-    });
-  }
+  const activePlan = getUserPremiumPlan(user);
+  return interaction.reply({
+    ...buildEmbedPayload({
+      title: "Premium",
+      description: "Choose from Monthly, Yearly, or Lifetime premium. Purchases are still handled outside the bot for now.",
+      visual: "emblem-alert.svg",
+      fields: [
+        { name: "Current Status", value: formatPremiumStatus(user), inline: true },
+        { name: "Active Plan", value: activePlan ? `${activePlan.label} (${activePlan.priceLabel})` : "None", inline: true },
+        ...buildPremiumPlanFields(),
+        { name: "Shared Premium Unlocks", value: buildPremiumFeatureSummary() },
+      ],
+      footer: "Premium can be granted manually by an admin using source: monthly, yearly, or lifetime.",
+    }),
+    ephemeral: true,
+  });
 }
 
 async function handleLeaderboard(interaction) {
@@ -3907,7 +4098,7 @@ async function handleAuthority(interaction) {
   if (user.rankIndex < 2) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Authority Locked", description: "You need rank Warden or higher to use rank-only commands.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
-  const remaining = getCooldownRemaining(user.lastAuthorityAt, COOLDOWNS.authorityMs);
+  const remaining = getCooldownRemaining(user.lastAuthorityAt, COOLDOWNS.authorityMs, user);
   if (remaining > 0) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Authority Cooling Down", description: `You can use this again in ${humanizeMs(remaining)}.`, visual: "emblem-help.svg" }), ephemeral: true });
   }
@@ -3946,8 +4137,8 @@ function buildCommands() {
     new SlashCommandBuilder().setName("balance").setDescription("Check wallet and vault balance.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
     new SlashCommandBuilder().setName("work").setDescription("Complete a shift for steady aura and XP."),
     new SlashCommandBuilder().setName("mine").setDescription("Gather crafting materials on a cooldown."),
-    new SlashCommandBuilder().setName("spin").setDescription("Spin for aura every 5 minutes."),
-    new SlashCommandBuilder().setName("coinflip").setDescription("Bet aura on heads or tails every 2 minutes.").addIntegerOption((option) => option.setName("amount").setDescription("Aura to bet").setRequired(true).setMinValue(1)).addStringOption((option) => option.setName("choice").setDescription("Choose heads or tails").setRequired(true).addChoices({ name: "heads", value: "heads" }, { name: "tails", value: "tails" })),
+    new SlashCommandBuilder().setName("spin").setDescription("Spin for aura on a cooldown."),
+    new SlashCommandBuilder().setName("coinflip").setDescription("Bet aura on heads or tails on a cooldown.").addIntegerOption((option) => option.setName("amount").setDescription("Aura to bet").setRequired(true).setMinValue(1)).addStringOption((option) => option.setName("choice").setDescription("Choose heads or tails").setRequired(true).addChoices({ name: "heads", value: "heads" }, { name: "tails", value: "tails" })),
     new SlashCommandBuilder().setName("rob").setDescription("Attempt to steal aura from another player.").addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true)),
     new SlashCommandBuilder().setName("daily").setDescription("Claim your daily streak reward."),
     new SlashCommandBuilder().setName("reminders").setDescription("Manage ready-state tag reminders.")
@@ -3972,7 +4163,7 @@ function buildCommands() {
     new SlashCommandBuilder().setName("pvp").setDescription("Invite another player into a loadout-based interactive battle.").addUserOption((option) => option.setName("user").setDescription("Opponent").setRequired(true)),
     new SlashCommandBuilder().setName("boss").setDescription("Fight a boss.").addStringOption((option) => option.setName("boss").setDescription("Boss id").addChoices({ name: "ember", value: "ember" }, { name: "oracle", value: "oracle" }, { name: "warden", value: "warden" }, { name: "codex", value: "codex" })),
     new SlashCommandBuilder().setName("leaderboard").setDescription("View top players and clans.").addStringOption((option) => option.setName("category").setDescription("Leaderboard type").setRequired(true).addChoices({ name: "aura", value: "aura" }, { name: "vault", value: "vault" }, { name: "xp", value: "xp" }, { name: "prestige", value: "prestige" }, { name: "clans", value: "clans" })),
-    new SlashCommandBuilder().setName("premium").setDescription("Open the premium purchase flow.").addStringOption((option) => option.setName("plan").setDescription("Premium plan").setRequired(true).addChoices(...getPremiumPlanChoices())),
+    new SlashCommandBuilder().setName("premium").setDescription("View your premium status."),
     new SlashCommandBuilder().setName("clan").setDescription("Manage your clan.").addSubcommand((sub) => sub.setName("create").setDescription("Create a clan for 50,000 aura.").addStringOption((option) => option.setName("name").setDescription("Clan name").setRequired(true))).addSubcommand((sub) => sub.setName("join").setDescription("Join a clan by code.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("apply").setDescription("Send a join request for approval.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("leave").setDescription("Leave your clan.")).addSubcommand((sub) => sub.setName("info").setDescription("View your clan.")).addSubcommand((sub) => sub.setName("members").setDescription("List clan members.")).addSubcommand((sub) => sub.setName("log").setDescription("View recent clan activity.")).addSubcommand((sub) => sub.setName("kick").setDescription("Owner-only member removal.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true))).addSubcommand((sub) => sub.setName("approve").setDescription("Owner or officer request approval.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("decline").setDescription("Owner or officer reject an applicant.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("role").setDescription("Owner-only officer management.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true)).addStringOption((option) => option.setName("role").setDescription("Role to set").setRequired(true).addChoices({ name: "officer", value: "officer" }, { name: "member", value: "member" }))).addSubcommand((sub) => sub.setName("transfer").setDescription("Owner-only leadership transfer.").addUserOption((option) => option.setName("user").setDescription("New owner").setRequired(true))).addSubcommand((sub) => sub.setName("disband").setDescription("Owner-only full clan deletion.")).addSubcommand((sub) => sub.setName("upgrade").setDescription("Spend clan vault aura on upgrades.").addStringOption((option) => option.setName("path").setDescription("Upgrade path").setRequired(true).addChoices({ name: "hall", value: "hall" }, { name: "vault", value: "vault" }, { name: "arsenal", value: "arsenal" }))).addSubcommand((sub) => sub.setName("raid").setDescription("Launch a cooldown-based clan raid.")).addSubcommand((sub) => sub.setName("donate").setDescription("Donate aura to your clan.").addIntegerOption((option) => option.setName("amount").setDescription("Amount").setRequired(true).setMinValue(1))).addSubcommand((sub) => sub.setName("war").setDescription("Fight another clan by code.").addStringOption((option) => option.setName("enemy").setDescription("Enemy clan code").setRequired(true))),
     new SlashCommandBuilder().setName("authority").setDescription("Rank-only blessing command.").addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true)),
   ].map((command) => command.toJSON());
@@ -3995,6 +4186,7 @@ async function routeInteraction(interaction) {
 }
 
 module.exports = {
+  applyPaddleWebhookEvent,
   buildCommands,
   routeInteraction,
   sendServerSetupMessage,
