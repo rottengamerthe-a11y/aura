@@ -1,5 +1,6 @@
 {
   "scripts": {
+    "register": "npm --prefix discord-bot run register",
     "test:premium": "npm --prefix discord-bot run test:premium --"
   },
   "dependencies": {

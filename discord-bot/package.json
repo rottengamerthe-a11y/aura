@@ -4,6 +4,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "register": "node src/registerCommands.js",
     "test": "node --check index.js",
     "test:premium": "node src/billing/testPremiumWebhook.js"
   },
