@@ -4,7 +4,8 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node --check index.js"
+    "test": "node --check index.js",
+    "test:premium": "node src/billing/testPremiumWebhook.js"
   },
   "keywords": [],
   "author": "",
