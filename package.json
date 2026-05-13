@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "test:premium": "npm --prefix discord-bot run test:premium --"
+  },
   "dependencies": {
     "express-session": "^1.19.0"
   }
