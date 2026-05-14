@@ -292,7 +292,7 @@ function getPaddlePlanByPriceId(priceId) {
 }
 
 function getPaddleCustomData(data) {
-  return data?.custom_data || data?.customData || {};
+  return data?.custom_data || data?.customData || data?.customDataJson || data?.custom_data_json || {};
 }
 
 function getPaddleFirstPriceId(data) {
@@ -336,7 +336,13 @@ function getPaddleIds(data) {
 
 async function findPaddleUser(data) {
   const customData = getPaddleCustomData(data);
-  const discordUserId = customData.discordUserId || customData.discord_user_id || customData.userId || customData.user_id;
+  const discordUserId = customData.discordUserId
+    || customData.discord_user_id
+    || customData.discord_user
+    || customData.discordId
+    || customData.discord_id
+    || customData.userId
+    || customData.user_id;
   if (discordUserId) {
     return getOrCreatePlayer(customData.guildId || customData.guild_id || null, discordUserId);
   }

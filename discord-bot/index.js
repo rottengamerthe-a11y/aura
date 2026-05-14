@@ -7,6 +7,7 @@ const crypto = require("crypto");
 const express = require("express");
 const session = require("express-session");
 const mongoose = require("mongoose");
+const { User } = require("./src/data/models");
 const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigration");
 const { applyPaddleWebhookEvent, buildCommands, routeInteraction, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
 
@@ -182,11 +183,33 @@ function startWebServer() {
     try {
       const event = JSON.parse(rawBody);
       const result = await applyPaddleWebhookEvent(event, event.event_id || event.eventId || null);
+      console.log("Paddle webhook processed:", {
+        eventType: event.event_type || event.eventType || event.type,
+        eventId: event.event_id || event.eventId || null,
+        result,
+      });
       return res.status(200).json({ ok: true, ...result });
     } catch (error) {
       console.error("Paddle webhook processing failed:", error);
       return res.status(500).json({ ok: false, error: "webhook_processing_failed" });
     }
+  });
+
+  app.get("/debug/premium/:userId", async (req, res) => {
+    const user = await User.findOne({ userId: req.params.userId }).sort({ updatedAt: -1 }).lean();
+
+    if (!user) {
+      return res.status(404).json({ ok: false, error: "user_not_found" });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      userId: user.userId,
+      guildId: user.guildId,
+      premium: user.premium || null,
+      billing: user.billing || null,
+      updatedAt: user.updatedAt,
+    });
   });
 
   app.use(session({
