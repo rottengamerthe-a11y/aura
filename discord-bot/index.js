@@ -164,11 +164,21 @@ function startWebServer() {
   const port = Number(process.env.PORT) || 3000;
   const paddleWebhookSecret = process.env.PADDLE_WEBHOOK_SECRET?.trim();
   const isProduction = process.env.NODE_ENV === "production";
+  const recentPaddleWebhooks = [];
+
+  function rememberPaddleWebhook(entry) {
+    recentPaddleWebhooks.unshift({
+      at: new Date().toISOString(),
+      ...entry,
+    });
+    recentPaddleWebhooks.splice(10);
+  }
 
   app.set("trust proxy", 1);
 
   app.post("/paddle/webhook", express.raw({ type: "application/json" }), async (req, res) => {
     if (!paddleWebhookSecret) {
+      rememberPaddleWebhook({ ok: false, error: "paddle_not_configured" });
       return res.status(503).json({ ok: false, error: "paddle_not_configured" });
     }
 
@@ -177,12 +187,20 @@ function startWebServer() {
 
     if (!verifyPaddleWebhookSignature(rawBody, signature, paddleWebhookSecret)) {
       console.error("Paddle webhook signature verification failed.");
+      rememberPaddleWebhook({ ok: false, error: "invalid_signature" });
       return res.status(400).json({ ok: false, error: "invalid_signature" });
     }
 
     try {
       const event = JSON.parse(rawBody);
       const result = await applyPaddleWebhookEvent(event, event.event_id || event.eventId || null);
+      rememberPaddleWebhook({
+        ok: true,
+        eventType: event.event_type || event.eventType || event.type || null,
+        eventId: event.event_id || event.eventId || null,
+        customData: event.data?.custom_data || event.data?.customData || null,
+        result,
+      });
       console.log("Paddle webhook processed:", {
         eventType: event.event_type || event.eventType || event.type,
         eventId: event.event_id || event.eventId || null,
@@ -193,6 +211,10 @@ function startWebServer() {
       console.error("Paddle webhook processing failed:", error);
       return res.status(500).json({ ok: false, error: "webhook_processing_failed" });
     }
+  });
+
+  app.get("/debug/paddle-webhooks", (_req, res) => {
+    return res.status(200).json({ ok: true, recent: recentPaddleWebhooks });
   });
 
   app.get("/debug/premium/:userId", async (req, res) => {
