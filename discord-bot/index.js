@@ -179,6 +179,14 @@ function startWebServer() {
 
   app.set("trust proxy", 1);
 
+  app.get("/paddle/webhook", (_req, res) => {
+    return res.status(200).json({
+      ok: true,
+      endpoint: "/paddle/webhook",
+      message: "Webhook endpoint is reachable. Paddle must send POST requests here.",
+    });
+  });
+
   app.post("/paddle/webhook", express.raw({ type: "application/json" }), async (req, res) => {
     if (!paddleWebhookSecret) {
       rememberPaddleWebhook({ ok: false, error: "paddle_not_configured" });
