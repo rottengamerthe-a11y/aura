@@ -148,7 +148,21 @@ const clanSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+const paddleWebhookLogSchema = new mongoose.Schema(
+  {
+    ok: { type: Boolean, default: false },
+    error: { type: String, default: null },
+    eventType: { type: String, default: null },
+    eventId: { type: String, default: null },
+    customData: { type: mongoose.Schema.Types.Mixed, default: null },
+    result: { type: mongoose.Schema.Types.Mixed, default: null },
+    createdAt: { type: Date, default: Date.now, index: true },
+  },
+  { versionKey: false }
+);
+
 const User = mongoose.models.User || mongoose.model("User", userSchema);
 const Clan = mongoose.models.Clan || mongoose.model("Clan", clanSchema);
+const PaddleWebhookLog = mongoose.models.PaddleWebhookLog || mongoose.model("PaddleWebhookLog", paddleWebhookLogSchema);
 
-module.exports = { Clan, User };
+module.exports = { Clan, PaddleWebhookLog, User };

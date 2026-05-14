@@ -7,7 +7,7 @@ const crypto = require("crypto");
 const express = require("express");
 const session = require("express-session");
 const mongoose = require("mongoose");
-const { User } = require("./src/data/models");
+const { PaddleWebhookLog, User } = require("./src/data/models");
 const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigration");
 const { applyPaddleWebhookEvent, buildCommands, routeInteraction, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
 
@@ -172,6 +172,9 @@ function startWebServer() {
       ...entry,
     });
     recentPaddleWebhooks.splice(10);
+    PaddleWebhookLog.create(entry).catch((error) => {
+      console.error("Failed to save Paddle webhook debug log:", error);
+    });
   }
 
   app.set("trust proxy", 1);
@@ -213,8 +216,9 @@ function startWebServer() {
     }
   });
 
-  app.get("/debug/paddle-webhooks", (_req, res) => {
-    return res.status(200).json({ ok: true, recent: recentPaddleWebhooks });
+  app.get("/debug/paddle-webhooks", async (_req, res) => {
+    const persisted = await PaddleWebhookLog.find({}).sort({ createdAt: -1 }).limit(10).lean();
+    return res.status(200).json({ ok: true, memory: recentPaddleWebhooks, persisted });
   });
 
   app.get("/debug/premium/:userId", async (req, res) => {
