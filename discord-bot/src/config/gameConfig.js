@@ -469,6 +469,7 @@ const COOLDOWNS = {
   workMs: 12 * 60 * 1000,
   robMs: 20 * 60 * 1000,
   mineMs: 10 * 60 * 1000,
+  bossMs: 15 * 60 * 1000,
   authorityMs: 10 * 60 * 1000,
   dailyMs: 24 * 60 * 60 * 1000,
 };

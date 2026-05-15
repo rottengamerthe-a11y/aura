@@ -58,6 +58,7 @@ const userSchema = new mongoose.Schema(
     lastWorkAt: { type: Date, default: null },
     lastRobAt: { type: Date, default: null },
     lastMineAt: { type: Date, default: null },
+    lastBossAt: { type: Date, default: null },
     lastAuthorityAt: { type: Date, default: null },
     lastVaultInterestAt: { type: Date, default: null },
     inventory: { type: [inventoryEntrySchema], default: [] },

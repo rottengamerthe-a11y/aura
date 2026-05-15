@@ -91,6 +91,7 @@ const REMINDER_ACTIONS = Object.freeze({
   rob: { label: "Rob", command: "/rob" },
   harvest: { label: "Harvest", command: "/garden harvest" },
   daily: { label: "Daily", command: "/daily" },
+  boss: { label: "Boss", command: "/boss" },
   authority: { label: "Authority", command: "/authority" },
 });
 const REMINDER_ACTION_CHOICES = Object.entries(REMINDER_ACTIONS).map(([value, action]) => ({ name: action.label, value }));
@@ -1345,6 +1346,9 @@ function getReminderReadyTimestamp(user, action) {
   }
   if (action === "authority" && user.lastAuthorityAt) {
     return user.lastAuthorityAt.getTime() + getEffectiveCooldownMs(user, COOLDOWNS.authorityMs);
+  }
+  if (action === "boss" && user.lastBossAt) {
+    return user.lastBossAt.getTime() + getEffectiveCooldownMs(user, COOLDOWNS.bossMs);
   }
   if (action === "harvest") {
     return getHarvestReadyAt(user);
@@ -2868,6 +2872,15 @@ function getBattleFighterField(fighter) {
   ].join("\n");
 }
 
+function getCompactBattleFighterField(fighter) {
+  const status = getBattleStatuses(fighter);
+  return [
+    `HP: ${fighter.hp}/${fighter.maxHp}`,
+    progressBar(fighter.hp, fighter.maxHp, 10),
+    status === "Stable" ? "State: Stable" : `State: ${status}`,
+  ].join("\n");
+}
+
 function resolveTurnStart(fighter) {
   const notes = [];
   if (fighter.bleedTurns > 0 && fighter.bleedDamage > 0) {
@@ -3293,6 +3306,7 @@ function createBattleEmbed(title, description, visual, state) {
     ? `${state.playerOne.name} (${state.playerOne.skill?.name || "Focus"})`
     : `${state.playerTwo.name} (${state.playerTwo.skill?.name || "Focus"})`;
   const extraFields = [];
+  const fighterField = state.isBoss ? getCompactBattleFighterField : getBattleFighterField;
   if (state.arena) {
     extraFields.push({
       name: "Arena",
@@ -3305,8 +3319,8 @@ function createBattleEmbed(title, description, visual, state) {
     description,
     visual,
     fields: [
-      { name: state.playerOne.name, value: getBattleFighterField(state.playerOne), inline: true },
-      { name: state.playerTwo.name, value: getBattleFighterField(state.playerTwo), inline: true },
+      { name: state.playerOne.name, value: fighterField(state.playerOne), inline: true },
+      { name: state.playerTwo.name, value: fighterField(state.playerTwo), inline: true },
       { name: "Turn", value: `${turnLabel}\nExchange ${(state.exchangeCount || 0) + 1}`, inline: false },
       ...extraFields,
     ],
@@ -3856,6 +3870,10 @@ async function handleBoss(interaction) {
   const bossId = interaction.options.getString("boss") || BOSSES[0].id;
   const boss = BOSSES.find((entry) => entry.id === bossId) || BOSSES[0];
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const remaining = getCooldownRemaining(user.lastBossAt, COOLDOWNS.bossMs, user);
+  if (remaining > 0) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Boss Cooling Down", description: `You can challenge another boss in ${humanizeMs(remaining)}.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
   const battleId = crypto.randomUUID();
   const state = {
     id: battleId,
@@ -3872,6 +3890,8 @@ async function handleBoss(interaction) {
     exchangeCount: 0,
   };
   state.playerTwo.skill.heal = 0;
+  user.lastBossAt = new Date();
+  await user.save();
   activeBattles.set(battleId, state);
   await saveBattleSession(state);
   return interaction.reply({
