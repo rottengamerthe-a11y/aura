@@ -10,6 +10,7 @@ const mongoose = require("mongoose");
 const { GuildSettings, PaddleWebhookLog, User } = require("./src/data/models");
 const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigration");
 const { applyPaddleWebhookEvent, buildCommands, recentInteractions, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
+const { buildEmbedPayload } = require("./src/utils/visuals");
 
 const APP_VERSION = "aurix-hud-v4-title";
 const startedAt = Date.now();
@@ -401,6 +402,26 @@ function startWebServer() {
       ok: true,
       version: APP_VERSION,
       recent: recentInteractions,
+    });
+  });
+
+  app.get("/debug/embed-preview", (_req, res) => {
+    const payload = buildEmbedPayload({
+      title: "Spin Complete",
+      description: "The wheel landed clean. You gained **500 aura** and **80 XP**.",
+      visual: "core-arcade.svg",
+      fields: [
+        { name: "Jackpot", value: "Not this time", inline: true },
+        { name: "Next Spin", value: "4m", inline: true },
+        { name: "Wallet", value: "10,000 aura", inline: true },
+      ],
+    });
+
+    res.status(200).json({
+      ok: true,
+      version: APP_VERSION,
+      embed: payload.embeds[0].toJSON(),
+      hasFiles: Boolean(payload.files?.length),
     });
   });
 
