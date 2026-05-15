@@ -7,6 +7,7 @@ const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 
 const activeBattles = new Map();
 const reminderIntervals = new WeakMap();
+const COMMAND_BUILD_ID = "aurix-ui-hud-v2";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
 const BATTLE_GEAR_SLOTS = Object.freeze([
@@ -4794,6 +4795,17 @@ function buildCommands() {
 }
 
 async function routeInteraction(interaction) {
+  console.log("Aurix interaction routed:", {
+    build: COMMAND_BUILD_ID,
+    id: interaction.id,
+    type: interaction.type,
+    command: interaction.commandName || null,
+    customId: interaction.customId || null,
+    guildId: interaction.guildId || null,
+    channelId: interaction.channelId || null,
+    userId: interaction.user?.id || null,
+  });
+
   if (interaction.isButton() || interaction.isStringSelectMenu()) {
     return handleBattleComponentInteraction(interaction);
   }
