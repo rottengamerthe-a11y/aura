@@ -5,7 +5,7 @@ const { COLORS, VISUALS_DIR } = require("../config/gameConfig");
 
 const DIVIDER = "\u2501".repeat(20);
 const FOOTER_PREFIX = "AURIX";
-const HUD_VERSION = "HUD v3";
+const HUD_VERSION = "HUD v4";
 
 const EMBED_THEMES = [
   { match: /alert|invalid|failed|locked|cooling down|missing|blocked|not enough/i, emoji: "\u26A0\uFE0F", color: COLORS.warning, label: "ALERT" },
@@ -66,9 +66,23 @@ function isPreformattedLine(line) {
   return /^\s*(```|`|>|[-*]|\d+\.|[\u2022\u25E6\u25AA\u25B8\u25C6\u25C7\u2726\u2B25\u25A3])/u.test(line);
 }
 
-function decorateDescription(description) {
+function getSummaryLine(title, description) {
+  const source = String(description || title || "Awaiting command result.")
+    .split("\n")
+    .map((line) => line.replace(/[`*_>]/g, "").trim())
+    .find(Boolean);
+  return source ? source.slice(0, 180) : "Awaiting command result.";
+}
+
+function decorateDescription(description, theme, title) {
+  const summary = getSummaryLine(title, description);
   if (!description) {
-    return DIVIDER;
+    return [
+      "```",
+      `AURIX ${HUD_VERSION} | ${theme.label}`,
+      `STATUS  ${summary}`,
+      "```",
+    ].join("\n");
   }
 
   const body = description
@@ -82,7 +96,14 @@ function decorateDescription(description) {
     })
     .join("\n");
 
-  return `${DIVIDER}\n${body}\n${DIVIDER}`;
+  return [
+    "```",
+    `AURIX ${HUD_VERSION} | ${theme.label}`,
+    `STATUS  ${summary}`,
+    "```",
+    body,
+    DIVIDER,
+  ].join("\n");
 }
 
 function decorateFields(fields) {
@@ -99,7 +120,7 @@ function createGameEmbed({ title, description, color = COLORS.primary, fields = 
     .setColor(color === COLORS.primary ? theme.color : color)
     .setAuthor({ name: `${theme.label} MODULE | ${HUD_VERSION}` })
     .setTitle(formatTitle(title, theme))
-    .setDescription(decorateDescription(description))
+    .setDescription(decorateDescription(description, theme, title))
     .setFooter({ text: footer ? `${FOOTER_PREFIX} \u2022 ${theme.label} \u2022 ${HUD_VERSION} \u2022 ${footer}` : `${FOOTER_PREFIX} \u2022 ${theme.label} \u2022 ${HUD_VERSION}` })
     .setTimestamp();
 
