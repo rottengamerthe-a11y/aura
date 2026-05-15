@@ -3,20 +3,21 @@ const path = require("path");
 const { AttachmentBuilder, EmbedBuilder } = require("discord.js");
 const { COLORS, VISUALS_DIR } = require("../config/gameConfig");
 
-const EMBED_THEME_EMOJIS = [
-  { match: /clan|raid|war/i, emoji: "\u{1F6E1}\uFE0F" },
-  { match: /vault|economy|shop|buy|gift|deposit|withdraw|donat/i, emoji: "\u{1F4B0}" },
-  { match: /mine|craft|gear|garden|crop|harvest/i, emoji: "\u{1F33F}" },
-  { match: /pvp|boss|skill|battle|authority/i, emoji: "\u2694\uFE0F" },
-  { match: /rank|prestige|leaderboard|profile|stats/i, emoji: "\u{1F3C6}" },
-  { match: /quest|help|guide|setup|start|crate|inventory/i, emoji: "\u2728" },
-  { match: /alert|invalid|failed|locked|cooling down|missing|blocked/i, emoji: "\u26A0\uFE0F" },
+const DIVIDER = "━━━━━━━━━━━━━━━━━━━━";
+const FOOTER_PREFIX = "AURIX";
+
+const EMBED_THEMES = [
+  { match: /alert|invalid|failed|locked|cooling down|missing|blocked|not enough/i, emoji: "⚠️", color: COLORS.warning, label: "ALERT" },
+  { match: /success|claimed|joined|opened|complete|crafted|equipped|purchased|victory|finished/i, emoji: "✅", color: COLORS.success, label: "SUCCESS" },
+  { match: /clan|raid|war/i, emoji: "🛡️", color: 0x7dd3fc, label: "CLAN" },
+  { match: /vault|economy|shop|buy|gift|deposit|withdraw|donat|aura|balance/i, emoji: "💰", color: 0xf4c95d, label: "ECONOMY" },
+  { match: /mine|craft|gear|garden|crop|harvest/i, emoji: "🌿", color: 0x74d680, label: "GATHERING" },
+  { match: /pvp|boss|skill|battle|authority|duel/i, emoji: "⚔️", color: COLORS.danger, label: "COMBAT" },
+  { match: /rank|prestige|leaderboard|profile|stats/i, emoji: "🏆", color: 0xa78bfa, label: "PROGRESS" },
+  { match: /quest|help|guide|setup|start|crate|inventory|premium/i, emoji: "✨", color: COLORS.primary, label: "AURIX" },
 ];
 
-const DESCRIPTION_EMOJIS = ["\u2728", "\u{1F539}", "\u{1F4AB}", "\u{1F31F}", "\u{1F338}"];
-const FIELD_NAME_EMOJIS = ["\u{1F539}", "\u{1F538}", "\u2726", "\u{1F4A0}", "\u{1F3F7}\uFE0F"];
-const FIELD_VALUE_EMOJIS = ["\u2022", "\u25E6", "\u25AA", "\u25B8", "\u25AB"];
-const FOOTER_EMOJIS = ["\u2726", "\u2727", "\u2756"];
+const FIELD_NAME_EMOJIS = ["◆", "◇", "✦", "⬥", "▣"];
 
 function buildAttachment(fileName) {
   const filePath = path.join(VISUALS_DIR, fileName);
@@ -28,10 +29,9 @@ function buildAttachment(fileName) {
   return new AttachmentBuilder(filePath, { name: fileName });
 }
 
-function pickEmbedEmoji({ title = "", description = "", footer = "", visual = "" }) {
+function pickEmbedTheme({ title = "", description = "", footer = "", visual = "" }) {
   const text = [title, description, footer, visual].filter(Boolean).join(" ");
-  const themed = EMBED_THEME_EMOJIS.find(({ match }) => match.test(text));
-  return themed ? themed.emoji : "\u2728";
+  return EMBED_THEMES.find(({ match }) => match.test(text)) || { emoji: "✨", color: COLORS.primary, label: "AURIX" };
 }
 
 function pickEmoji(list, index = 0) {
@@ -50,41 +50,59 @@ function decorateText(text, emoji) {
   return hasLeadingEmoji(text) ? text : `${emoji} ${text}`;
 }
 
-function decorateDescription(description, emoji) {
-  if (!description) {
-    return description;
+function formatTitle(title, theme) {
+  if (!title) {
+    return `${theme.emoji} AURIX`;
   }
 
-  const lines = description.split("\n");
-  return lines
+  const cleanTitle = title.replace(/\s+/g, " ").trim();
+  return hasLeadingEmoji(cleanTitle)
+    ? cleanTitle
+    : `${theme.emoji} ${theme.label} // ${cleanTitle.toUpperCase()}`;
+}
+
+function isPreformattedLine(line) {
+  return /^\s*(```|`|>|[-*]|\d+\.|[•◦▪▸◆◇✦⬥▣])/u.test(line);
+}
+
+function decorateDescription(description) {
+  if (!description) {
+    return DIVIDER;
+  }
+
+  const body = description
+    .split("\n")
     .map((line) => {
-      if (!line.trim() || /^\s*[•\-*>`]/.test(line) || hasLeadingEmoji(line)) {
+      if (!line.trim() || isPreformattedLine(line) || hasLeadingEmoji(line)) {
         return line;
       }
 
-      return `${emoji} ${line}`;
+      return `> ${line}`;
     })
     .join("\n");
+
+  return `${DIVIDER}\n${body}\n${DIVIDER}`;
 }
 
 function decorateFields(fields, themeEmoji) {
   return fields.map((field, index) => ({
     ...field,
     name: decorateText(field.name, pickEmoji(FIELD_NAME_EMOJIS, index) || themeEmoji),
-    value: decorateDescription(field.value, pickEmoji(FIELD_VALUE_EMOJIS, index)),
+    value: field.value || "No data.",
   }));
 }
 
 function createGameEmbed({ title, description, color = COLORS.primary, fields = [], footer, visual }) {
-  const themeEmoji = pickEmbedEmoji({ title, description, footer, visual });
+  const theme = pickEmbedTheme({ title, description, footer, visual });
   const embed = new EmbedBuilder()
-    .setColor(color)
-    .setTitle(decorateText(title, themeEmoji))
-    .setDescription(decorateDescription(description, pickEmoji(DESCRIPTION_EMOJIS)))
-    .addFields(decorateFields(fields, themeEmoji));
+    .setColor(color === COLORS.primary ? theme.color : color)
+    .setTitle(formatTitle(title, theme))
+    .setDescription(decorateDescription(description))
+    .setFooter({ text: footer ? `${FOOTER_PREFIX} • ${footer}` : `${FOOTER_PREFIX} • ${theme.label}` })
+    .setTimestamp();
 
-  if (footer) {
-    embed.setFooter({ text: decorateText(footer, pickEmoji(FOOTER_EMOJIS)) });
+  if (fields.length) {
+    embed.addFields(decorateFields(fields, theme.emoji));
   }
 
   if (visual) {
