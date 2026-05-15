@@ -8,7 +8,7 @@ const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 const activeBattles = new Map();
 const reminderIntervals = new WeakMap();
 const recentInteractions = [];
-const COMMAND_BUILD_ID = "aurix-ui-hud-v2";
+const COMMAND_BUILD_ID = "aurix-combat-v6";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
 const BATTLE_GEAR_SLOTS = Object.freeze([
@@ -224,6 +224,36 @@ const BATTLE_ACTION_EMOJIS = Object.freeze({
   skill: "✨",
   guard: "🛡️",
   finish: "☠️",
+});
+const BOSS_INTENTS = Object.freeze({
+  crush: {
+    label: "Crushing Blow",
+    danger: "High damage",
+    action: "heavy",
+    counter: "Guard or Sidestep",
+    tell: "The boss plants its feet and winds up a brutal swing.",
+  },
+  shatter: {
+    label: "Guard Shatter",
+    danger: "Pierces guard",
+    action: "pierce",
+    counter: "Sidestep or Feint",
+    tell: "The boss aims for your defense instead of your body.",
+  },
+  mark: {
+    label: "Expose Mark",
+    danger: "Sets up future damage",
+    action: "feint",
+    counter: "Strike pressure or Guard",
+    tell: "The boss studies your stance and looks for an opening.",
+  },
+  surge: {
+    label: "Power Surge",
+    danger: "Charges next attack",
+    action: "charge",
+    counter: "Heavy, Pierce, or Finisher",
+    tell: "The arena hums as the boss gathers power.",
+  },
 });
 
 function randInt(min, max) {
@@ -2908,8 +2938,8 @@ function emojiHpBar(current, total, size = 10) {
   const ratio = total <= 0 ? 1 : clamp(current / total, 0, 1);
   const filled = Math.round(ratio * size);
   const empty = size - filled;
-  const fillEmoji = ratio <= 0.25 ? "🟥" : ratio <= 0.55 ? "🟨" : "🟩";
-  return `${fillEmoji.repeat(filled)}${"⬛".repeat(empty)}`;
+  const fillEmoji = ratio <= 0.25 ? "\u{1F7E5}" : ratio <= 0.55 ? "\u{1F7E8}" : "\u{1F7E9}";
+  return `${fillEmoji.repeat(filled)}${"\u2B1B".repeat(empty)}`;
 }
 
 function getHpMood(fighter, isBoss = false) {
@@ -2956,8 +2986,46 @@ function formatCombatLog(description) {
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(-4)
-    .map((line) => `▸ ${line}`)
+    .map((line) => `\u25B8 ${line}`)
     .join("\n");
+}
+
+function chooseBossIntent(state) {
+  const player = state.playerOne;
+  const boss = state.playerTwo;
+  const bossHpRatio = boss.maxHp <= 0 ? 1 : boss.hp / boss.maxHp;
+  const intentPool = ["crush", "mark", "shatter"];
+
+  if (bossHpRatio <= 0.55) {
+    intentPool.push("surge", "crush");
+  }
+  if ((player.combo || 0) >= 2 || player.guard) {
+    intentPool.push("shatter");
+  }
+  if (player.hp <= player.maxHp * 0.35) {
+    intentPool.push("crush");
+  }
+
+  const intentId = intentPool[randInt(0, intentPool.length - 1)];
+  return { id: intentId, ...BOSS_INTENTS[intentId] };
+}
+
+function getBossIntent(state) {
+  const existingIntent = state?.bossIntent?.id ? BOSS_INTENTS[state.bossIntent.id] : null;
+  if (existingIntent) {
+    return { id: state.bossIntent.id, ...existingIntent };
+  }
+  return chooseBossIntent(state);
+}
+
+function formatBossIntent(state) {
+  const intent = getBossIntent(state);
+  return [
+    `\u26A0\uFE0F \`Incoming\` **${intent.label}**`,
+    `\u{1F525} \`Threat\` ${intent.danger}`,
+    `\u{1F6E1}\uFE0F \`Counter\` ${intent.counter}`,
+    `> ${intent.tell}`,
+  ].join("\n");
 }
 
 function getBossThemeColor(bossId) {
@@ -2980,47 +3048,52 @@ function createBossBattlePayload(description, visual, state) {
   const attachment = visual ? buildAttachment(visual) : null;
   const embed = new EmbedBuilder()
     .setColor(getBossThemeColor(boss.id))
-    .setTitle(`⚔️ RAID BOSS | ${boss.name.toUpperCase()}`)
+    .setTitle(`\u2694\uFE0F RAID BOSS | ${boss.name.toUpperCase()}`)
     .setDescription([
       `> **${boss.name}** enters phase **${bossMood}**.`,
       "",
-      "━━━━━━━━━━━━━━━━━━━━",
-      `🎯 **Turn:** \`${turnName}\``,
-      `🔁 **Exchange:** \`${exchange}\``,
-      "━━━━━━━━━━━━━━━━━━━━",
+      "\u2501".repeat(20),
+      `\u{1F3AF} **Turn:** \`${turnName}\``,
+      `\u{1F501} **Exchange:** \`${exchange}\``,
+      "\u2501".repeat(20),
     ].join("\n"))
     .addFields(
       {
-        name: "👤 Player HUD",
+        name: "\u{1F464} Player HUD",
         value: [
-          `❤️ \`HP\` ${emojiHpBar(player.hp, player.maxHp)} **${player.hp}/${player.maxHp}**`,
-          `⚡ \`State\` **${playerMood}**`,
-          `✨ \`Skill\` **${player.skill?.name || "Focus"}**`,
-          `🎒 \`Items\` ${summarizeCombatInventory(player.combatItems)}`,
+          `\u2764\uFE0F \`HP\` ${emojiHpBar(player.hp, player.maxHp)} **${player.hp}/${player.maxHp}**`,
+          `\u26A1 \`State\` **${playerMood}**`,
+          `\u2728 \`Skill\` **${player.skill?.name || "Focus"}**`,
+          `\u{1F392} \`Items\` ${summarizeCombatInventory(player.combatItems)}`,
         ].join("\n"),
         inline: false,
       },
       {
-        name: "👹 Boss HUD",
+        name: "\u{1F479} Boss HUD",
         value: [
-          `💔 \`HP\` ${emojiHpBar(boss.hp, boss.maxHp)} **${boss.hp}/${boss.maxHp}**`,
-          `⚠️ \`Phase\` **${bossMood}**`,
-          `🌀 \`Effects\` ${compactBattleStatuses(boss)}`,
+          `\u{1F494} \`HP\` ${emojiHpBar(boss.hp, boss.maxHp)} **${boss.hp}/${boss.maxHp}**`,
+          `\u26A0\uFE0F \`Phase\` **${bossMood}**`,
+          `\u{1F300} \`Effects\` ${compactBattleStatuses(boss)}`,
         ].join("\n"),
         inline: false,
       },
       {
-        name: "📜 Combat Log",
+        name: "\u{1F52E} Boss Intent",
+        value: formatBossIntent(state),
+        inline: false,
+      },
+      {
+        name: "\u{1F4DC} Combat Log",
         value: formatCombatLog(description),
         inline: false,
       },
       {
-        name: "🎮 Controller",
-        value: "Choose an action below. Green buttons build momentum, red buttons gamble for damage, and items can swing the fight.",
+        name: "\u{1F3AE} Controller",
+        value: "Read the boss intent, then choose a counter. Guard, Sidestep, Heavy, Pierce, and Finisher now matter at different moments.",
         inline: false,
       }
     )
-    .setFooter({ text: `Boss UI v5 • Live encounter HUD • ${player.name} vs ${boss.name}` })
+    .setFooter({ text: `Boss UI v6 • Telegraph combat • ${player.name} vs ${boss.name}` })
     .setTimestamp();
 
   if (attachment) {
@@ -3028,7 +3101,7 @@ function createBossBattlePayload(description, visual, state) {
   }
 
   return {
-    content: `🎮 **Boss Fight v5** | ${player.name} vs ${boss.name}`,
+    content: `\u{1F3AE} **Boss Fight v6** | ${player.name} vs ${boss.name}`,
     embeds: [embed],
     files: attachment ? [attachment] : [],
   };
@@ -3400,6 +3473,34 @@ function resolveArenaPulse(state) {
   };
 }
 
+function resolveBossIntent(state) {
+  const boss = state.playerTwo;
+  const player = state.playerOne;
+  const intent = getBossIntent(state);
+  const playerWasGuarding = Boolean(player.guard);
+  const playerWasEvasive = (player.evasiveTurns || 0) > 0;
+  const result = runTurn(boss, player, intent.action, state);
+  const reaction = [];
+
+  if (intent.id === "crush" && playerWasGuarding) {
+    reaction.push("Your guard braced against the telegraphed hit.");
+  }
+  if (intent.id === "crush" && playerWasEvasive) {
+    reaction.push("Your sidestep gave you a chance to slip the crush.");
+  }
+  if (intent.id === "shatter" && playerWasGuarding) {
+    reaction.push("The shatter punished a defensive stance.");
+  }
+  if (intent.id === "surge" && boss.chargeStacks > 0) {
+    reaction.push(`${boss.name} is charged. Interrupt or brace before the next attack.`);
+  }
+
+  return {
+    text: `${boss.name} used **${intent.label}**. ${result.text}${reaction.length ? `\n${reaction.join(" ")}` : ""}`,
+    damage: result.damage,
+  };
+}
+
 function buildBattleComponents(state, fighter) {
   const canUseSkill = Boolean(fighter?.skill);
   const skillCooldownLabel = getBattleActionCooldownLabel(fighter, "skill");
@@ -3713,11 +3814,12 @@ async function advanceBattle(interaction, state, acting, defending, actionSummar
     if (bossStart.defeated) {
       return finishBattle(interaction, state, acting.id);
     }
-    const bossResult = runTurn(defending, acting, "attack", state);
+    const bossResult = resolveBossIntent(state);
     summary += `\n${bossResult.text}`;
     if (acting.hp <= 0) {
       return finishBattle(interaction, state, defending.id);
     }
+    state.bossIntent = chooseBossIntent(state);
   } else {
     state.turnId = defending.id;
   }
@@ -4048,6 +4150,7 @@ async function handleBoss(interaction) {
     rewardXp: boss.rewardXp,
     exchangeCount: 0,
   };
+  state.bossIntent = chooseBossIntent(state);
   state.playerTwo.skill.heal = 0;
   user.lastBossAt = new Date();
   await user.save();
