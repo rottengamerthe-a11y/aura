@@ -1576,7 +1576,11 @@ function getHelpSection(categoryId) {
 }
 
 function getOfficialServerUrl() {
-  const value = process.env.OFFICIAL_SERVER_URL;
+  const value = process.env.OFFICIAL_SERVER_URL
+    || process.env.OFFICIAL_DISCORD_URL
+    || process.env.DISCORD_SERVER_URL
+    || process.env.SUPPORT_SERVER_URL
+    || PREMIUM_PURCHASE_URL;
   if (typeof value !== "string") {
     return null;
   }
@@ -1595,12 +1599,12 @@ function hasSetupAccess(memberPermissions) {
 }
 
 function buildOfficialServerValue() {
-  return getOfficialServerUrl() || "Not configured yet. Set OFFICIAL_SERVER_URL in `.env`.";
+  return getOfficialServerUrl();
 }
 
 function buildPlayerStartPayload(user) {
   return buildEmbedPayload({
-    title: "Aura Garden Online",
+    title: "Aurix Online",
     description: `Your save is ready with ${formatNumber(user.aura)} starter aura. Here is the fastest way to get moving.`,
     visual: "help-core.svg",
     fields: [
@@ -1623,7 +1627,6 @@ function buildServerSetupPayload(guildName) {
       { name: "Player Onboarding", value: "Members should run `/start` to create their save and see the quick-start path." },
       { name: "Best First Commands", value: "`/daily`, `/work`, `/spin`, `/mine`, `/profile`, `/help`" },
       { name: "Changing Channels", value: "Admins can run `/setup` inside a different channel, or `/setup channel:#channel`, to move Aurix." },
-      { name: "Official Server", value: buildOfficialServerValue() },
     ],
     footer: "Commands used outside this channel will point members back here.",
   });
@@ -3821,18 +3824,14 @@ async function handlePremium(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const activePlan = getUserPremiumPlan(user);
   return interaction.reply({
-    ...buildEmbedPayload({
-      title: "Premium",
-      description: "Check your membership status and open the Aurix premium page.",
-      visual: "emblem-alert.svg",
-      fields: [
-        { name: "Current Status", value: formatPremiumStatus(user), inline: true },
-        { name: "Active Plan", value: activePlan ? `${activePlan.label} (${activePlan.priceLabel})` : "None", inline: true },
-        { name: "Get Premium", value: PREMIUM_PURCHASE_URL },
-        { name: "Shared Premium Unlocks", value: buildPremiumFeatureSummary() },
-      ],
-      footer: "Login with Discord on the site before buying so premium links to your account.",
-    }),
+    content: [
+      `**Aurix Premium**`,
+      `Status: ${formatPremiumStatus(user)}`,
+      `Active plan: ${activePlan ? `${activePlan.label} (${activePlan.priceLabel})` : "None"}`,
+      `Get premium: ${PREMIUM_PURCHASE_URL}`,
+      "",
+      "Login with Discord on the site before buying so premium links to your account.",
+    ].join("\n"),
     ephemeral: true,
   });
 }
