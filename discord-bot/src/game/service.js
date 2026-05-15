@@ -1,9 +1,9 @@
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
 const crypto = require("crypto");
 const { BOSSES, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
 const { BattleSession, Clan, GuildSettings, PvpInvite, User } = require("../data/models");
 const { buildClanCreateData, buildClanLeaderboardFilter, buildClanLookup, buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
-const { buildEmbedPayload } = require("../utils/visuals");
+const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 
 const activeBattles = new Map();
 const reminderIntervals = new WeakMap();
@@ -2902,6 +2902,14 @@ function battleHpBar(current, total, size = 16) {
   return `${"█".repeat(filled)}${"░".repeat(size - filled)} ${Math.round(ratio * 100)}%`;
 }
 
+function emojiHpBar(current, total, size = 10) {
+  const ratio = total <= 0 ? 1 : clamp(current / total, 0, 1);
+  const filled = Math.round(ratio * size);
+  const empty = size - filled;
+  const fillEmoji = ratio <= 0.25 ? "🟥" : ratio <= 0.55 ? "🟨" : "🟩";
+  return `${fillEmoji.repeat(filled)}${"⬛".repeat(empty)}`;
+}
+
 function getHpMood(fighter, isBoss = false) {
   const ratio = fighter.maxHp <= 0 ? 1 : fighter.hp / fighter.maxHp;
   if (fighter.hp <= 0) {
@@ -2948,6 +2956,80 @@ function formatCombatLog(description) {
     .slice(-4)
     .map((line) => `▸ ${line}`)
     .join("\n");
+}
+
+function getBossThemeColor(bossId) {
+  const colors = {
+    "boss:ember": 0xe63946,
+    "boss:oracle": 0x4cc9f0,
+    "boss:warden": 0xf4a261,
+    "boss:codex": 0x9b5de5,
+  };
+  return colors[bossId] || 0x2f3136;
+}
+
+function createBossBattlePayload(description, visual, state) {
+  const player = state.playerOne;
+  const boss = state.playerTwo;
+  const exchange = (state.exchangeCount || 0) + 1;
+  const turnName = state.turnId === player.id ? player.name : boss.name;
+  const bossMood = getHpMood(boss, true);
+  const playerMood = getHpMood(player);
+  const attachment = visual ? buildAttachment(visual) : null;
+  const embed = new EmbedBuilder()
+    .setColor(getBossThemeColor(boss.id))
+    .setTitle(`⚔️ RAID BOSS | ${boss.name.toUpperCase()}`)
+    .setDescription([
+      `> **${boss.name}** enters phase **${bossMood}**.`,
+      "",
+      "━━━━━━━━━━━━━━━━━━━━",
+      `🎯 **Turn:** \`${turnName}\``,
+      `🔁 **Exchange:** \`${exchange}\``,
+      "━━━━━━━━━━━━━━━━━━━━",
+    ].join("\n"))
+    .addFields(
+      {
+        name: "👤 Player HUD",
+        value: [
+          `❤️ \`HP\` ${emojiHpBar(player.hp, player.maxHp)} **${player.hp}/${player.maxHp}**`,
+          `⚡ \`State\` **${playerMood}**`,
+          `✨ \`Skill\` **${player.skill?.name || "Focus"}**`,
+          `🎒 \`Items\` ${summarizeCombatInventory(player.combatItems)}`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "👹 Boss HUD",
+        value: [
+          `💔 \`HP\` ${emojiHpBar(boss.hp, boss.maxHp)} **${boss.hp}/${boss.maxHp}**`,
+          `⚠️ \`Phase\` **${bossMood}**`,
+          `🌀 \`Effects\` ${compactBattleStatuses(boss)}`,
+        ].join("\n"),
+        inline: false,
+      },
+      {
+        name: "📜 Combat Log",
+        value: formatCombatLog(description),
+        inline: false,
+      },
+      {
+        name: "🎮 Controller",
+        value: "Choose an action below. Green buttons build momentum, red buttons gamble for damage, and items can swing the fight.",
+        inline: false,
+      }
+    )
+    .setFooter({ text: `Boss UI v5 • Live encounter HUD • ${player.name} vs ${boss.name}` })
+    .setTimestamp();
+
+  if (attachment) {
+    embed.setImage(`attachment://${visual}`);
+  }
+
+  return {
+    content: `🎮 **Boss Fight v5** | ${player.name} vs ${boss.name}`,
+    embeds: [embed],
+    files: attachment ? [attachment] : [],
+  };
 }
 
 function resolveTurnStart(fighter) {
@@ -3376,22 +3458,7 @@ function createBattleEmbed(title, description, visual, state) {
     ? `${state.playerOne.name} (${state.playerOne.skill?.name || "Focus"})`
     : `${state.playerTwo.name} (${state.playerTwo.skill?.name || "Focus"})`;
   if (state.isBoss) {
-    const payload = buildEmbedPayload({
-      title: `Boss Fight v4: ${state.playerTwo.name}`,
-      description: formatBossBattleScreen(state),
-      visual,
-      fields: [
-        { name: "Combat Log", value: formatCombatLog(description), inline: false },
-        { name: "You", value: `${compactBattleStatuses(state.playerOne)}\nSkill ready: ${state.playerOne.skill?.name || "Focus"}`, inline: true },
-        { name: "Boss", value: `${compactBattleStatuses(state.playerTwo)}\nPressure: ${getHpMood(state.playerTwo, true)}`, inline: true },
-        { name: "Choose Move", value: "Use the buttons below to attack, guard, spend a skill, or burn a battle item.", inline: false },
-      ],
-      footer: "Boss UI v4 - live encounter screen",
-    });
-    return {
-      content: `🎮 **Boss Fight v4** | ${state.playerOne.name} vs ${state.playerTwo.name}`,
-      ...payload,
-    };
+    return createBossBattlePayload(description, visual, state);
   }
   const extraFields = [];
   const fighterField = state.isBoss ? getCompactBattleFighterField : getBattleFighterField;
