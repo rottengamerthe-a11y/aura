@@ -20,6 +20,36 @@ const EMBED_THEMES = [
 ];
 
 const FIELD_NAME_MARKS = ["\u{1F539}", "\u{1F538}", "\u2726", "\u{1F4A0}", "\u25AA"];
+const COMMAND_ICON_RULES = [
+  { match: /spin|spinner|arcade/i, env: "AURIX_CMD_ICON_SPIN" },
+  { match: /daily|streak/i, env: "AURIX_CMD_ICON_DAILY" },
+  { match: /work|shift/i, env: "AURIX_CMD_ICON_WORK" },
+  { match: /mine|mining/i, env: "AURIX_CMD_ICON_MINE" },
+  { match: /coinflip|flip/i, env: "AURIX_CMD_ICON_COINFLIP" },
+  { match: /vault|deposit|withdraw/i, env: "AURIX_CMD_ICON_VAULT" },
+  { match: /shop|buy|purchase|item/i, env: "AURIX_CMD_ICON_SHOP" },
+  { match: /inventory/i, env: "AURIX_CMD_ICON_INVENTORY" },
+  { match: /profile/i, env: "AURIX_CMD_ICON_PROFILE" },
+  { match: /stats/i, env: "AURIX_CMD_ICON_STATS" },
+  { match: /rank/i, env: "AURIX_CMD_ICON_RANK" },
+  { match: /prestige/i, env: "AURIX_CMD_ICON_PRESTIGE" },
+  { match: /leaderboard|top/i, env: "AURIX_CMD_ICON_LEADERBOARD" },
+  { match: /clan/i, env: "AURIX_CMD_ICON_CLAN" },
+  { match: /raid|war/i, env: "AURIX_CMD_ICON_RAID" },
+  { match: /boss/i, env: "AURIX_CMD_ICON_BOSS" },
+  { match: /pvp|duel/i, env: "AURIX_CMD_ICON_PVP" },
+  { match: /skill|combat kit/i, env: "AURIX_CMD_ICON_SKILLS" },
+  { match: /craft/i, env: "AURIX_CMD_ICON_CRAFT" },
+  { match: /garden|crop|harvest/i, env: "AURIX_CMD_ICON_GARDEN" },
+  { match: /gear|loadout/i, env: "AURIX_CMD_ICON_GEAR" },
+  { match: /crate/i, env: "AURIX_CMD_ICON_CRATE" },
+  { match: /quest/i, env: "AURIX_CMD_ICON_QUESTS" },
+  { match: /achievement/i, env: "AURIX_CMD_ICON_ACHIEVEMENTS" },
+  { match: /premium|membership/i, env: "AURIX_CMD_ICON_PREMIUM" },
+  { match: /setup/i, env: "AURIX_CMD_ICON_SETUP" },
+  { match: /help|guide/i, env: "AURIX_CMD_ICON_HELP" },
+  { match: /alert|failed|invalid|locked|cooling down|missing|blocked/i, env: "AURIX_CMD_ICON_ALERT" },
+];
 
 function buildAttachment(fileName) {
   const extension = path.extname(fileName || "").toLowerCase();
@@ -41,7 +71,17 @@ function pickEmbedTheme({ title = "", description = "", footer = "", visual = ""
   return EMBED_THEMES.find(({ match }) => match.test(text)) || { emoji: "\u2728", color: COLORS.primary, label: "AURIX" };
 }
 
-function getThemeIcon(theme) {
+function getCommandIcon(options = {}) {
+  const text = [options.title, options.description, options.footer, options.visual].filter(Boolean).join(" ");
+  const rule = COMMAND_ICON_RULES.find(({ match }) => match.test(text));
+  return rule ? process.env[rule.env] : null;
+}
+
+function getThemeIcon(theme, options = {}) {
+  const commandIcon = getCommandIcon(options);
+  if (commandIcon) {
+    return commandIcon;
+  }
   const customIcon = theme.iconEnv ? process.env[theme.iconEnv] : null;
   return customIcon || theme.emoji || "\u2728";
 }
@@ -63,25 +103,25 @@ function decorateText(text, mark) {
   return hasLeadingEmoji(text) ? text : `${mark} ${text}`;
 }
 
-function formatTitle(title, theme) {
+function formatTitle(title, theme, options) {
   if (!title) {
-    return `${theme.emoji} AURIX`;
+    return `${getThemeIcon(theme, options)} AURIX`;
   }
 
   const cleanTitle = title.replace(/\s+/g, " ").trim();
   return hasLeadingEmoji(cleanTitle)
     ? cleanTitle
-    : `${getThemeIcon(theme)} ${cleanTitle}`;
+    : `${getThemeIcon(theme, options)} ${cleanTitle}`;
 }
 
 function isPreformattedLine(line) {
   return /^\s*(```|`|>|[-*]|\d+\.|[\u2022\u25E6\u25AA\u25B8\u25C6\u25C7\u2726\u2B25\u25A3])/u.test(line);
 }
 
-function decorateDescription(description, theme, title) {
+function decorateDescription(description, theme, options) {
   if (!description) {
     return [
-      `${getThemeIcon(theme)} **${theme.label}**`,
+      `${getThemeIcon(theme, options)} **${theme.label}**`,
       DIVIDER,
     ].join("\n");
   }
@@ -98,7 +138,7 @@ function decorateDescription(description, theme, title) {
     .join("\n");
 
   return [
-    `${getThemeIcon(theme)} **${theme.label}**`,
+    `${getThemeIcon(theme, options)} **${theme.label}**`,
     DIVIDER,
     body,
   ].join("\n");
@@ -113,12 +153,13 @@ function decorateFields(fields) {
 }
 
 function createGameEmbed({ title, description, color = COLORS.primary, fields = [], footer, visual, thumbnail }) {
-  const theme = pickEmbedTheme({ title, description, footer, visual });
+  const options = { title, description, footer, visual };
+  const theme = pickEmbedTheme(options);
   const embed = new EmbedBuilder()
     .setColor(color === COLORS.primary ? theme.color : color)
     .setAuthor({ name: "Aurix" })
-    .setTitle(formatTitle(title, theme))
-    .setDescription(decorateDescription(description, theme, title))
+    .setTitle(formatTitle(title, theme, options))
+    .setDescription(decorateDescription(description, theme, options))
     .setFooter({ text: footer ? `${FOOTER_PREFIX} \u2022 ${footer}` : `${FOOTER_PREFIX} \u2022 ${theme.label}` })
     .setTimestamp();
 
