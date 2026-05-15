@@ -9,17 +9,17 @@ const FOOTER_PREFIX = "AURIX";
 const HUD_VERSION = "Live";
 
 const EMBED_THEMES = [
-  { match: /alert|invalid|failed|locked|cooling down|missing|blocked|not enough/i, emoji: "\u26A0\uFE0F", color: COLORS.warning, label: "ALERT" },
-  { match: /success|claimed|joined|opened|complete|crafted|equipped|purchased|victory|finished/i, emoji: "\u2705", color: COLORS.success, label: "SUCCESS" },
-  { match: /clan|raid|war/i, emoji: "\u{1F6E1}\uFE0F", color: 0x7dd3fc, label: "CLAN" },
-  { match: /vault|economy|shop|buy|gift|deposit|withdraw|donat|aura|balance/i, emoji: "\u{1F4B0}", color: 0xf4c95d, label: "ECONOMY" },
-  { match: /mine|craft|gear|garden|crop|harvest/i, emoji: "\u{1F33F}", color: 0x74d680, label: "GATHERING" },
-  { match: /pvp|boss|skill|battle|authority|duel/i, emoji: "\u2694\uFE0F", color: COLORS.danger, label: "COMBAT" },
-  { match: /rank|prestige|leaderboard|profile|stats/i, emoji: "\u{1F3C6}", color: 0xa78bfa, label: "PROGRESS" },
-  { match: /quest|help|guide|setup|start|crate|inventory|premium/i, emoji: "\u2728", color: COLORS.primary, label: "AURIX" },
+  { match: /alert|invalid|failed|locked|cooling down|missing|blocked|not enough/i, emoji: "\u26A0\uFE0F", color: COLORS.warning, label: "ALERT", iconEnv: "AURIX_ICON_ALERT" },
+  { match: /success|claimed|joined|opened|complete|crafted|equipped|purchased|victory|finished/i, emoji: "\u2705", color: COLORS.success, label: "SUCCESS", iconEnv: "AURIX_ICON_SUCCESS" },
+  { match: /clan|raid|war/i, emoji: "\u{1F6E1}\uFE0F", color: 0x7dd3fc, label: "CLAN", iconEnv: "AURIX_ICON_CLAN" },
+  { match: /vault|economy|shop|buy|gift|deposit|withdraw|donat|aura|balance/i, emoji: "\u{1F4B0}", color: 0xf4c95d, label: "ECONOMY", iconEnv: "AURIX_ICON_ECONOMY" },
+  { match: /mine|craft|gear|garden|crop|harvest/i, emoji: "\u{1F33F}", color: 0x74d680, label: "GATHERING", iconEnv: "AURIX_ICON_GATHERING" },
+  { match: /pvp|boss|skill|battle|authority|duel/i, emoji: "\u2694\uFE0F", color: COLORS.danger, label: "COMBAT", iconEnv: "AURIX_ICON_COMBAT" },
+  { match: /rank|prestige|leaderboard|profile|stats/i, emoji: "\u{1F3C6}", color: 0xa78bfa, label: "PROGRESS", iconEnv: "AURIX_ICON_PROGRESS" },
+  { match: /quest|help|guide|setup|start|crate|inventory|premium/i, emoji: "\u2728", color: COLORS.primary, label: "AURIX", iconEnv: "AURIX_ICON_AURIX" },
 ];
 
-const FIELD_NAME_MARKS = ["\u25C6", "\u25C7", "\u2726", "\u2B25", "\u25A3"];
+const FIELD_NAME_MARKS = ["\u{1F539}", "\u{1F538}", "\u2726", "\u{1F4A0}", "\u25AA"];
 
 function buildAttachment(fileName) {
   const extension = path.extname(fileName || "").toLowerCase();
@@ -41,8 +41,14 @@ function pickEmbedTheme({ title = "", description = "", footer = "", visual = ""
   return EMBED_THEMES.find(({ match }) => match.test(text)) || { emoji: "\u2728", color: COLORS.primary, label: "AURIX" };
 }
 
+function getThemeIcon(theme) {
+  const customIcon = theme.iconEnv ? process.env[theme.iconEnv] : null;
+  return customIcon || theme.emoji || "\u2728";
+}
+
 function pickMark(index = 0) {
-  return FIELD_NAME_MARKS[index % FIELD_NAME_MARKS.length];
+  const customIcon = process.env[`AURIX_FIELD_ICON_${index + 1}`];
+  return customIcon || FIELD_NAME_MARKS[index % FIELD_NAME_MARKS.length];
 }
 
 function hasLeadingEmoji(text) {
@@ -65,7 +71,7 @@ function formatTitle(title, theme) {
   const cleanTitle = title.replace(/\s+/g, " ").trim();
   return hasLeadingEmoji(cleanTitle)
     ? cleanTitle
-    : `${theme.emoji} ${cleanTitle}`;
+    : `${getThemeIcon(theme)} ${cleanTitle}`;
 }
 
 function isPreformattedLine(line) {
@@ -75,7 +81,7 @@ function isPreformattedLine(line) {
 function decorateDescription(description, theme, title) {
   if (!description) {
     return [
-      `${theme.emoji} **${theme.label}**`,
+      `${getThemeIcon(theme)} **${theme.label}**`,
       DIVIDER,
     ].join("\n");
   }
@@ -92,7 +98,7 @@ function decorateDescription(description, theme, title) {
     .join("\n");
 
   return [
-    `${theme.emoji} **${theme.label}**`,
+    `${getThemeIcon(theme)} **${theme.label}**`,
     DIVIDER,
     body,
   ].join("\n");
