@@ -7,7 +7,7 @@ const { buildEmbedPayload } = require("../utils/visuals");
 
 const activeBattles = new Map();
 const reminderIntervals = new WeakMap();
-const BATTLE_TIMEOUT_MS = 15 * 60 * 1000;
+const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
 const BATTLE_GEAR_SLOTS = Object.freeze([
   { id: "tool", label: "Tool" },
@@ -861,7 +861,8 @@ function isBattleExpired(state) {
   if (state?.phase === "invite" && state.inviteExpiresAt) {
     return Date.now() > state.inviteExpiresAt;
   }
-  return !state?.createdAt || (Date.now() - state.createdAt) > BATTLE_TIMEOUT_MS;
+  const lastActivity = Number(state?.lastActionAt || state?.createdAt);
+  return !lastActivity || (Date.now() - lastActivity) > BATTLE_TIMEOUT_MS;
 }
 
 async function expirePvpInvite(client, battleId) {
@@ -913,7 +914,7 @@ function buildPvpInviteStateFromRecord(invite) {
 }
 
 function getBattleSessionExpiry(state) {
-  const baseTime = Number(state?.createdAt) || Date.now();
+  const baseTime = Number(state?.lastActionAt || state?.createdAt) || Date.now();
   return new Date(baseTime + BATTLE_TIMEOUT_MS);
 }
 
@@ -3375,8 +3376,8 @@ function createBattleEmbed(title, description, visual, state) {
     ? `${state.playerOne.name} (${state.playerOne.skill?.name || "Focus"})`
     : `${state.playerTwo.name} (${state.playerTwo.skill?.name || "Focus"})`;
   if (state.isBoss) {
-    return buildEmbedPayload({
-      title: `${state.playerTwo.name} Encounter`,
+    const payload = buildEmbedPayload({
+      title: `Boss Fight v4: ${state.playerTwo.name}`,
       description: formatBossBattleScreen(state),
       visual,
       fields: [
@@ -3385,8 +3386,12 @@ function createBattleEmbed(title, description, visual, state) {
         { name: "Boss", value: `${compactBattleStatuses(state.playerTwo)}\nPressure: ${getHpMood(state.playerTwo, true)}`, inline: true },
         { name: "Choose Move", value: "Use the buttons below to attack, guard, spend a skill, or burn a battle item.", inline: false },
       ],
-      footer: "Boss UI v3 - encounter view",
+      footer: "Boss UI v4 - live encounter screen",
     });
+    return {
+      content: `🎮 **Boss Fight v4** | ${state.playerOne.name} vs ${state.playerTwo.name}`,
+      ...payload,
+    };
   }
   const extraFields = [];
   const fighterField = state.isBoss ? getCompactBattleFighterField : getBattleFighterField;
@@ -3858,7 +3863,7 @@ async function handleBattleComponentInteraction(interaction) {
     return interaction.reply({ content: "That battle session is no longer active. Start a new `/boss` or `/pvp` fight.", ephemeral: true });
   }
 
-  state.createdAt = Date.now();
+  state.lastActionAt = Date.now();
   await saveBattleSession(state);
 
   if (interaction.isButton()) {
@@ -3904,6 +3909,7 @@ async function handlePvp(interaction) {
     opponentName: opponent.username,
     arena: pickPvpArena(),
     createdAt: Date.now(),
+    lastActionAt: Date.now(),
     inviteExpiresAt: Date.now() + PVP_INVITE_TIMEOUT_MS,
   };
   activeBattles.set(battleId, state);
@@ -3965,6 +3971,7 @@ async function handleBoss(interaction) {
     phase: "battle",
     visual: boss.visual,
     createdAt: Date.now(),
+    lastActionAt: Date.now(),
     playerOne: createBattleFighter({ id: interaction.user.id, name: interaction.user.username, hp: 120, maxHp: 120, skillCycle: getBattleSkillRotation(user), loadout: normalizeBattleLoadout(user, user.equippedGear), combatItems: getPlayerCombatInventory(user), unlockedActions: getUnlockedBattleActions(user) }),
     playerTwo: createBattleFighter({ id: `boss:${boss.id}`, name: boss.name, hp: boss.hp, maxHp: boss.hp, skillCycle: ["focus"], critBoost: 0.12 }),
     turnId: interaction.user.id,
