@@ -1,6 +1,6 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
 const crypto = require("crypto");
-const { BOSSES, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
+const { BOSSES, COLORS, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
 const { BattleSession, Clan, GuildSettings, PvpInvite, User } = require("../data/models");
 const { buildClanCreateData, buildClanLeaderboardFilter, buildClanLookup, buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
 const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
@@ -8,7 +8,7 @@ const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 const activeBattles = new Map();
 const reminderIntervals = new WeakMap();
 const recentInteractions = [];
-const COMMAND_BUILD_ID = "aurix-no-svg-files-v8";
+const COMMAND_BUILD_ID = "aurix-real-cosmetics-v9";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const BATTLE_ANIMATION_DELAY_MS = 900;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
@@ -632,6 +632,53 @@ function formatProfileCosmetics(user) {
   const title = user.cosmetics.activeTitle || "None";
   const frame = user.cosmetics.activeFrame || "Default";
   return `Title: ${title}\nFrame: ${frame}`;
+}
+
+function getProfileCosmeticStyle(user, targetUser) {
+  normalizeCosmetics(user);
+  const title = user.cosmetics.activeTitle || null;
+  const frame = user.cosmetics.activeFrame || null;
+  const titleStyles = {
+    "Aurix VIP": {
+      label: "\u2726 AURIX VIP",
+      badge: "\u2726 VIP",
+      color: 0xffd166,
+      description: "VIP nameplate active",
+    },
+    Stormbound: {
+      label: "\u26A1 STORMBOUND",
+      badge: "\u26A1 STORM",
+      color: 0x4cc9f0,
+      description: "Storm nameplate active",
+    },
+  };
+  const frameStyles = {
+    "Gold Frame": {
+      label: "GOLD FRAME",
+      left: "\u2726 ",
+      right: " \u2726",
+      color: 0xffc857,
+      divider: "\u2550".repeat(18),
+      description: "Gold profile frame active",
+    },
+  };
+  const titleStyle = titleStyles[title] || null;
+  const frameStyle = frameStyles[frame] || null;
+  const color = frameStyle?.color || titleStyle?.color || COLORS.primary;
+  const framedName = `${frameStyle?.left || ""}${targetUser.username}${frameStyle?.right || ""}`;
+  const nameplate = titleStyle ? `${titleStyle.label} // ${targetUser.username}` : targetUser.username;
+  const frameLine = frameStyle
+    ? `${frameStyle.divider}\n${frameStyle.label} ACTIVE\n${frameStyle.divider}`
+    : "Default frame active";
+
+  return {
+    color,
+    title: titleStyle ? `${titleStyle.badge} | ${framedName}` : `${framedName}'s Aura Profile`,
+    description: `${frameLine}\n${titleStyle?.description || "No premium nameplate equipped."}`,
+    nameplate,
+    frameLabel: frameStyle?.label || "Default",
+    titleLabel: titleStyle?.label || "None",
+  };
 }
 
 function grantCosmetic(user, item) {
@@ -1588,20 +1635,22 @@ function buildProfileEmbed(user, targetUser) {
   const next = nextRank(user.rankIndex);
   const rankProgressCurrent = user.xp - currentRank.xpRequired;
   const rankProgressTotal = Math.max(1, next.xpRequired - currentRank.xpRequired);
-  const titlePrefix = user.cosmetics.activeTitle ? `[${user.cosmetics.activeTitle}] ` : "";
-  const frameSuffix = user.cosmetics.activeFrame ? ` - ${user.cosmetics.activeFrame}` : "";
+  const cosmeticStyle = getProfileCosmeticStyle(user, targetUser);
   return buildEmbedPayload({
-    title: `${titlePrefix}${targetUser.username}'s Aura Profile${frameSuffix}`,
-    description: "A complete snapshot of progression, economy, and combat readiness.",
+    title: cosmeticStyle.title,
+    description: `${cosmeticStyle.description}\nA complete snapshot of progression, economy, and combat readiness.`,
     visual: "core-profile.svg",
+    thumbnail: targetUser.displayAvatarURL?.({ extension: "png", size: 128 }) || null,
+    color: cosmeticStyle.color,
     fields: [
+      { name: "Nameplate", value: cosmeticStyle.nameplate, inline: false },
       { name: "Aura Wallet", value: `${formatNumber(user.aura)}`, inline: true },
       { name: "Vault Aura", value: `${formatNumber(user.vaultAura)}`, inline: true },
       { name: "XP", value: `${formatNumber(user.xp)}`, inline: true },
       { name: "Rank", value: `${currentRank.name}`, inline: true },
       { name: "Prestige", value: `${user.prestige}`, inline: true },
       { name: "Membership", value: formatPremiumStatus(user), inline: true },
-      { name: "Cosmetics", value: formatProfileCosmetics(user), inline: true },
+      { name: "Profile Style", value: `Title: ${cosmeticStyle.titleLabel}\nFrame: ${cosmeticStyle.frameLabel}`, inline: true },
       { name: "Daily Streak", value: `${user.streak} days`, inline: true },
       { name: "Rank Progress", value: `${progressBar(rankProgressCurrent, rankProgressTotal)}\n${formatNumber(rankProgressCurrent)} / ${formatNumber(rankProgressTotal)} XP` },
       { name: "Battle Record", value: `PvP ${user.stats.pvpWins}-${user.stats.pvpLosses} | Boss ${user.stats.bossWins}-${user.stats.bossLosses}` },

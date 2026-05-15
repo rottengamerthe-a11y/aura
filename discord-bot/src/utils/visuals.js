@@ -105,7 +105,7 @@ function decorateFields(fields) {
   }));
 }
 
-function createGameEmbed({ title, description, color = COLORS.primary, fields = [], footer, visual }) {
+function createGameEmbed({ title, description, color = COLORS.primary, fields = [], footer, visual, thumbnail }) {
   const theme = pickEmbedTheme({ title, description, footer, visual });
   const embed = new EmbedBuilder()
     .setColor(color === COLORS.primary ? theme.color : color)
@@ -121,6 +121,9 @@ function createGameEmbed({ title, description, color = COLORS.primary, fields = 
 
   if (visual) {
     embed.setImage(`attachment://${visual}`);
+  }
+  if (thumbnail) {
+    embed.setThumbnail(thumbnail);
   }
 
   return embed;
