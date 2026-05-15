@@ -3,21 +3,22 @@ const path = require("path");
 const { AttachmentBuilder, EmbedBuilder } = require("discord.js");
 const { COLORS, VISUALS_DIR } = require("../config/gameConfig");
 
-const DIVIDER = "━━━━━━━━━━━━━━━━━━━━";
+const DIVIDER = "\u2501".repeat(20);
 const FOOTER_PREFIX = "AURIX";
+const HUD_VERSION = "HUD v2";
 
 const EMBED_THEMES = [
-  { match: /alert|invalid|failed|locked|cooling down|missing|blocked|not enough/i, emoji: "⚠️", color: COLORS.warning, label: "ALERT" },
-  { match: /success|claimed|joined|opened|complete|crafted|equipped|purchased|victory|finished/i, emoji: "✅", color: COLORS.success, label: "SUCCESS" },
-  { match: /clan|raid|war/i, emoji: "🛡️", color: 0x7dd3fc, label: "CLAN" },
-  { match: /vault|economy|shop|buy|gift|deposit|withdraw|donat|aura|balance/i, emoji: "💰", color: 0xf4c95d, label: "ECONOMY" },
-  { match: /mine|craft|gear|garden|crop|harvest/i, emoji: "🌿", color: 0x74d680, label: "GATHERING" },
-  { match: /pvp|boss|skill|battle|authority|duel/i, emoji: "⚔️", color: COLORS.danger, label: "COMBAT" },
-  { match: /rank|prestige|leaderboard|profile|stats/i, emoji: "🏆", color: 0xa78bfa, label: "PROGRESS" },
-  { match: /quest|help|guide|setup|start|crate|inventory|premium/i, emoji: "✨", color: COLORS.primary, label: "AURIX" },
+  { match: /alert|invalid|failed|locked|cooling down|missing|blocked|not enough/i, emoji: "\u26A0\uFE0F", color: COLORS.warning, label: "ALERT" },
+  { match: /success|claimed|joined|opened|complete|crafted|equipped|purchased|victory|finished/i, emoji: "\u2705", color: COLORS.success, label: "SUCCESS" },
+  { match: /clan|raid|war/i, emoji: "\u{1F6E1}\uFE0F", color: 0x7dd3fc, label: "CLAN" },
+  { match: /vault|economy|shop|buy|gift|deposit|withdraw|donat|aura|balance/i, emoji: "\u{1F4B0}", color: 0xf4c95d, label: "ECONOMY" },
+  { match: /mine|craft|gear|garden|crop|harvest/i, emoji: "\u{1F33F}", color: 0x74d680, label: "GATHERING" },
+  { match: /pvp|boss|skill|battle|authority|duel/i, emoji: "\u2694\uFE0F", color: COLORS.danger, label: "COMBAT" },
+  { match: /rank|prestige|leaderboard|profile|stats/i, emoji: "\u{1F3C6}", color: 0xa78bfa, label: "PROGRESS" },
+  { match: /quest|help|guide|setup|start|crate|inventory|premium/i, emoji: "\u2728", color: COLORS.primary, label: "AURIX" },
 ];
 
-const FIELD_NAME_EMOJIS = ["◆", "◇", "✦", "⬥", "▣"];
+const FIELD_NAME_MARKS = ["\u25C6", "\u25C7", "\u2726", "\u2B25", "\u25A3"];
 
 function buildAttachment(fileName) {
   const filePath = path.join(VISUALS_DIR, fileName);
@@ -31,23 +32,23 @@ function buildAttachment(fileName) {
 
 function pickEmbedTheme({ title = "", description = "", footer = "", visual = "" }) {
   const text = [title, description, footer, visual].filter(Boolean).join(" ");
-  return EMBED_THEMES.find(({ match }) => match.test(text)) || { emoji: "✨", color: COLORS.primary, label: "AURIX" };
+  return EMBED_THEMES.find(({ match }) => match.test(text)) || { emoji: "\u2728", color: COLORS.primary, label: "AURIX" };
 }
 
-function pickEmoji(list, index = 0) {
-  return list[index % list.length];
+function pickMark(index = 0) {
+  return FIELD_NAME_MARKS[index % FIELD_NAME_MARKS.length];
 }
 
 function hasLeadingEmoji(text) {
   return /^[\p{Extended_Pictographic}\p{Emoji_Presentation}]/u.test(text.trim());
 }
 
-function decorateText(text, emoji) {
+function decorateText(text, mark) {
   if (!text) {
     return text;
   }
 
-  return hasLeadingEmoji(text) ? text : `${emoji} ${text}`;
+  return hasLeadingEmoji(text) ? text : `${mark} ${text}`;
 }
 
 function formatTitle(title, theme) {
@@ -62,7 +63,7 @@ function formatTitle(title, theme) {
 }
 
 function isPreformattedLine(line) {
-  return /^\s*(```|`|>|[-*]|\d+\.|[•◦▪▸◆◇✦⬥▣])/u.test(line);
+  return /^\s*(```|`|>|[-*]|\d+\.|[\u2022\u25E6\u25AA\u25B8\u25C6\u25C7\u2726\u2B25\u25A3])/u.test(line);
 }
 
 function decorateDescription(description) {
@@ -84,10 +85,10 @@ function decorateDescription(description) {
   return `${DIVIDER}\n${body}\n${DIVIDER}`;
 }
 
-function decorateFields(fields, themeEmoji) {
+function decorateFields(fields) {
   return fields.map((field, index) => ({
     ...field,
-    name: decorateText(field.name, pickEmoji(FIELD_NAME_EMOJIS, index) || themeEmoji),
+    name: decorateText(field.name, pickMark(index)),
     value: field.value || "No data.",
   }));
 }
@@ -98,11 +99,11 @@ function createGameEmbed({ title, description, color = COLORS.primary, fields = 
     .setColor(color === COLORS.primary ? theme.color : color)
     .setTitle(formatTitle(title, theme))
     .setDescription(decorateDescription(description))
-    .setFooter({ text: footer ? `${FOOTER_PREFIX} • ${footer}` : `${FOOTER_PREFIX} • ${theme.label}` })
+    .setFooter({ text: footer ? `${FOOTER_PREFIX} \u2022 ${footer}` : `${FOOTER_PREFIX} \u2022 ${theme.label} \u2022 ${HUD_VERSION}` })
     .setTimestamp();
 
   if (fields.length) {
-    embed.addFields(decorateFields(fields, theme.emoji));
+    embed.addFields(decorateFields(fields));
   }
 
   if (visual) {
@@ -113,9 +114,19 @@ function createGameEmbed({ title, description, color = COLORS.primary, fields = 
 }
 
 function buildEmbedPayload(options) {
+  const theme = pickEmbedTheme(options || {});
   const attachment = options.visual ? buildAttachment(options.visual) : null;
   const embed = createGameEmbed(options);
-  return attachment ? { embeds: [embed], files: [attachment] } : { embeds: [embed] };
+  const payload = {
+    content: `${theme.emoji} **AURIX ${HUD_VERSION} // ${theme.label}**`,
+    embeds: [embed],
+  };
+
+  if (attachment) {
+    payload.files = [attachment];
+  }
+
+  return payload;
 }
 
 module.exports = {
