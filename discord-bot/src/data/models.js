@@ -31,6 +31,23 @@ const gardenPlotSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const propertyEntrySchema = new mongoose.Schema(
+  {
+    level: { type: Number, default: 1 },
+    lastClaimAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+const expeditionSchema = new mongoose.Schema(
+  {
+    type: { type: String, default: null },
+    startedAt: { type: Date, default: null },
+    endsAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
 const clanLogEntrySchema = new mongoose.Schema(
   {
     type: String,
@@ -70,6 +87,10 @@ const userSchema = new mongoose.Schema(
       charm: { type: String, default: null },
       relic: { type: String, default: null },
     },
+    gearUpgrades: { type: Map, of: Number, default: {} },
+    gearDurability: { type: Map, of: Number, default: {} },
+    properties: { type: Map, of: propertyEntrySchema, default: {} },
+    expedition: { type: expeditionSchema, default: () => ({ type: null, startedAt: null, endsAt: null }) },
     cosmetics: {
       activeTitle: { type: String, default: null },
       activeFrame: { type: String, default: null },

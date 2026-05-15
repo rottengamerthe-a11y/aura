@@ -9,7 +9,7 @@ const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 const activeBattles = new Map();
 const reminderIntervals = new WeakMap();
 const recentInteractions = [];
-const COMMAND_BUILD_ID = "aurix-premium-value-v14";
+const COMMAND_BUILD_ID = "aurix-economy-systems-v15";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const BATTLE_ANIMATION_DELAY_MS = 900;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
@@ -97,6 +97,70 @@ const PREMIUM_PLANS = Object.freeze({
 });
 const PREMIUM_PURCHASE_URL = "https://aurawebsite-12gd.onrender.com";
 const OFFICIAL_SERVER_URL = "https://aurawebsite-12gd.onrender.com";
+const FORGE_MAX_LEVEL = 5;
+const PROPERTY_TYPES = Object.freeze({
+  aura_mine: {
+    id: "aura_mine",
+    name: "Aura Mine",
+    cost: 18000,
+    upgradeBaseCost: 9000,
+    hourlyAura: 240,
+    maxLevel: 5,
+    description: "Generates claimable aura while you are away.",
+  },
+  tavern: {
+    id: "tavern",
+    name: "Moonlit Tavern",
+    cost: 26000,
+    upgradeBaseCost: 13000,
+    hourlyAura: 170,
+    hourlyXp: 55,
+    maxLevel: 5,
+    description: "Generates aura and XP from travelers.",
+  },
+  crystal_lab: {
+    id: "crystal_lab",
+    name: "Crystal Lab",
+    cost: 42000,
+    upgradeBaseCost: 21000,
+    hourlyAura: 120,
+    materialChance: 0.35,
+    maxLevel: 4,
+    description: "Generates aura and sometimes crafting materials.",
+  },
+});
+const EXPEDITION_TYPES = Object.freeze({
+  scout: {
+    id: "scout",
+    name: "Scout Run",
+    hours: 1,
+    aura: [650, 1100],
+    xp: [150, 260],
+    materialRolls: 1,
+    description: "Short mission with quick returns.",
+  },
+  delve: {
+    id: "delve",
+    name: "Deep Delve",
+    hours: 4,
+    aura: [2400, 4200],
+    xp: [560, 950],
+    materialRolls: 3,
+    crateChance: 0.35,
+    description: "Medium expedition with a chance at crates.",
+  },
+  odyssey: {
+    id: "odyssey",
+    name: "Night Odyssey",
+    hours: 8,
+    aura: [5200, 9000],
+    xp: [1200, 1900],
+    materialRolls: 6,
+    crateChance: 0.7,
+    rareChance: 0.28,
+    description: "Long mission for offline progression.",
+  },
+});
 const PADDLE_PRICE_PLAN_ENV = Object.freeze({
   monthly: "PADDLE_MONTHLY_PRICE_ID",
   yearly: "PADDLE_YEARLY_PRICE_ID",
@@ -859,6 +923,58 @@ function getInventoryQuantity(user, itemId) {
   return user.inventory.find((entry) => entry.id === itemId)?.quantity || 0;
 }
 
+function normalizeProgressionSystems(user) {
+  if (!user.gearUpgrades?.get) {
+    user.gearUpgrades = new Map(Object.entries(user.gearUpgrades || {}));
+  }
+  if (!user.gearDurability?.get) {
+    user.gearDurability = new Map(Object.entries(user.gearDurability || {}));
+  }
+  if (!user.properties?.get) {
+    user.properties = new Map(Object.entries(user.properties || {}));
+  }
+  if (!user.expedition) {
+    user.expedition = { type: null, startedAt: null, endsAt: null };
+  }
+}
+
+function getGearUpgradeLevel(user, gearId) {
+  normalizeProgressionSystems(user);
+  return clamp(Number(user.gearUpgrades.get(gearId) || 0), 0, FORGE_MAX_LEVEL);
+}
+
+function getGearDurability(user, gearId) {
+  normalizeProgressionSystems(user);
+  if (!user.gearDurability.has(gearId)) {
+    user.gearDurability.set(gearId, 100);
+  }
+  return clamp(Number(user.gearDurability.get(gearId) || 0), 0, 100);
+}
+
+function setGearDurability(user, gearId, value) {
+  normalizeProgressionSystems(user);
+  user.gearDurability.set(gearId, clamp(Math.floor(value), 0, 100));
+  user.markModified("gearDurability");
+}
+
+function getForgeUpgradeCost(level) {
+  return 2500 + level * 2200;
+}
+
+function getForgeRepairCost(user, gearId) {
+  const missing = 100 - getGearDurability(user, gearId);
+  return Math.max(250, missing * 75);
+}
+
+function getForgePowerMultiplier(user, gearId) {
+  const level = getGearUpgradeLevel(user, gearId);
+  const durability = getGearDurability(user, gearId);
+  if (durability <= 0) {
+    return 0.5;
+  }
+  return 1 + level * 0.08;
+}
+
 function userOwnsGearInSlot(user, gearId, slot) {
   if (!gearId) {
     return true;
@@ -879,14 +995,15 @@ function normalizeBattleLoadout(user, loadout = {}) {
   return normalized;
 }
 
-function getLoadoutBattleBonuses(loadout = {}) {
+function getLoadoutBattleBonuses(loadout = {}, user = null) {
   return Object.values(cloneLoadout(loadout)).reduce((acc, gearId) => {
     const gear = getGearItem(gearId);
     if (!gear?.battle) {
       return acc;
     }
+    const multiplier = user ? getForgePowerMultiplier(user, gearId) : 1;
     Object.entries(gear.battle).forEach(([key, value]) => {
-      acc[key] = (acc[key] || 0) + value;
+      acc[key] = (acc[key] || 0) + value * multiplier;
     });
     return acc;
   }, {});
@@ -1340,8 +1457,9 @@ function getGearEffects(user) {
     if (!gear?.effects) {
       return acc;
     }
+    const multiplier = getForgePowerMultiplier(user, gearId);
     Object.entries(gear.effects).forEach(([key, value]) => {
-      acc[key] = (acc[key] || 0) + value;
+      acc[key] = (acc[key] || 0) + value * multiplier;
     });
     return acc;
   }, {});
@@ -1436,6 +1554,7 @@ async function getOrCreatePlayer(guildId, userId) {
     user.clanMemberships.set(guildId, user.clanId);
   }
   user.equippedGear = user.equippedGear || { tool: null, charm: null, relic: null };
+  normalizeProgressionSystems(user);
   if (!user.lastVaultInterestAt) {
     user.lastVaultInterestAt = new Date();
   }
@@ -1772,7 +1891,10 @@ const HELP_SECTIONS = [
       { name: "/gift user:<player> amount:<amount>", description: "Send aura to another player." },
       { name: "/inventory", description: "Review owned items, battle consumables, skills, and crates." },
       { name: "/craft recipe:<id>", description: "Turn mined materials into useful rewards." },
+      { name: "/forge", description: "Spend aura to upgrade or repair crafted gear." },
       { name: "/garden", description: "Plant and harvest real-time crops." },
+      { name: "/property", description: "Buy investments that produce passive aura, XP, and materials." },
+      { name: "/expedition", description: "Send your character away for timed loot missions." },
       { name: "/gear", description: "Equip crafted gear and review your loadout." },
       { name: "/crate type:<type>", description: "Open a common, rare, epic, or legendary crate." },
     ],
@@ -2524,17 +2646,333 @@ async function handleReminders(interaction) {
   }));
 }
 
+function formatForgeStatus(user) {
+  const lines = Object.keys(GEAR_ITEMS).map((gearId) => {
+    const gear = getGearItem(gearId);
+    const owned = getInventoryQuantity(user, gearId) > 0;
+    return `${gear.name}: ${owned ? `+${getGearUpgradeLevel(user, gearId)} | ${getGearDurability(user, gearId)}% durability` : "Not owned"}`;
+  });
+  return lines.join("\n");
+}
+
+async function handleForge(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  normalizeProgressionSystems(user);
+
+  if (subcommand === "status") {
+    return interaction.reply(buildEmbedPayload({
+      title: "Aura Forge",
+      description: "Upgrade crafted gear for stronger effects. Failed upgrades still consume aura and chip durability.",
+      visual: "help-skills.svg",
+      fields: [
+        { name: "Gear", value: formatForgeStatus(user) },
+        { name: "Rules", value: `Max upgrade: +${FORGE_MAX_LEVEL}\nBroken gear works at half power until repaired.` },
+      ],
+    }));
+  }
+
+  const gearId = interaction.options.getString("item", true);
+  const gear = getGearItem(gearId);
+  if (!gear || getInventoryQuantity(user, gearId) <= 0) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Forge Failed", description: "You need to own that crafted gear before forging it.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  if (subcommand === "repair") {
+    const durability = getGearDurability(user, gearId);
+    if (durability >= 100) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Repair Not Needed", description: `${gear.name} is already at full durability.`, visual: "emblem-help.svg" }), ephemeral: true });
+    }
+    const cost = getForgeRepairCost(user, gearId);
+    if (user.aura < cost) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Repair Failed", description: `Repairing ${gear.name} costs ${formatNumber(cost)} aura.`, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    user.aura -= cost;
+    setGearDurability(user, gearId, 100);
+    await user.save();
+    return interaction.reply(buildEmbedPayload({
+      title: "Gear Repaired",
+      description: `${gear.name} is back to full durability.`,
+      visual: "emblem-success.svg",
+      fields: [
+        { name: "Cost", value: `${formatNumber(cost)} aura`, inline: true },
+        { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+      ],
+    }));
+  }
+
+  const level = getGearUpgradeLevel(user, gearId);
+  if (level >= FORGE_MAX_LEVEL) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Forge Capped", description: `${gear.name} is already at +${FORGE_MAX_LEVEL}.`, visual: "emblem-help.svg" }), ephemeral: true });
+  }
+  const cost = getForgeUpgradeCost(level);
+  if (user.aura < cost) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Forge Failed", description: `Upgrading ${gear.name} costs ${formatNumber(cost)} aura.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  const failChance = 0.12 + level * 0.06;
+  const success = Math.random() >= failChance;
+  user.aura -= cost;
+  if (success) {
+    user.gearUpgrades.set(gearId, level + 1);
+    setGearDurability(user, gearId, Math.max(30, getGearDurability(user, gearId) - 8));
+  } else {
+    setGearDurability(user, gearId, getGearDurability(user, gearId) - randInt(14, 24));
+  }
+  user.markModified("gearUpgrades");
+  await user.save();
+
+  return interaction.reply(buildEmbedPayload({
+    title: success ? "Forge Upgrade Complete" : "Forge Failed",
+    description: success
+      ? `${gear.name} reached **+${level + 1}**. Its effects are now stronger.`
+      : `${gear.name} resisted the forge. The aura was spent and durability dropped.`,
+    visual: success ? "emblem-success.svg" : "emblem-alert.svg",
+    fields: [
+      { name: "Cost", value: `${formatNumber(cost)} aura`, inline: true },
+      { name: "Durability", value: `${getGearDurability(user, gearId)}%`, inline: true },
+      { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+    ],
+  }));
+}
+
+function getProperty(type) {
+  return PROPERTY_TYPES[type] || null;
+}
+
+function getPropertyUpgradeCost(config, level) {
+  return config.upgradeBaseCost * level;
+}
+
+function calculatePropertyClaim(user, type) {
+  const config = getProperty(type);
+  const owned = user.properties.get(type);
+  if (!config || !owned) {
+    return null;
+  }
+  const level = owned.level || 1;
+  const lastClaimAt = owned.lastClaimAt ? new Date(owned.lastClaimAt).getTime() : Date.now();
+  const elapsedHours = Math.min(24, Math.max(0, (Date.now() - lastClaimAt) / (60 * 60 * 1000)));
+  const aura = Math.floor((config.hourlyAura || 0) * level * elapsedHours);
+  const xp = Math.floor((config.hourlyXp || 0) * level * elapsedHours);
+  return { config, owned, level, elapsedHours, aura, xp };
+}
+
+async function handleProperty(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  normalizeProgressionSystems(user);
+
+  if (subcommand === "list") {
+    const lines = Object.values(PROPERTY_TYPES).map((property) => {
+      const owned = user.properties.get(property.id);
+      return `**${property.name}**\n${property.description}\n${owned ? `Owned level ${owned.level || 1}` : `Buy: ${formatNumber(property.cost)} aura`}`;
+    }).join("\n\n");
+    return interaction.reply(buildEmbedPayload({
+      title: "Aura Properties",
+      description: lines,
+      visual: "economy-vault.svg",
+      footer: "Use /property buy, /property upgrade, and /property claim.",
+    }));
+  }
+
+  const type = interaction.options.getString("type", true);
+  const config = getProperty(type);
+  if (!config) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Property Missing", description: "That property is not available.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  if (subcommand === "buy") {
+    if (user.properties.has(type)) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Already Owned", description: `You already own ${config.name}.`, visual: "emblem-help.svg" }), ephemeral: true });
+    }
+    if (user.aura < config.cost) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Property Locked", description: `${config.name} costs ${formatNumber(config.cost)} aura.`, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    user.aura -= config.cost;
+    user.properties.set(type, { level: 1, lastClaimAt: new Date() });
+    user.markModified("properties");
+    await user.save();
+    return interaction.reply(buildEmbedPayload({
+      title: "Property Purchased",
+      description: `You bought **${config.name}**. It will start producing passive rewards now.`,
+      visual: "emblem-success.svg",
+      fields: [
+        { name: "Cost", value: `${formatNumber(config.cost)} aura`, inline: true },
+        { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+      ],
+    }));
+  }
+
+  if (!user.properties.has(type)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Property Not Owned", description: `Buy ${config.name} before using this action.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  if (subcommand === "upgrade") {
+    const owned = user.properties.get(type);
+    const level = owned.level || 1;
+    if (level >= config.maxLevel) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Property Maxed", description: `${config.name} is already level ${config.maxLevel}.`, visual: "emblem-help.svg" }), ephemeral: true });
+    }
+    const cost = getPropertyUpgradeCost(config, level);
+    if (user.aura < cost) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Upgrade Locked", description: `Upgrading ${config.name} costs ${formatNumber(cost)} aura.`, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    user.aura -= cost;
+    owned.level = level + 1;
+    user.properties.set(type, owned);
+    user.markModified("properties");
+    await user.save();
+    return interaction.reply(buildEmbedPayload({
+      title: "Property Upgraded",
+      description: `${config.name} is now level **${owned.level}**.`,
+      visual: "emblem-success.svg",
+      fields: [
+        { name: "Cost", value: `${formatNumber(cost)} aura`, inline: true },
+        { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+      ],
+    }));
+  }
+
+  const claim = calculatePropertyClaim(user, type);
+  if (!claim || claim.elapsedHours < 0.05) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Nothing To Claim", description: `${config.name} needs more time to produce rewards.`, visual: "emblem-help.svg" }), ephemeral: true });
+  }
+  user.aura += claim.aura;
+  user.xp += claim.xp;
+  const materialDrops = [];
+  if (config.materialChance) {
+    const rolls = Math.floor(claim.elapsedHours);
+    const materialIds = Object.keys(MATERIALS);
+    for (let index = 0; index < rolls; index += 1) {
+      if (Math.random() < config.materialChance) {
+        const materialId = materialIds[randInt(0, materialIds.length - 1)];
+        addInventoryItem(user, materialId, 1);
+        materialDrops.push(`${getInventoryLabel(materialId)} x1`);
+      }
+    }
+  }
+  claim.owned.lastClaimAt = new Date();
+  user.properties.set(type, claim.owned);
+  user.markModified("properties");
+  await syncRank(user);
+  await user.save();
+  return interaction.reply(buildEmbedPayload({
+    title: "Property Income Claimed",
+    description: `${config.name} paid out after ${claim.elapsedHours.toFixed(1)} hours.`,
+    visual: "economy-vault.svg",
+    fields: [
+      { name: "Aura", value: `${formatNumber(claim.aura)}`, inline: true },
+      { name: "XP", value: `${formatNumber(claim.xp)}`, inline: true },
+      { name: "Materials", value: materialDrops.length ? materialDrops.join(", ") : "None", inline: true },
+    ],
+  }));
+}
+
+function isOnActiveExpedition(user) {
+  return Boolean(user?.expedition?.type && user.expedition.endsAt && new Date(user.expedition.endsAt).getTime() > Date.now());
+}
+
+async function handleExpedition(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  normalizeProgressionSystems(user);
+
+  if (subcommand === "status") {
+    if (!user.expedition?.type) {
+      return interaction.reply(buildEmbedPayload({ title: "Expedition Status", description: "No expedition is active. Start one with /expedition start.", visual: "help-summary.svg" }));
+    }
+    const config = EXPEDITION_TYPES[user.expedition.type];
+    const remaining = new Date(user.expedition.endsAt).getTime() - Date.now();
+    return interaction.reply(buildEmbedPayload({
+      title: "Expedition Status",
+      description: remaining <= 0 ? `${config.name} is ready to claim.` : `${config.name} returns in ${humanizeMs(remaining)}.`,
+      visual: "help-summary.svg",
+    }));
+  }
+
+  if (subcommand === "start") {
+    if (isOnActiveExpedition(user)) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Expedition Active", description: "Claim or wait for your current expedition before starting another.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    const type = interaction.options.getString("type", true);
+    const config = EXPEDITION_TYPES[type];
+    if (!config) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Expedition Missing", description: "That expedition is not available.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    const startedAt = new Date();
+    user.expedition = { type, startedAt, endsAt: new Date(startedAt.getTime() + config.hours * 60 * 60 * 1000) };
+    await user.save();
+    return interaction.reply(buildEmbedPayload({
+      title: "Expedition Started",
+      description: `${interaction.user.username} departed on **${config.name}**.\n${config.description}`,
+      visual: "help-summary.svg",
+      fields: [
+        { name: "Returns In", value: `${config.hours}h`, inline: true },
+        { name: "Restriction", value: "Boss and PvP are locked while away.", inline: true },
+      ],
+    }));
+  }
+
+  if (!user.expedition?.type) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "No Expedition", description: "Start an expedition first.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  const config = EXPEDITION_TYPES[user.expedition.type];
+  const remaining = new Date(user.expedition.endsAt).getTime() - Date.now();
+  if (remaining > 0) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Expedition Not Back", description: `${config.name} returns in ${humanizeMs(remaining)}.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  const auraReward = randInt(config.aura[0], config.aura[1]);
+  const xpReward = randInt(config.xp[0], config.xp[1]);
+  const materialIds = Object.keys(MATERIALS);
+  const materialDrops = [];
+  for (let index = 0; index < config.materialRolls; index += 1) {
+    const materialId = materialIds[randInt(0, materialIds.length - 1)];
+    const quantity = randInt(1, 2);
+    addInventoryItem(user, materialId, quantity);
+    materialDrops.push(`${getInventoryLabel(materialId)} x${quantity}`);
+  }
+  const crateDrops = [];
+  if (config.crateChance && Math.random() < config.crateChance) {
+    const crateId = config.rareChance && Math.random() < config.rareChance ? "rare" : "common";
+    user.crates.set(crateId, (user.crates.get(crateId) || 0) + 1);
+    crateDrops.push(`${crateId} crate`);
+  }
+  user.aura += auraReward;
+  user.xp += xpReward;
+  user.expedition = { type: null, startedAt: null, endsAt: null };
+  await syncRank(user);
+  await user.save();
+  return interaction.reply(buildEmbedPayload({
+    title: "Expedition Complete",
+    description: `${config.name} returned with a travel log full of loot.`,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
+      { name: "XP", value: `${formatNumber(xpReward)}`, inline: true },
+      { name: "Crates", value: crateDrops.join(", ") || "None", inline: true },
+      { name: "Materials", value: materialDrops.join("\n") },
+    ],
+  }));
+}
+
 async function handleGear(interaction) {
   const subcommand = interaction.options.getSubcommand();
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
 
   if (subcommand === "loadout") {
-    const lines = Object.entries(user.equippedGear || {}).map(([slot, gearId]) => `${slot}: ${gearId ? getGearItem(gearId)?.name || gearId : "Empty"}`).join("\n");
+    const lines = Object.entries(user.equippedGear || {}).map(([slot, gearId]) => {
+      if (!gearId) {
+        return `${slot}: Empty`;
+      }
+      return `${slot}: ${getGearItem(gearId)?.name || gearId} +${getGearUpgradeLevel(user, gearId)} (${getGearDurability(user, gearId)}% durability)`;
+    }).join("\n");
     return interaction.reply(buildEmbedPayload({
       title: "Gear Loadout",
       description: lines,
       visual: "help-skills.svg",
-      footer: "Craft gear first, then equip it here.",
+      footer: "Use /forge to upgrade or repair gear.",
     }));
   }
 
@@ -3038,8 +3476,8 @@ function rotateBattleSkill(fighter) {
   hydrateBattleSkill(fighter);
 }
 
-function createBattleFighter({ id, name, hp, maxHp, skillCycle, critBoost = 0, loadout = {}, combatItems = {}, unlockedActions = ["strike"], premiumBattleBonus = {} }) {
-  const gearBonuses = getLoadoutBattleBonuses(loadout);
+function createBattleFighter({ id, name, hp, maxHp, skillCycle, critBoost = 0, loadout = {}, gearOwner = null, combatItems = {}, unlockedActions = ["strike"], premiumBattleBonus = {} }) {
+  const gearBonuses = getLoadoutBattleBonuses(loadout, gearOwner);
   const totalMaxHp = maxHp + (gearBonuses.maxHpBonus || 0) + (premiumBattleBonus.maxHpBonus || 0);
   const fighter = {
     id,
@@ -3891,6 +4329,7 @@ function initializePvpBattleFromLoadout(state, challenger, rival) {
     maxHp: 100,
     skillCycle: getBattleSkillRotation(challenger),
     loadout: state.playerOne.loadout,
+    gearOwner: challenger,
     combatItems: state.playerOne.combatItems,
     unlockedActions: getUnlockedBattleActions(challenger),
     premiumBattleBonus: getPremiumBattleBonus(challenger),
@@ -3902,6 +4341,7 @@ function initializePvpBattleFromLoadout(state, challenger, rival) {
     maxHp: 100,
     skillCycle: getBattleSkillRotation(rival),
     loadout: state.playerTwo.loadout,
+    gearOwner: rival,
     combatItems: state.playerTwo.combatItems,
     unlockedActions: getUnlockedBattleActions(rival),
     premiumBattleBonus: getPremiumBattleBonus(rival),
@@ -4311,6 +4751,11 @@ async function handlePvp(interaction) {
   if (opponent.id === interaction.user.id || opponent.bot) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Invalid Opponent", description: "Choose another human player for PvP.", visual: "emblem-pvp.svg" }), ephemeral: true });
   }
+  const challenger = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const rival = await getOrCreatePlayer(interaction.guildId, opponent.id);
+  if (isOnActiveExpedition(challenger) || isOnActiveExpedition(rival)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Player Away", description: "One of these players is currently on an expedition and cannot duel yet.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
   const existingBattle = findBattleForUser(interaction.user.id) || findBattleForUser(opponent.id);
   if (existingBattle) {
     return interaction.reply({ ...buildEmbedPayload({ title: "PvP Busy", description: "One of these players is already in a pending or active duel.", visual: "emblem-alert.svg" }), ephemeral: true });
@@ -4377,6 +4822,9 @@ async function handleBoss(interaction) {
   const bossId = interaction.options.getString("boss") || BOSSES[0].id;
   const boss = BOSSES.find((entry) => entry.id === bossId) || BOSSES[0];
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  if (isOnActiveExpedition(user)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Away On Expedition", description: "You cannot start a boss fight while your character is away. Use /expedition status.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
   const remaining = getCooldownRemaining(user.lastBossAt, COOLDOWNS.bossMs, user);
   if (remaining > 0) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Boss Cooling Down", description: `You can challenge another boss in ${humanizeMs(remaining)}.`, visual: "emblem-alert.svg" }), ephemeral: true });
@@ -4390,7 +4838,7 @@ async function handleBoss(interaction) {
     visual: boss.visual,
     createdAt: Date.now(),
     lastActionAt: Date.now(),
-    playerOne: createBattleFighter({ id: interaction.user.id, name: interaction.user.username, hp: 120, maxHp: 120, skillCycle: getBattleSkillRotation(user), loadout: normalizeBattleLoadout(user, user.equippedGear), combatItems: getPlayerCombatInventory(user), unlockedActions: getUnlockedBattleActions(user), premiumBattleBonus: getPremiumBattleBonus(user) }),
+    playerOne: createBattleFighter({ id: interaction.user.id, name: interaction.user.username, hp: 120, maxHp: 120, skillCycle: getBattleSkillRotation(user), loadout: normalizeBattleLoadout(user, user.equippedGear), gearOwner: user, combatItems: getPlayerCombatInventory(user), unlockedActions: getUnlockedBattleActions(user), premiumBattleBonus: getPremiumBattleBonus(user) }),
     playerTwo: createBattleFighter({ id: `boss:${boss.id}`, name: boss.name, hp: boss.hp, maxHp: boss.hp, skillCycle: ["focus"], critBoost: 0.12 }),
     turnId: interaction.user.id,
     rewardAura: boss.rewardAura,
@@ -5135,8 +5583,21 @@ function buildCommands() {
     new SlashCommandBuilder().setName("gift").setDescription("Send aura to another player.").addUserOption((option) => option.setName("user").setDescription("Receiving player").setRequired(true)).addIntegerOption((option) => option.setName("amount").setDescription("Aura to send").setRequired(true).setMinValue(1)),
     new SlashCommandBuilder().setName("inventory").setDescription("View your items, perks, skills, and crates."),
     new SlashCommandBuilder().setName("craft").setDescription("Craft something from mined materials.").addStringOption((option) => option.setName("recipe").setDescription("Recipe id").setRequired(true).addChoices(...CRAFTING_RECIPES.map((recipe) => ({ name: recipe.name, value: recipe.id })))),
+    new SlashCommandBuilder().setName("forge").setDescription("Upgrade and repair crafted gear with aura.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("View forge levels and durability."))
+      .addSubcommand((sub) => sub.setName("upgrade").setDescription("Try to upgrade a crafted gear item.").addStringOption((option) => option.setName("item").setDescription("Gear item").setRequired(true).addChoices(...Object.entries(GEAR_ITEMS).map(([gearId, gear]) => ({ name: gear.name, value: gearId })))))
+      .addSubcommand((sub) => sub.setName("repair").setDescription("Repair a crafted gear item.").addStringOption((option) => option.setName("item").setDescription("Gear item").setRequired(true).addChoices(...Object.entries(GEAR_ITEMS).map(([gearId, gear]) => ({ name: gear.name, value: gearId }))))),
     new SlashCommandBuilder().setName("crafting-guide").setDescription("See which bosses feed each crafting path."),
     new SlashCommandBuilder().setName("garden").setDescription("Manage your growing garden.").addSubcommand((sub) => sub.setName("status").setDescription("View your garden plots.")).addSubcommand((sub) => sub.setName("plant").setDescription("Plant a crop in a plot.").addStringOption((option) => option.setName("crop").setDescription("Crop to plant").setRequired(true).addChoices(...Object.entries(GARDEN_CROPS).map(([cropId, crop]) => ({ name: crop.name, value: cropId })))).addIntegerOption((option) => option.setName("plot").setDescription("Optional plot number").setMinValue(1).setMaxValue(4))).addSubcommand((sub) => sub.setName("harvest").setDescription("Harvest any ready crops.")),
+    new SlashCommandBuilder().setName("property").setDescription("Buy and manage passive income properties.")
+      .addSubcommand((sub) => sub.setName("list").setDescription("View available properties."))
+      .addSubcommand((sub) => sub.setName("buy").setDescription("Buy a property.").addStringOption((option) => option.setName("type").setDescription("Property").setRequired(true).addChoices(...Object.values(PROPERTY_TYPES).map((property) => ({ name: property.name, value: property.id })))))
+      .addSubcommand((sub) => sub.setName("upgrade").setDescription("Upgrade an owned property.").addStringOption((option) => option.setName("type").setDescription("Property").setRequired(true).addChoices(...Object.values(PROPERTY_TYPES).map((property) => ({ name: property.name, value: property.id })))))
+      .addSubcommand((sub) => sub.setName("claim").setDescription("Claim passive income from a property.").addStringOption((option) => option.setName("type").setDescription("Property").setRequired(true).addChoices(...Object.values(PROPERTY_TYPES).map((property) => ({ name: property.name, value: property.id }))))),
+    new SlashCommandBuilder().setName("expedition").setDescription("Send your character on timed loot missions.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("View current expedition status."))
+      .addSubcommand((sub) => sub.setName("start").setDescription("Start a timed expedition.").addStringOption((option) => option.setName("type").setDescription("Expedition").setRequired(true).addChoices(...Object.values(EXPEDITION_TYPES).map((expedition) => ({ name: expedition.name, value: expedition.id })))))
+      .addSubcommand((sub) => sub.setName("claim").setDescription("Claim a completed expedition.")),
     new SlashCommandBuilder().setName("gear").setDescription("Manage your equipped gear.").addSubcommand((sub) => sub.setName("loadout").setDescription("View equipped gear.")).addSubcommand((sub) => sub.setName("equip").setDescription("Equip a crafted gear item.").addStringOption((option) => option.setName("item").setDescription("Gear item").setRequired(true).addChoices(...Object.entries(GEAR_ITEMS).map(([gearId, gear]) => ({ name: gear.name, value: gearId }))))),
     new SlashCommandBuilder().setName("rank").setDescription("View rank progression and prestige readiness."),
     new SlashCommandBuilder().setName("prestige").setDescription("Reset rank progression to gain prestige."),
@@ -5177,7 +5638,7 @@ async function routeInteraction(interaction) {
     return null;
   }
 
-  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, gift: handleGift, inventory: handleInventory, craft: handleCraft, "crafting-guide": handleCraftingGuide, garden: handleGarden, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, premium: handlePremium, clan: handleClan, authority: handleAuthority };
+  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, gift: handleGift, inventory: handleInventory, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, premium: handlePremium, clan: handleClan, authority: handleAuthority };
   const handler = handlers[interaction.commandName];
   if (!handler) {
     return interaction.reply({ content: "Unknown command.", ephemeral: true });
