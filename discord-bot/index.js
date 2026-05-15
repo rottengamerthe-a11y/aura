@@ -2,7 +2,7 @@ const path = require("path");
 
 require("dotenv").config({ path: path.join(__dirname, ".env") });
 
-const { Client, GatewayIntentBits, REST, Routes } = require("discord.js");
+const { Client, EmbedBuilder, GatewayIntentBits, REST, Routes } = require("discord.js");
 const crypto = require("crypto");
 const express = require("express");
 const session = require("express-session");
@@ -12,7 +12,7 @@ const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigrat
 const { applyPaddleWebhookEvent, buildCommands, recentInteractions, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
 const { buildEmbedPayload } = require("./src/utils/visuals");
 
-const APP_VERSION = "aurix-hud-v4-title";
+const APP_VERSION = "aurix-forced-hud-v5";
 const startedAt = Date.now();
 let discordClient = null;
 
@@ -452,29 +452,56 @@ function prepareInteractionResponse(interaction) {
 
   interaction.reply = async (options) => {
     clearTimeout(deferTimer);
+    const normalizedOptions = enforceHudEmbedStyle(options);
     if (interaction.deferred && !interaction.replied) {
-      const { ephemeral, flags, ...editOptions } = options || {};
+      const { ephemeral, flags, ...editOptions } = normalizedOptions || {};
       return originalEditReply(editOptions);
     }
-    return originalReply(options);
+    return originalReply(normalizedOptions);
   };
 
   if (originalUpdate) {
     interaction.update = async (options) => {
       clearTimeout(deferTimer);
+      const normalizedOptions = enforceHudEmbedStyle(options);
       if (interaction.deferred && !interaction.replied) {
-        return originalEditReply(options);
+        return originalEditReply(normalizedOptions);
       }
-      return originalUpdate(options);
+      return originalUpdate(normalizedOptions);
     };
   }
 
   interaction.followUp = async (options) => {
     clearTimeout(deferTimer);
-    return originalFollowUp(options);
+    return originalFollowUp(enforceHudEmbedStyle(options));
   };
 
   return () => clearTimeout(deferTimer);
+}
+
+function enforceHudEmbedStyle(options) {
+  if (!options || typeof options === "string" || !Array.isArray(options.embeds)) {
+    return options;
+  }
+
+  return {
+    ...options,
+    embeds: options.embeds.map((embed) => {
+      const builder = EmbedBuilder.from(embed);
+      const data = builder.toJSON();
+      const title = data.title || "AURIX";
+      const footerText = data.footer?.text || "";
+
+      if (!title.includes("[HUD v4]")) {
+        builder.setTitle(`[HUD v4] ${title}`.slice(0, 256));
+      }
+      if (!footerText.includes("HUD v4")) {
+        builder.setFooter({ text: `${footerText ? `${footerText} • ` : ""}forced HUD v5` });
+      }
+
+      return builder;
+    }),
+  };
 }
 
 async function main() {
