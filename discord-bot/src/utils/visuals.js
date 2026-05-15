@@ -59,7 +59,7 @@ function formatTitle(title, theme) {
   const cleanTitle = title.replace(/\s+/g, " ").trim();
   return hasLeadingEmoji(cleanTitle)
     ? cleanTitle
-    : `${theme.emoji} ${theme.label} // ${cleanTitle.toUpperCase()}`;
+    : `${theme.emoji} [${HUD_VERSION}] ${theme.label} // ${cleanTitle.toUpperCase()}`;
 }
 
 function isPreformattedLine(line) {
