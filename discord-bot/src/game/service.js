@@ -1,7 +1,7 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
 const crypto = require("crypto");
 const { BOSSES, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
-const { Clan, GuildSettings, PvpInvite, User } = require("../data/models");
+const { BattleSession, Clan, GuildSettings, PvpInvite, User } = require("../data/models");
 const { buildClanCreateData, buildClanLeaderboardFilter, buildClanLookup, buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
 const { buildEmbedPayload } = require("../utils/visuals");
 
@@ -897,6 +897,45 @@ function buildPvpInviteStateFromRecord(invite) {
   };
 }
 
+function getBattleSessionExpiry(state) {
+  const baseTime = Number(state?.createdAt) || Date.now();
+  return new Date(baseTime + BATTLE_TIMEOUT_MS);
+}
+
+async function saveBattleSession(state) {
+  if (!state?.id || state.phase === "invite") {
+    return;
+  }
+  await BattleSession.findOneAndUpdate(
+    { battleId: state.id },
+    {
+      $set: {
+        battleId: state.id,
+        state: JSON.parse(JSON.stringify(state)),
+        expiresAt: getBattleSessionExpiry(state),
+        updatedAt: new Date(),
+      },
+    },
+    { upsert: true }
+  ).catch((error) => {
+    console.error("Failed to save battle session:", error);
+  });
+}
+
+async function deleteBattleSession(battleId) {
+  await BattleSession.deleteOne({ battleId }).catch(() => null);
+}
+
+async function restoreBattleSession(battleId) {
+  const record = await BattleSession.findOne({ battleId }).lean();
+  if (!record?.state) {
+    return null;
+  }
+  const state = record.state;
+  activeBattles.set(battleId, state);
+  return state;
+}
+
 function pruneExpiredBattles() {
   for (const [battleId, state] of activeBattles.entries()) {
     if (isBattleExpired(state)) {
@@ -1682,7 +1721,7 @@ function buildServerSetupPayload(guildName) {
       { name: "Changing Channels", value: "Admins can run `/setup` inside a different channel, or `/setup channel:#channel`, to move Aurix." },
       { name: "Official Server", value: buildOfficialServerValue() },
     ],
-    footer: "Commands used outside this channel will point members back here.",
+    footer: "Aurix setup v2 - commands used outside this channel will point members back here.",
   });
 }
 
@@ -1698,7 +1737,7 @@ function buildServerJoinPayload(guildName) {
       { name: "4. Premium and Support", value: "Use `/premium` to view membership status and `/help` to browse every command." },
       { name: "Official Server", value: buildOfficialServerValue() },
     ],
-    footer: "Admins can rerun /setup any time to change the Aurix channel.",
+    footer: "Aurix setup v2 - admins can rerun /setup any time to change the Aurix channel.",
   });
 }
 
@@ -3362,6 +3401,7 @@ function initializePvpBattleFromLoadout(state, challenger, rival) {
 
 async function finishBattle(interaction, state, winnerId) {
   activeBattles.delete(state.id);
+  await deleteBattleSession(state.id);
   const first = await getOrCreatePlayer(interaction.guildId, state.playerOne.id);
   const second = state.isBoss ? null : await getOrCreatePlayer(interaction.guildId, state.playerTwo.id);
   const playerWon = state.playerOne.id === winnerId;
@@ -3512,6 +3552,7 @@ async function advanceBattle(interaction, state, acting, defending, actionSummar
   }
 
   const nextActor = state.turnId === state.playerOne.id ? state.playerOne : state.playerTwo;
+  await saveBattleSession(state);
 
   return interaction.update({
     ...createBattleEmbed(state.title, summary, state.visual, state),
@@ -3544,6 +3585,7 @@ async function handleInviteButton(interaction, state, action) {
     state.phase = "loadout";
     state.playerOne = createLoadoutParticipant(challenger, state.challengerName);
     state.playerTwo = createLoadoutParticipant(rival, state.opponentName);
+    await saveBattleSession(state);
 
     return interaction.update({
       ...createLoadoutEmbed(state, `${state.opponentName} accepted the duel. Both fighters can now choose gear and review battle items before the match starts.`),
@@ -3589,6 +3631,7 @@ async function handleLoadoutButton(interaction, state, action) {
 
   if (action === "cancel") {
     activeBattles.delete(state.id);
+    await deleteBattleSession(state.id);
     return interaction.update({
       ...buildEmbedPayload({
         title: "PvP Duel Cancelled",
@@ -3603,6 +3646,7 @@ async function handleLoadoutButton(interaction, state, action) {
   fighter.ready = !fighter.ready;
 
   if (!state.playerOne.ready || !state.playerTwo.ready) {
+    await saveBattleSession(state);
     return interaction.update({
       ...createLoadoutEmbed(state, `${fighter.name} ${fighter.ready ? "locked in their loadout" : "unreadied to make changes"}.`),
       components: buildLoadoutComponents(state),
@@ -3612,6 +3656,7 @@ async function handleLoadoutButton(interaction, state, action) {
   const challenger = await getOrCreatePlayer(interaction.guildId, state.playerOne.id);
   const rival = await getOrCreatePlayer(interaction.guildId, state.playerTwo.id);
   initializePvpBattleFromLoadout(state, challenger, rival);
+  await saveBattleSession(state);
 
   return interaction.update({
     ...createBattleEmbed("PvP Duel Started", `${state.playerOne.name} and ${state.playerTwo.name} locked in their loadouts.\nArena: **${state.arena.name}**\n${state.arena.description}`, "pvp-battle.svg", state),
@@ -3632,6 +3677,7 @@ async function handleLoadoutSelect(interaction, state, slotId) {
 
   fighter.loadout[slotId] = selected;
   fighter.ready = false;
+  await saveBattleSession(state);
 
   return interaction.update({
     ...createLoadoutEmbed(state, `${fighter.name} updated their ${slotId} slot.`),
@@ -3703,15 +3749,20 @@ async function handleBattleComponentInteraction(interaction) {
       activeBattles.set(battleId, state);
     }
   }
+  if (!state && scope !== "invite") {
+    state = await restoreBattleSession(battleId);
+  }
   if (!state || isBattleExpired(state)) {
     activeBattles.delete(battleId);
+    await deleteBattleSession(battleId);
     if (scope === "invite") {
       await PvpInvite.deleteOne({ battleId }).catch(() => null);
     }
-    return interaction.reply({ content: "That battle session is no longer active. If this was a fresh invite, the bot may have restarted while the challenge was pending. Send a new `/pvp` challenge.", ephemeral: true });
+    return interaction.reply({ content: "That battle session is no longer active. Start a new `/boss` or `/pvp` fight.", ephemeral: true });
   }
 
   state.createdAt = Date.now();
+  await saveBattleSession(state);
 
   if (interaction.isButton()) {
     if (scope === "invite") {
@@ -3822,6 +3873,7 @@ async function handleBoss(interaction) {
   };
   state.playerTwo.skill.heal = 0;
   activeBattles.set(battleId, state);
+  await saveBattleSession(state);
   return interaction.reply({
     ...createBattleEmbed("Boss Encounter", `You challenged **${boss.name}**.\n${getBossCraftingHint(boss)}`, boss.visual, state),
     components: buildBattleComponents(state, state.playerOne),
