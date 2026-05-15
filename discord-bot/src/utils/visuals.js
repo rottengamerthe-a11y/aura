@@ -21,6 +21,11 @@ const EMBED_THEMES = [
 const FIELD_NAME_MARKS = ["\u25C6", "\u25C7", "\u2726", "\u2B25", "\u25A3"];
 
 function buildAttachment(fileName) {
+  const extension = path.extname(fileName || "").toLowerCase();
+  if (![".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(extension)) {
+    return null;
+  }
+
   const filePath = path.join(VISUALS_DIR, fileName);
 
   if (!fs.existsSync(filePath)) {
@@ -123,7 +128,7 @@ function createGameEmbed({ title, description, color = COLORS.primary, fields = 
 
 function buildEmbedPayload(options) {
   const attachment = options.visual ? buildAttachment(options.visual) : null;
-  const embed = createGameEmbed(options);
+  const embed = createGameEmbed({ ...options, visual: attachment ? options.visual : null });
   const payload = { embeds: [embed] };
 
   if (attachment) {
