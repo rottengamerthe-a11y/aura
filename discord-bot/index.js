@@ -15,6 +15,7 @@ const { buildEmbedPayload } = require("./src/utils/visuals");
 const APP_VERSION = "aurix-forced-hud-v5";
 const startedAt = Date.now();
 let discordClient = null;
+const recentDiscordResponses = [];
 
 const requiredEnv = [
   "DISCORD_TOKEN",
@@ -425,6 +426,14 @@ function startWebServer() {
     });
   });
 
+  app.get("/debug/responses", (_req, res) => {
+    res.status(200).json({
+      ok: true,
+      version: APP_VERSION,
+      recent: recentDiscordResponses,
+    });
+  });
+
   app.listen(port, () => {
     console.log(`Health server listening on port ${port}. Version ${APP_VERSION}.`);
   });
@@ -484,7 +493,7 @@ function enforceHudEmbedStyle(options) {
     return options;
   }
 
-  return {
+  const normalized = {
     ...options,
     embeds: options.embeds.map((embed) => {
       const builder = EmbedBuilder.from(embed);
@@ -502,6 +511,26 @@ function enforceHudEmbedStyle(options) {
       return builder;
     }),
   };
+  rememberDiscordResponse(normalized);
+  return normalized;
+}
+
+function rememberDiscordResponse(options) {
+  const embeds = (options.embeds || []).map((embed) => {
+    const data = EmbedBuilder.from(embed).toJSON();
+    return {
+      title: data.title || null,
+      author: data.author?.name || null,
+      footer: data.footer?.text || null,
+      descriptionStart: data.description ? data.description.slice(0, 220) : null,
+    };
+  });
+  recentDiscordResponses.unshift({
+    at: new Date().toISOString(),
+    content: options.content || null,
+    embeds,
+  });
+  recentDiscordResponses.splice(20);
 }
 
 async function main() {
