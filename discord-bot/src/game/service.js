@@ -75,6 +75,7 @@ const PREMIUM_PLANS = Object.freeze({
     }),
   },
 });
+const PREMIUM_PURCHASE_URL = "https://aurawebsite-12gd.onrender.com";
 const PADDLE_PRICE_PLAN_ENV = Object.freeze({
   monthly: "PADDLE_MONTHLY_PRICE_ID",
   yearly: "PADDLE_YEARLY_PRICE_ID",
@@ -917,46 +918,58 @@ function formatEffectValue(value) {
   return Number.isInteger(value) ? `${value}` : `+${(value * 100).toFixed(1)}%`;
 }
 
-function formatEffectCapValue(effectId) {
-  const cap = EFFECT_CAPS[effectId];
+function getEffectCapsForUser(user = null) {
+  const caps = { ...EFFECT_CAPS };
+  const premiumEffects = getPremiumEffects(user);
+  Object.entries(premiumEffects).forEach(([effectId, value]) => {
+    if (typeof caps[effectId] === "number") {
+      caps[effectId] += value;
+    }
+  });
+  return caps;
+}
+
+function formatEffectCapValue(effectId, caps = EFFECT_CAPS) {
+  const cap = caps[effectId];
   if (typeof cap !== "number") {
     return "None";
   }
   return Number.isInteger(cap) ? `${cap}` : `+${(cap * 100).toFixed(1)}%`;
 }
 
-function applyEffectCaps(effects) {
+function applyEffectCaps(effects, caps = EFFECT_CAPS) {
   return Object.entries(effects).reduce((acc, [key, value]) => {
-    const cap = EFFECT_CAPS[key];
+    const cap = caps[key];
     acc[key] = typeof cap === "number" ? clamp(value, 0, cap) : value;
     return acc;
   }, {});
 }
 
-function sumEffectSources(...sources) {
+function sumEffectSources(sources, caps = EFFECT_CAPS) {
   const combined = {};
   sources.forEach((source) => {
     Object.entries(source || {}).forEach(([key, value]) => {
       combined[key] = (combined[key] || 0) + value;
     });
   });
-  return applyEffectCaps(combined);
+  return applyEffectCaps(combined, caps);
 }
 
-function buildEffectCapLines() {
+function buildEffectCapLines(user = null) {
+  const caps = getEffectCapsForUser(user);
   return [
-    `Spin Reward: cap ${formatEffectCapValue("spinRewardBoost")}`,
-    `Vault Interest: cap ${formatEffectCapValue("vaultInterestBoost")}/hr`,
-    `Coinflip Win: cap ${formatEffectCapValue("coinflipWinBoost")}`,
-    `Work Aura: cap ${formatEffectCapValue("workAuraBoost")}`,
-    `Work XP: cap ${formatEffectCapValue("workXpBoost")}`,
-    `Mine Yield: cap ${formatEffectCapValue("mineYieldBoost")}`,
-    `Mine XP: cap ${formatEffectCapValue("mineXpBoost")}`,
-    `Mine Iron Bonus: cap +${formatEffectCapValue("mineIronBonus")} ore`,
-    `Garden Yield: cap ${formatEffectCapValue("gardenYieldBoost")}`,
-    `Boss Reward: cap ${formatEffectCapValue("bossRewardBoost")}`,
-    `PvP Reward: cap ${formatEffectCapValue("pvpRewardBoost")}`,
-    `Crate Aura: cap ${formatEffectCapValue("crateAuraBoost")}`,
+    `Spin Reward: cap ${formatEffectCapValue("spinRewardBoost", caps)}`,
+    `Vault Interest: cap ${formatEffectCapValue("vaultInterestBoost", caps)}/hr`,
+    `Coinflip Win: cap ${formatEffectCapValue("coinflipWinBoost", caps)}`,
+    `Work Aura: cap ${formatEffectCapValue("workAuraBoost", caps)}`,
+    `Work XP: cap ${formatEffectCapValue("workXpBoost", caps)}`,
+    `Mine Yield: cap ${formatEffectCapValue("mineYieldBoost", caps)}`,
+    `Mine XP: cap ${formatEffectCapValue("mineXpBoost", caps)}`,
+    `Mine Iron Bonus: cap +${formatEffectCapValue("mineIronBonus", caps)} ore`,
+    `Garden Yield: cap ${formatEffectCapValue("gardenYieldBoost", caps)}`,
+    `Boss Reward: cap ${formatEffectCapValue("bossRewardBoost", caps)}`,
+    `PvP Reward: cap ${formatEffectCapValue("pvpRewardBoost", caps)}`,
+    `Crate Aura: cap ${formatEffectCapValue("crateAuraBoost", caps)}`,
   ].join("\n");
 }
 
@@ -1086,7 +1099,7 @@ function getCombinedEffects(user) {
   const gearEffects = getGearEffects(user);
   const premiumEffects = getPremiumEffects(user);
   const eventEffects = worldEvent.effects || {};
-  return sumEffectSources(perkEffects, gearEffects, premiumEffects, eventEffects);
+  return sumEffectSources([perkEffects, gearEffects, premiumEffects, eventEffects], getEffectCapsForUser(user));
 }
 
 function ensureInventoryEntry(user, id) {
@@ -1499,7 +1512,7 @@ const HELP_SECTIONS = [
       { name: "/achievements", description: "Claim milestone rewards you have unlocked." },
       { name: "/leaderboard category:<type>", description: "See the top players or clans." },
       { name: "/authority user:<player>", description: "Use the Warden+ blessing command." },
-      { name: "/premium", description: "View premium plans and your current status." },
+      { name: "/premium", description: "View your premium status and website link." },
     ],
   },
   {
@@ -1603,16 +1616,16 @@ function buildPlayerStartPayload(user) {
 
 function buildServerSetupPayload(guildName) {
   return buildEmbedPayload({
-    title: "Server Setup Guide",
-    description: `Thanks for adding Aura Garden to **${guildName}**. Use this guide to get the server ready fast.`,
+    title: "Aurix Channel Configured",
+    description: `Aurix is ready in **${guildName}**. This is now the server's Aurix channel.`,
     visual: "help-core.svg",
     fields: [
       { name: "Player Onboarding", value: "Members should run `/start` to create their save and see the quick-start path." },
       { name: "Best First Commands", value: "`/daily`, `/work`, `/spin`, `/mine`, `/profile`, `/help`" },
-      { name: "Admin Tools", value: "Admins or moderators can run `/setup channel:#your-bot-channel` to choose where Aurix works." },
+      { name: "Changing Channels", value: "Admins can run `/setup` inside a different channel, or `/setup channel:#channel`, to move Aurix." },
       { name: "Official Server", value: buildOfficialServerValue() },
     ],
-    footer: "Tip: post this in a welcome or bot-commands channel so new members can find it easily.",
+    footer: "Commands used outside this channel will point members back here.",
   });
 }
 
@@ -1623,7 +1636,7 @@ function buildServerJoinPayload(guildName) {
     visual: "help-core.svg",
     fields: [
       { name: "1. Create or Choose a Channel", value: "Use a channel like `#aurix`, `#bot-commands`, or `#economy`." },
-      { name: "2. Configure Aurix", value: "Run `/setup channel:#your-channel` in this server. After that, Aurix commands will point members to that channel." },
+      { name: "2. Configure Aurix", value: "Run `/setup` in the channel you want Aurix to use. You can also run `/setup channel:#your-channel`." },
       { name: "3. Player Start", value: "Members should run `/start`, then use `/daily`, `/work`, `/spin`, `/mine`, and `/profile`." },
       { name: "4. Premium and Support", value: "Use `/premium` to view membership status and `/help` to browse every command." },
     ],
@@ -2409,7 +2422,7 @@ async function handleVault(interaction) {
   const vaultRate = 0.03 + vaultPerkBonus + user.prestige * 0.005;
   const bonusLines = [
     `Base: 3.0%/hr`,
-    `Bonus Sources: ${formatEffectValue(vaultPerkBonus)}/hr (cap ${formatEffectCapValue("vaultInterestBoost")}/hr)`,
+    `Bonus Sources: ${formatEffectValue(vaultPerkBonus)}/hr (cap ${formatEffectCapValue("vaultInterestBoost", getEffectCapsForUser(user))}/hr)`,
     `Prestige: +${(user.prestige * 0.5).toFixed(1)}%/hr`,
   ];
   const interest = await claimVaultInterest(user);
@@ -2543,7 +2556,7 @@ async function handleInventory(interaction) {
       { name: "Crates", value: crateLines },
       { name: "Membership", value: formatPremiumStatus(user) },
       { name: "Active Cosmetics", value: formatProfileCosmetics(user) },
-      { name: "Effect Caps", value: buildEffectCapLines() },
+      { name: "Effect Caps", value: buildEffectCapLines(user) },
     ],
   }));
 }
@@ -3756,7 +3769,7 @@ async function handleSetup(interaction) {
     return interaction.reply({
       ...buildEmbedPayload({
         title: "Setup Locked",
-        description: "Only admins or moderators can use `/setup` to repost the server setup guide.",
+        description: "Only admins or moderators can use `/setup` to choose the Aurix channel.",
         visual: "emblem-alert.svg",
       }),
       ephemeral: true,
@@ -3797,7 +3810,7 @@ async function handleSetup(interaction) {
   return interaction.reply({
     ...buildEmbedPayload({
       title: "Aurix Channel Configured",
-      description: `Aurix is now configured to use ${selectedChannel}. Commands used elsewhere will point members back here.`,
+      description: `Aurix is now configured to use ${selectedChannel}. I posted the short starter guide there. Commands used elsewhere will point members back here.`,
       visual: "emblem-success.svg",
     }),
     ephemeral: true,
@@ -3810,15 +3823,15 @@ async function handlePremium(interaction) {
   return interaction.reply({
     ...buildEmbedPayload({
       title: "Premium",
-      description: "Choose from Monthly, Yearly, or Lifetime premium. Purchases are still handled outside the bot for now.",
+      description: "Check your membership status and open the Aurix premium page.",
       visual: "emblem-alert.svg",
       fields: [
         { name: "Current Status", value: formatPremiumStatus(user), inline: true },
         { name: "Active Plan", value: activePlan ? `${activePlan.label} (${activePlan.priceLabel})` : "None", inline: true },
-        ...buildPremiumPlanFields(),
+        { name: "Get Premium", value: PREMIUM_PURCHASE_URL },
         { name: "Shared Premium Unlocks", value: buildPremiumFeatureSummary() },
       ],
-      footer: "Premium can be granted manually by an admin using source: monthly, yearly, or lifetime.",
+      footer: "Login with Discord on the site before buying so premium links to your account.",
     }),
     ephemeral: true,
   });
@@ -4392,7 +4405,7 @@ function buildCommands() {
   return [
     new SlashCommandBuilder().setName("help").setDescription("Browse game commands by category.").addStringOption((option) => option.setName("category").setDescription("Open one help category").addChoices(...HELP_SECTIONS.map((section) => ({ name: section.name, value: section.id })))),
     new SlashCommandBuilder().setName("event").setDescription("View the current rotating world event."),
-    new SlashCommandBuilder().setName("setup").setDescription("Admin/mod command to choose the Aurix bot channel.").addChannelOption((option) => option.setName("channel").setDescription("Channel where Aurix should work").addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
+    new SlashCommandBuilder().setName("setup").setDescription("Set this or another channel as the Aurix bot channel.").addChannelOption((option) => option.setName("channel").setDescription("Optional channel; leave empty to use this channel").addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
     new SlashCommandBuilder().setName("start").setDescription("Create your save and open the quick-start guide."),
     new SlashCommandBuilder().setName("profile").setDescription("View your or another player's profile.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
     new SlashCommandBuilder().setName("stats").setDescription("View deeper player stats.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
