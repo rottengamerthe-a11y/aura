@@ -3,12 +3,13 @@ const crypto = require("crypto");
 const { BOSSES, COLORS, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
 const { BattleSession, Clan, GuildSettings, PvpInvite, User } = require("../data/models");
 const { buildClanCreateData, buildClanLeaderboardFilter, buildClanLookup, buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
+const { buildProfileCosmeticAttachment, FILE_NAME: PROFILE_COSMETIC_FILE } = require("../utils/cosmeticArt");
 const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 
 const activeBattles = new Map();
 const reminderIntervals = new WeakMap();
 const recentInteractions = [];
-const COMMAND_BUILD_ID = "aurix-real-cosmetics-v9";
+const COMMAND_BUILD_ID = "aurix-cosmetic-art-v10";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const BATTLE_ANIMATION_DELAY_MS = 900;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
@@ -1636,7 +1637,7 @@ function buildProfileEmbed(user, targetUser) {
   const rankProgressCurrent = user.xp - currentRank.xpRequired;
   const rankProgressTotal = Math.max(1, next.xpRequired - currentRank.xpRequired);
   const cosmeticStyle = getProfileCosmeticStyle(user, targetUser);
-  return buildEmbedPayload({
+  const payload = buildEmbedPayload({
     title: cosmeticStyle.title,
     description: `${cosmeticStyle.description}\nA complete snapshot of progression, economy, and combat readiness.`,
     visual: "core-profile.svg",
@@ -1658,6 +1659,12 @@ function buildProfileEmbed(user, targetUser) {
     ],
     footer: "Ranks can go down if your XP drops below the current tier threshold.",
   });
+  const cosmeticAttachment = buildProfileCosmeticAttachment(user);
+  if (cosmeticAttachment) {
+    payload.files = [...(payload.files || []), cosmeticAttachment];
+    payload.embeds[0].setImage(`attachment://${PROFILE_COSMETIC_FILE}`);
+  }
+  return payload;
 }
 
 const HELP_SECTIONS = [
