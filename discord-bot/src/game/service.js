@@ -8,8 +8,9 @@ const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 const activeBattles = new Map();
 const reminderIntervals = new WeakMap();
 const recentInteractions = [];
-const COMMAND_BUILD_ID = "aurix-hud-v3";
+const COMMAND_BUILD_ID = "aurix-gameplay-v7";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
+const BATTLE_ANIMATION_DELAY_MS = 900;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
 const BATTLE_GEAR_SLOTS = Object.freeze([
   { id: "tool", label: "Tool" },
@@ -258,6 +259,10 @@ const BOSS_INTENTS = Object.freeze({
 
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function generateClanCode(name, guildId) {
@@ -3107,6 +3112,42 @@ function createBossBattlePayload(description, visual, state) {
   };
 }
 
+function formatBattleSnapshot(fighter) {
+  return [
+    `HP ${fighter.hp}/${fighter.maxHp} ${emojiHpBar(fighter.hp, fighter.maxHp, 8)}`,
+    `State: ${compactBattleStatuses(fighter)}`,
+  ].join("\n");
+}
+
+function createBattleResolvingPayload(state, summary) {
+  const playerOne = state.playerOne;
+  const playerTwo = state.playerTwo;
+  const nextName = state.turnId === playerOne.id ? playerOne.name : playerTwo.name;
+  const title = state.isBoss ? "Boss Turn Resolving" : "PvP Turn Resolving";
+  const description = [
+    "\u25B6 Action locked in",
+    "\u25B6 Damage and effects resolving",
+    "\u25B6 Loading next turn",
+  ].join("\n");
+  const embed = new EmbedBuilder()
+    .setColor(state.isBoss ? getBossThemeColor(playerTwo.id) : 0xff6b88)
+    .setTitle(`\u23F3 ${title}`)
+    .setDescription(`${description}\n\n${"\u2501".repeat(20)}`)
+    .addFields(
+      { name: playerOne.name, value: formatBattleSnapshot(playerOne), inline: true },
+      { name: playerTwo.name, value: formatBattleSnapshot(playerTwo), inline: true },
+      { name: "Last Exchange", value: formatCombatLog(summary), inline: false },
+      { name: "Next Turn", value: `\`${nextName}\` is preparing their move.`, inline: false }
+    )
+    .setFooter({ text: "Aurix combat replay \u2022 resolving turn" })
+    .setTimestamp();
+
+  return {
+    content: `\u23F3 **Resolving turn...** ${playerOne.name} vs ${playerTwo.name}`,
+    embeds: [embed],
+  };
+}
+
 function resolveTurnStart(fighter) {
   const notes = [];
   if (fighter.bleedTurns > 0 && fighter.bleedDamage > 0) {
@@ -3572,7 +3613,7 @@ function createBattleEmbed(title, description, visual, state) {
       inline: false,
     });
   }
-  return buildEmbedPayload({
+  const payload = buildEmbedPayload({
     title,
     description,
     visual,
@@ -3582,7 +3623,12 @@ function createBattleEmbed(title, description, visual, state) {
       { name: "Turn", value: `${turnLabel}\nExchange ${(state.exchangeCount || 0) + 1}`, inline: false },
       ...extraFields,
     ],
+    footer: `Turn ${((state.exchangeCount || 0) + 1)} \u2022 ${turnLabel} to act`,
   });
+  return {
+    content: `\u{1F3AE} **Turn ${((state.exchangeCount || 0) + 1)}** | ${turnLabel}`,
+    ...payload,
+  };
 }
 
 async function useBattleItem(interaction, fighter, defender, itemId) {
@@ -3827,7 +3873,13 @@ async function advanceBattle(interaction, state, acting, defending, actionSummar
   const nextActor = state.turnId === state.playerOne.id ? state.playerOne : state.playerTwo;
   await saveBattleSession(state);
 
-  return interaction.update({
+  await interaction.update({
+    ...createBattleResolvingPayload(state, summary),
+    components: [],
+  });
+  await sleep(BATTLE_ANIMATION_DELAY_MS);
+
+  return interaction.editReply({
     ...createBattleEmbed(state.title, summary, state.visual, state),
     components: buildBattleComponents(state, nextActor),
   });
