@@ -9,7 +9,7 @@ const session = require("express-session");
 const mongoose = require("mongoose");
 const { GuildSettings, PaddleWebhookLog, User } = require("./src/data/models");
 const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigration");
-const { applyPaddleWebhookEvent, buildCommands, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
+const { applyPaddleWebhookEvent, buildCommands, recentInteractions, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
 
 const APP_VERSION = "aurix-ui-hud-v2";
 const startedAt = Date.now();
@@ -393,6 +393,14 @@ function startWebServer() {
       botUser: discordClient?.user?.tag || null,
       ready: Boolean(discordClient?.isReady?.()),
       startedAt: new Date(startedAt).toISOString(),
+    });
+  });
+
+  app.get("/debug/interactions", (_req, res) => {
+    res.status(200).json({
+      ok: true,
+      version: APP_VERSION,
+      recent: recentInteractions,
     });
   });
 

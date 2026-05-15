@@ -7,6 +7,7 @@ const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 
 const activeBattles = new Map();
 const reminderIntervals = new WeakMap();
+const recentInteractions = [];
 const COMMAND_BUILD_ID = "aurix-ui-hud-v2";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
@@ -4795,8 +4796,9 @@ function buildCommands() {
 }
 
 async function routeInteraction(interaction) {
-  console.log("Aurix interaction routed:", {
+  const interactionLog = {
     build: COMMAND_BUILD_ID,
+    at: new Date().toISOString(),
     id: interaction.id,
     type: interaction.type,
     command: interaction.commandName || null,
@@ -4804,7 +4806,10 @@ async function routeInteraction(interaction) {
     guildId: interaction.guildId || null,
     channelId: interaction.channelId || null,
     userId: interaction.user?.id || null,
-  });
+  };
+  recentInteractions.unshift(interactionLog);
+  recentInteractions.splice(25);
+  console.log("Aurix interaction routed:", interactionLog);
 
   if (interaction.isButton() || interaction.isStringSelectMenu()) {
     return handleBattleComponentInteraction(interaction);
@@ -4843,6 +4848,7 @@ async function routeInteraction(interaction) {
 module.exports = {
   applyPaddleWebhookEvent,
   buildCommands,
+  recentInteractions,
   routeInteraction,
   sendServerJoinMessage,
   sendServerSetupMessage,
