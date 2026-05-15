@@ -45,7 +45,7 @@ const clanLogEntrySchema = new mongoose.Schema(
 const userSchema = new mongoose.Schema(
   {
     guildId: { type: String, index: true },
-    userId: { type: String, index: true },
+    userId: String,
     aura: { type: Number, default: 1200 },
     vaultAura: { type: Number, default: 0 },
     xp: { type: Number, default: 0 },
