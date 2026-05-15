@@ -2931,7 +2931,7 @@ function getCompactBattleFighterField(fighter) {
 function battleHpBar(current, total, size = 16) {
   const ratio = total <= 0 ? 1 : clamp(current / total, 0, 1);
   const filled = Math.round(ratio * size);
-  return `${"█".repeat(filled)}${"░".repeat(size - filled)} ${Math.round(ratio * 100)}%`;
+  return `${"\u2588".repeat(filled)}${"\u2591".repeat(size - filled)} ${Math.round(ratio * 100)}%`;
 }
 
 function emojiHpBar(current, total, size = 10) {
@@ -3093,7 +3093,7 @@ function createBossBattlePayload(description, visual, state) {
         inline: false,
       }
     )
-    .setFooter({ text: `Boss UI v6 • Telegraph combat • ${player.name} vs ${boss.name}` })
+    .setFooter({ text: `Boss UI v6 \u2022 Telegraph combat \u2022 ${player.name} vs ${boss.name}` })
     .setTimestamp();
 
   if (attachment) {

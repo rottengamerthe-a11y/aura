@@ -410,15 +410,20 @@ function startWebServer() {
 }
 
 function prepareInteractionResponse(interaction) {
-  if (!interaction.isChatInputCommand?.()) {
+  const canAutoDeferCommand = interaction.isChatInputCommand?.();
+  const canAutoDeferComponent = interaction.isButton?.() || interaction.isStringSelectMenu?.();
+  if (!canAutoDeferCommand && !canAutoDeferComponent) {
     return () => {};
   }
 
   const originalReply = interaction.reply.bind(interaction);
   const originalEditReply = interaction.editReply.bind(interaction);
+  const originalUpdate = interaction.update?.bind(interaction);
+  const originalFollowUp = interaction.followUp.bind(interaction);
   const deferTimer = setTimeout(() => {
     if (!interaction.deferred && !interaction.replied) {
-      interaction.deferReply().catch((error) => {
+      const defer = canAutoDeferComponent ? interaction.deferUpdate.bind(interaction) : interaction.deferReply.bind(interaction);
+      defer().catch((error) => {
         console.warn("Failed to defer interaction:", error?.code || error?.message || error);
       });
     }
@@ -431,6 +436,21 @@ function prepareInteractionResponse(interaction) {
       return originalEditReply(editOptions);
     }
     return originalReply(options);
+  };
+
+  if (originalUpdate) {
+    interaction.update = async (options) => {
+      clearTimeout(deferTimer);
+      if (interaction.deferred && !interaction.replied) {
+        return originalEditReply(options);
+      }
+      return originalUpdate(options);
+    };
+  }
+
+  interaction.followUp = async (options) => {
+    clearTimeout(deferTimer);
+    return originalFollowUp(options);
   };
 
   return () => clearTimeout(deferTimer);
