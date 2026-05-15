@@ -11,6 +11,8 @@ const { GuildSettings, PaddleWebhookLog, User } = require("./src/data/models");
 const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigration");
 const { applyPaddleWebhookEvent, buildCommands, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
 
+const APP_VERSION = "aurix-ui-740df63";
+const startedAt = Date.now();
 let discordClient = null;
 
 const requiredEnv = [
@@ -380,11 +382,22 @@ function startWebServer() {
   });
 
   app.get("/health", (_req, res) => {
-    res.status(200).json({ ok: true, service: "discord-bot" });
+    res.status(200).json({ ok: true, service: "discord-bot", version: APP_VERSION });
+  });
+
+  app.get("/debug/version", (_req, res) => {
+    res.status(200).json({
+      ok: true,
+      service: "discord-bot",
+      version: APP_VERSION,
+      botUser: discordClient?.user?.tag || null,
+      ready: Boolean(discordClient?.isReady?.()),
+      startedAt: new Date(startedAt).toISOString(),
+    });
   });
 
   app.listen(port, () => {
-    console.log(`Health server listening on port ${port}.`);
+    console.log(`Health server listening on port ${port}. Version ${APP_VERSION}.`);
   });
 }
 
