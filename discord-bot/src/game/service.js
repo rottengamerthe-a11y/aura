@@ -209,6 +209,20 @@ const BATTLE_SPECIAL_ACTIONS = Object.freeze({
   finish: { label: "Finisher", cooldownRounds: 2 },
   guard: { label: "Guard", cooldownRounds: 0 },
 });
+const BATTLE_ACTION_EMOJIS = Object.freeze({
+  strike: "⚔️",
+  feint: "🌀",
+  sidestep: "💨",
+  heavy: "💥",
+  hook: "🪝",
+  pierce: "🗡️",
+  charge: "🔥",
+  disorient: "🌫️",
+  blitz: "⚡",
+  skill: "✨",
+  guard: "🛡️",
+  finish: "☠️",
+});
 
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -2881,6 +2895,60 @@ function getCompactBattleFighterField(fighter) {
   ].join("\n");
 }
 
+function battleHpBar(current, total, size = 16) {
+  const ratio = total <= 0 ? 1 : clamp(current / total, 0, 1);
+  const filled = Math.round(ratio * size);
+  return `${"█".repeat(filled)}${"░".repeat(size - filled)} ${Math.round(ratio * 100)}%`;
+}
+
+function getHpMood(fighter, isBoss = false) {
+  const ratio = fighter.maxHp <= 0 ? 1 : fighter.hp / fighter.maxHp;
+  if (fighter.hp <= 0) {
+    return isBoss ? "DEFEATED" : "DOWN";
+  }
+  if (ratio <= 0.25) {
+    return isBoss ? "ENRAGED" : "CRITICAL";
+  }
+  if (ratio <= 0.55) {
+    return isBoss ? "WOUNDED" : "HURT";
+  }
+  return isBoss ? "DOMINANT" : "READY";
+}
+
+function compactBattleStatuses(fighter) {
+  const status = getBattleStatuses(fighter);
+  return status === "Stable" ? "No active effects" : status;
+}
+
+function formatBossBattleScreen(state) {
+  const player = state.playerOne;
+  const boss = state.playerTwo;
+  const turnName = state.turnId === player.id ? player.name : boss.name;
+  const exchange = (state.exchangeCount || 0) + 1;
+  return [
+    "```",
+    `${boss.name.toUpperCase()}  [${getHpMood(boss, true)}]`,
+    `BOSS ${String(boss.hp).padStart(3, " ")}/${String(boss.maxHp).padEnd(3, " ")} ${battleHpBar(boss.hp, boss.maxHp)}`,
+    "",
+    `${player.name.toUpperCase()}  [${getHpMood(player)}]`,
+    `YOU  ${String(player.hp).padStart(3, " ")}/${String(player.maxHp).padEnd(3, " ")} ${battleHpBar(player.hp, player.maxHp)}`,
+    "",
+    `TURN: ${turnName}`,
+    `ROUND: ${exchange}`,
+    "```",
+  ].join("\n");
+}
+
+function formatCombatLog(description) {
+  return (description || "The encounter begins.")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-4)
+    .map((line) => `▸ ${line}`)
+    .join("\n");
+}
+
 function resolveTurnStart(fighter) {
   const notes = [];
   if (fighter.bleedTurns > 0 && fighter.bleedDamage > 0) {
@@ -3261,6 +3329,7 @@ function buildBattleComponents(state, fighter) {
       const cooldownLabel = getBattleActionCooldownLabel(fighter, actionId);
       return new ButtonBuilder()
         .setCustomId(`${state.id}:${actionId}`)
+        .setEmoji(BATTLE_ACTION_EMOJIS[actionId] || "⚔️")
         .setLabel(cooldownLabel ? `${action.label} ${cooldownLabel}` : action.label)
         .setStyle(action.style)
         .setDisabled(isBattleActionOnCooldown(state, fighter, actionId));
@@ -3269,9 +3338,9 @@ function buildBattleComponents(state, fighter) {
   const components = [
     ...actionRows,
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`${state.id}:skill`).setLabel(skillLabel.slice(0, 80)).setStyle(ButtonStyle.Success).setDisabled(!canUseSkill || isBattleActionOnCooldown(state, fighter, "skill")),
-      new ButtonBuilder().setCustomId(`${state.id}:guard`).setLabel(guardCooldownLabel ? `Guard ${guardCooldownLabel}` : "Guard").setStyle(ButtonStyle.Secondary).setDisabled(isBattleActionOnCooldown(state, fighter, "guard")),
-      new ButtonBuilder().setCustomId(`${state.id}:finish`).setLabel(finishCooldownLabel ? `Finisher ${finishCooldownLabel}` : "Finisher").setStyle(ButtonStyle.Danger).setDisabled(isBattleActionOnCooldown(state, fighter, "finish"))
+      new ButtonBuilder().setCustomId(`${state.id}:skill`).setEmoji(BATTLE_ACTION_EMOJIS.skill).setLabel(skillLabel.slice(0, 80)).setStyle(ButtonStyle.Success).setDisabled(!canUseSkill || isBattleActionOnCooldown(state, fighter, "skill")),
+      new ButtonBuilder().setCustomId(`${state.id}:guard`).setEmoji(BATTLE_ACTION_EMOJIS.guard).setLabel(guardCooldownLabel ? `Guard ${guardCooldownLabel}` : "Guard").setStyle(ButtonStyle.Secondary).setDisabled(isBattleActionOnCooldown(state, fighter, "guard")),
+      new ButtonBuilder().setCustomId(`${state.id}:finish`).setEmoji(BATTLE_ACTION_EMOJIS.finish).setLabel(finishCooldownLabel ? `Finisher ${finishCooldownLabel}` : "Finisher").setStyle(ButtonStyle.Danger).setDisabled(isBattleActionOnCooldown(state, fighter, "finish"))
     ),
   ];
 
@@ -3307,15 +3376,16 @@ function createBattleEmbed(title, description, visual, state) {
     : `${state.playerTwo.name} (${state.playerTwo.skill?.name || "Focus"})`;
   if (state.isBoss) {
     return buildEmbedPayload({
-      title,
-      description,
+      title: `${state.playerTwo.name} Encounter`,
+      description: formatBossBattleScreen(state),
+      visual,
       fields: [
-        { name: "Your HP", value: `${state.playerOne.hp}/${state.playerOne.maxHp}\n${progressBar(state.playerOne.hp, state.playerOne.maxHp, 14)}`, inline: false },
-        { name: "Boss HP", value: `${state.playerTwo.hp}/${state.playerTwo.maxHp}\n${progressBar(state.playerTwo.hp, state.playerTwo.maxHp, 14)}`, inline: false },
-        { name: "Turn", value: `${turnLabel}\nExchange ${(state.exchangeCount || 0) + 1}`, inline: false },
-        { name: "Status", value: `${state.playerOne.name}: ${getBattleStatuses(state.playerOne)}\n${state.playerTwo.name}: ${getBattleStatuses(state.playerTwo)}`, inline: false },
+        { name: "Combat Log", value: formatCombatLog(description), inline: false },
+        { name: "You", value: `${compactBattleStatuses(state.playerOne)}\nSkill ready: ${state.playerOne.skill?.name || "Focus"}`, inline: true },
+        { name: "Boss", value: `${compactBattleStatuses(state.playerTwo)}\nPressure: ${getHpMood(state.playerTwo, true)}`, inline: true },
+        { name: "Choose Move", value: "Use the buttons below to attack, guard, spend a skill, or burn a battle item.", inline: false },
       ],
-      footer: "Boss UI v2 - clean battle view",
+      footer: "Boss UI v3 - encounter view",
     });
   }
   const extraFields = [];
