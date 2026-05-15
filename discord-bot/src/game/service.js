@@ -1,7 +1,7 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
 const crypto = require("crypto");
 const { BOSSES, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
-const { Clan, GuildSettings, User } = require("../data/models");
+const { Clan, GuildSettings, PvpInvite, User } = require("../data/models");
 const { buildClanCreateData, buildClanLeaderboardFilter, buildClanLookup, buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
 const { buildEmbedPayload } = require("../utils/visuals");
 
@@ -77,6 +77,7 @@ const PREMIUM_PLANS = Object.freeze({
   },
 });
 const PREMIUM_PURCHASE_URL = "https://aurawebsite-12gd.onrender.com";
+const OFFICIAL_SERVER_URL = "https://aurawebsite-12gd.onrender.com";
 const PADDLE_PRICE_PLAN_ENV = Object.freeze({
   monthly: "PADDLE_MONTHLY_PRICE_ID",
   yearly: "PADDLE_YEARLY_PRICE_ID",
@@ -850,18 +851,21 @@ function isBattleExpired(state) {
 
 async function expirePvpInvite(client, battleId) {
   const state = activeBattles.get(battleId);
-  if (!state || state.phase !== "invite" || !isBattleExpired(state)) {
+  const persistedInvite = state ? null : await PvpInvite.findOne({ battleId }).lean();
+  const inviteState = state || (persistedInvite ? buildPvpInviteStateFromRecord(persistedInvite) : null);
+  if (!inviteState || inviteState.phase !== "invite" || !isBattleExpired(inviteState)) {
     return;
   }
 
   activeBattles.delete(battleId);
+  await PvpInvite.deleteOne({ battleId }).catch(() => null);
 
-  if (!state.channelId || !state.messageId) {
+  if (!inviteState.channelId || !inviteState.messageId) {
     return;
   }
 
-  const channel = await client.channels.fetch(state.channelId).catch(() => null);
-  const message = await channel?.messages?.fetch?.(state.messageId).catch(() => null);
+  const channel = await client.channels.fetch(inviteState.channelId).catch(() => null);
+  const message = await channel?.messages?.fetch?.(inviteState.messageId).catch(() => null);
   if (!message?.editable) {
     return;
   }
@@ -869,11 +873,28 @@ async function expirePvpInvite(client, battleId) {
   await message.edit({
     ...buildEmbedPayload({
       title: "PvP Invite Expired",
-      description: `${state.opponentName} did not accept ${state.challengerName}'s challenge in time. The duel slot is open again.`,
+      description: `${inviteState.opponentName} did not accept ${inviteState.challengerName}'s challenge in time. The duel slot is open again.`,
       visual: "pvp-challenge.svg",
     }),
     components: [],
   }).catch(() => null);
+}
+
+function buildPvpInviteStateFromRecord(invite) {
+  return {
+    id: invite.battleId,
+    phase: "invite",
+    isBoss: false,
+    challengerId: invite.challengerId,
+    challengerName: invite.challengerName,
+    opponentId: invite.opponentId,
+    opponentName: invite.opponentName,
+    arena: invite.arena || pickPvpArena(),
+    createdAt: invite.createdAt?.getTime ? invite.createdAt.getTime() : new Date(invite.createdAt || Date.now()).getTime(),
+    inviteExpiresAt: invite.inviteExpiresAt?.getTime ? invite.inviteExpiresAt.getTime() : new Date(invite.inviteExpiresAt).getTime(),
+    channelId: invite.channelId,
+    messageId: invite.messageId,
+  };
 }
 
 function pruneExpiredBattles() {
@@ -1612,7 +1633,7 @@ function getOfficialServerUrl() {
     || process.env.OFFICIAL_DISCORD_URL
     || process.env.DISCORD_SERVER_URL
     || process.env.SUPPORT_SERVER_URL
-    || PREMIUM_PURCHASE_URL;
+    || OFFICIAL_SERVER_URL;
   if (typeof value !== "string") {
     return null;
   }
@@ -1631,7 +1652,7 @@ function hasSetupAccess(memberPermissions) {
 }
 
 function buildOfficialServerValue() {
-  return getOfficialServerUrl();
+  return getOfficialServerUrl() || OFFICIAL_SERVER_URL;
 }
 
 function buildPlayerStartPayload(user) {
@@ -1659,6 +1680,7 @@ function buildServerSetupPayload(guildName) {
       { name: "Player Onboarding", value: "Members should run `/start` to create their save and see the quick-start path." },
       { name: "Best First Commands", value: "`/daily`, `/work`, `/spin`, `/mine`, `/profile`, `/help`" },
       { name: "Changing Channels", value: "Admins can run `/setup` inside a different channel, or `/setup channel:#channel`, to move Aurix." },
+      { name: "Official Server", value: buildOfficialServerValue() },
     ],
     footer: "Commands used outside this channel will point members back here.",
   });
@@ -1674,6 +1696,7 @@ function buildServerJoinPayload(guildName) {
       { name: "2. Configure Aurix", value: "Run `/setup` in the channel you want Aurix to use. You can also run `/setup channel:#your-channel`." },
       { name: "3. Player Start", value: "Members should run `/start`, then use `/daily`, `/work`, `/spin`, `/mine`, and `/profile`." },
       { name: "4. Premium and Support", value: "Use `/premium` to view membership status and `/help` to browse every command." },
+      { name: "Official Server", value: buildOfficialServerValue() },
     ],
     footer: "Admins can rerun /setup any time to change the Aurix channel.",
   });
@@ -3499,6 +3522,7 @@ async function advanceBattle(interaction, state, acting, defending, actionSummar
 async function handleInviteButton(interaction, state, action) {
   if (isBattleExpired(state)) {
     activeBattles.delete(state.id);
+    await PvpInvite.deleteOne({ battleId: state.id }).catch(() => null);
     return interaction.update({
       ...buildEmbedPayload({
         title: "PvP Invite Expired",
@@ -3516,6 +3540,7 @@ async function handleInviteButton(interaction, state, action) {
 
     const challenger = await getOrCreatePlayer(interaction.guildId, state.challengerId);
     const rival = await getOrCreatePlayer(interaction.guildId, state.opponentId);
+    await PvpInvite.deleteOne({ battleId: state.id }).catch(() => null);
     state.phase = "loadout";
     state.playerOne = createLoadoutParticipant(challenger, state.challengerName);
     state.playerTwo = createLoadoutParticipant(rival, state.opponentName);
@@ -3531,6 +3556,7 @@ async function handleInviteButton(interaction, state, action) {
       return interaction.reply({ content: "Only the challenged player can decline this duel.", ephemeral: true });
     }
     activeBattles.delete(state.id);
+    await PvpInvite.deleteOne({ battleId: state.id }).catch(() => null);
     return interaction.update({
       ...buildEmbedPayload({
         title: "PvP Duel Declined",
@@ -3545,6 +3571,7 @@ async function handleInviteButton(interaction, state, action) {
     return interaction.reply({ content: "Only the challenger can cancel this invite.", ephemeral: true });
   }
   activeBattles.delete(state.id);
+  await PvpInvite.deleteOne({ battleId: state.id }).catch(() => null);
   return interaction.update({
     ...buildEmbedPayload({
       title: "PvP Duel Cancelled",
@@ -3668,10 +3695,20 @@ async function handleBattleComponentInteraction(interaction) {
   const parts = interaction.customId.split(":");
   const battleId = parts.shift();
   const scope = parts.shift();
-  const state = activeBattles.get(battleId);
+  let state = activeBattles.get(battleId);
+  if (!state && scope === "invite") {
+    const invite = await PvpInvite.findOne({ battleId }).lean();
+    if (invite) {
+      state = buildPvpInviteStateFromRecord(invite);
+      activeBattles.set(battleId, state);
+    }
+  }
   if (!state || isBattleExpired(state)) {
     activeBattles.delete(battleId);
-    return interaction.reply({ content: "That battle session has expired.", ephemeral: true });
+    if (scope === "invite") {
+      await PvpInvite.deleteOne({ battleId }).catch(() => null);
+    }
+    return interaction.reply({ content: "That battle session is no longer active. If this was a fresh invite, the bot may have restarted while the challenge was pending. Send a new `/pvp` challenge.", ephemeral: true });
   }
 
   state.createdAt = Date.now();
@@ -3736,6 +3773,25 @@ async function handlePvp(interaction) {
 
   state.channelId = message.channelId;
   state.messageId = message.id;
+  await PvpInvite.findOneAndUpdate(
+    { battleId },
+    {
+      $set: {
+        battleId,
+        guildId: interaction.guildId,
+        channelId: message.channelId,
+        messageId: message.id,
+        challengerId: state.challengerId,
+        challengerName: state.challengerName,
+        opponentId: state.opponentId,
+        opponentName: state.opponentName,
+        arena: state.arena,
+        inviteExpiresAt: new Date(state.inviteExpiresAt),
+        createdAt: new Date(state.createdAt),
+      },
+    },
+    { upsert: true }
+  );
   setTimeout(() => {
     expirePvpInvite(interaction.client, battleId).catch((error) => {
       console.error("Failed to expire PvP invite:", error);

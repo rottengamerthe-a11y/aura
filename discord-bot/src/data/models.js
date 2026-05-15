@@ -182,6 +182,23 @@ const paddleWebhookLogSchema = new mongoose.Schema(
   { versionKey: false }
 );
 
+const pvpInviteSchema = new mongoose.Schema(
+  {
+    battleId: { type: String, required: true, unique: true, index: true },
+    guildId: { type: String, default: null },
+    channelId: { type: String, default: null },
+    messageId: { type: String, default: null },
+    challengerId: { type: String, required: true },
+    challengerName: { type: String, required: true },
+    opponentId: { type: String, required: true },
+    opponentName: { type: String, required: true },
+    arena: { type: mongoose.Schema.Types.Mixed, default: null },
+    inviteExpiresAt: { type: Date, required: true, index: true },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { versionKey: false }
+);
+
 const guildSettingsSchema = new mongoose.Schema(
   {
     guildId: { type: String, required: true, unique: true, index: true },
@@ -196,5 +213,6 @@ const User = mongoose.models.User || mongoose.model("User", userSchema);
 const Clan = mongoose.models.Clan || mongoose.model("Clan", clanSchema);
 const GuildSettings = mongoose.models.GuildSettings || mongoose.model("GuildSettings", guildSettingsSchema);
 const PaddleWebhookLog = mongoose.models.PaddleWebhookLog || mongoose.model("PaddleWebhookLog", paddleWebhookLogSchema);
+const PvpInvite = mongoose.models.PvpInvite || mongoose.model("PvpInvite", pvpInviteSchema);
 
-module.exports = { Clan, GuildSettings, PaddleWebhookLog, User };
+module.exports = { Clan, GuildSettings, PaddleWebhookLog, PvpInvite, User };
