@@ -12,7 +12,7 @@ const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigrat
 const { applyPaddleWebhookEvent, buildCommands, recentInteractions, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
 const { buildEmbedPayload } = require("./src/utils/visuals");
 
-const APP_VERSION = "aurix-forced-hud-v5";
+const APP_VERSION = "aurix-immediate-defer-v6";
 const startedAt = Date.now();
 let discordClient = null;
 const recentDiscordResponses = [];
@@ -439,7 +439,7 @@ function startWebServer() {
   });
 }
 
-function prepareInteractionResponse(interaction) {
+async function prepareInteractionResponse(interaction) {
   const canAutoDeferCommand = interaction.isChatInputCommand?.();
   const canAutoDeferComponent = interaction.isButton?.() || interaction.isStringSelectMenu?.();
   if (!canAutoDeferCommand && !canAutoDeferComponent) {
@@ -450,19 +450,20 @@ function prepareInteractionResponse(interaction) {
   const originalEditReply = interaction.editReply.bind(interaction);
   const originalUpdate = interaction.update?.bind(interaction);
   const originalFollowUp = interaction.followUp.bind(interaction);
-  const deferTimer = setTimeout(() => {
-    if (!interaction.deferred && !interaction.replied) {
-      const defer = canAutoDeferComponent ? interaction.deferUpdate.bind(interaction) : interaction.deferReply.bind(interaction);
-      defer().catch((error) => {
-        console.warn("Failed to defer interaction:", error?.code || error?.message || error);
-      });
-    }
-  }, 1500);
+  const defer = canAutoDeferComponent ? interaction.deferUpdate.bind(interaction) : interaction.deferReply.bind(interaction);
+  let deferOk = false;
+  const deferPromise = defer()
+    .then(() => {
+      deferOk = true;
+    })
+    .catch((error) => {
+      console.warn("Failed to defer interaction:", error?.code || error?.message || error);
+    });
+  await deferPromise;
 
   interaction.reply = async (options) => {
-    clearTimeout(deferTimer);
     const normalizedOptions = enforceHudEmbedStyle(options);
-    if (interaction.deferred && !interaction.replied) {
+    if (deferOk || interaction.deferred) {
       const { ephemeral, flags, ...editOptions } = normalizedOptions || {};
       return originalEditReply(editOptions);
     }
@@ -471,9 +472,8 @@ function prepareInteractionResponse(interaction) {
 
   if (originalUpdate) {
     interaction.update = async (options) => {
-      clearTimeout(deferTimer);
       const normalizedOptions = enforceHudEmbedStyle(options);
-      if (interaction.deferred && !interaction.replied) {
+      if (deferOk || interaction.deferred) {
         return originalEditReply(normalizedOptions);
       }
       return originalUpdate(normalizedOptions);
@@ -481,11 +481,10 @@ function prepareInteractionResponse(interaction) {
   }
 
   interaction.followUp = async (options) => {
-    clearTimeout(deferTimer);
     return originalFollowUp(enforceHudEmbedStyle(options));
   };
 
-  return () => clearTimeout(deferTimer);
+  return () => {};
 }
 
 function enforceHudEmbedStyle(options) {
@@ -598,7 +597,7 @@ async function main() {
   });
 
   client.on("interactionCreate", async (interaction) => {
-    const clearPreparedResponse = prepareInteractionResponse(interaction);
+    const clearPreparedResponse = await prepareInteractionResponse(interaction);
     try {
       await routeInteraction(interaction);
     } catch (error) {
