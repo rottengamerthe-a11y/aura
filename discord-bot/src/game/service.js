@@ -9,7 +9,7 @@ const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 const activeBattles = new Map();
 const reminderIntervals = new WeakMap();
 const recentInteractions = [];
-const COMMAND_BUILD_ID = "aurix-cosmetic-art-v10";
+const COMMAND_BUILD_ID = "aurix-command-banners-v11";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const BATTLE_ANIMATION_DELAY_MS = 900;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
@@ -1641,6 +1641,7 @@ function buildProfileEmbed(user, targetUser) {
     title: cosmeticStyle.title,
     description: `${cosmeticStyle.description}\nA complete snapshot of progression, economy, and combat readiness.`,
     visual: "core-profile.svg",
+    banner: false,
     thumbnail: targetUser.displayAvatarURL?.({ extension: "png", size: 128 }) || null,
     color: cosmeticStyle.color,
     fields: [

@@ -4,6 +4,7 @@ const { AttachmentBuilder } = require("discord.js");
 const WIDTH = 720;
 const HEIGHT = 220;
 const FILE_NAME = "aurix-profile-cosmetic.png";
+const themeBannerCache = new Map();
 
 const CRC_TABLE = Array.from({ length: 256 }, (_, index) => {
   let value = index;
@@ -99,6 +100,19 @@ function fillRect(pixels, x, y, width, height, color, alpha = 255) {
   }
 }
 
+function fillCircle(pixels, cx, cy, radius, color) {
+  const radiusSquared = radius * radius;
+  for (let y = cy - radius; y <= cy + radius; y += 1) {
+    for (let x = cx - radius; x <= cx + radius; x += 1) {
+      const dx = x - cx;
+      const dy = y - cy;
+      if (dx * dx + dy * dy <= radiusSquared) {
+        setPixel(pixels, x, y, color);
+      }
+    }
+  }
+}
+
 function strokeRect(pixels, x, y, width, height, color, thickness = 4) {
   fillRect(pixels, x, y, width, thickness, color);
   fillRect(pixels, x, y + height - thickness, width, thickness, color);
@@ -149,6 +163,72 @@ function drawCrown(pixels, x, y, scale, color) {
   fillPolygon(pixels, [[x + 68 * scale, y + 84 * scale], [x + 92 * scale, y + 18 * scale], [x + 112 * scale, y + 84 * scale]], color);
 }
 
+function drawShield(pixels, x, y, scale, color) {
+  fillPolygon(pixels, [
+    [x + 70 * scale, y],
+    [x + 132 * scale, y + 24 * scale],
+    [x + 118 * scale, y + 104 * scale],
+    [x + 70 * scale, y + 150 * scale],
+    [x + 22 * scale, y + 104 * scale],
+    [x + 8 * scale, y + 24 * scale],
+  ], color);
+}
+
+function drawLeaf(pixels, x, y, scale, color) {
+  fillPolygon(pixels, [
+    [x + 10 * scale, y + 88 * scale],
+    [x + 78 * scale, y + 10 * scale],
+    [x + 142 * scale, y + 34 * scale],
+    [x + 106 * scale, y + 116 * scale],
+    [x + 34 * scale, y + 138 * scale],
+  ], color);
+  fillRect(pixels, x + 70 * scale, y + 74 * scale, 52 * scale, 8 * scale, 0xeaffd0);
+}
+
+function drawSwords(pixels, x, y, scale, color) {
+  fillPolygon(pixels, [[x, y + 16 * scale], [x + 16 * scale, y], [x + 132 * scale, y + 116 * scale], [x + 116 * scale, y + 132 * scale]], color);
+  fillPolygon(pixels, [[x + 132 * scale, y + 16 * scale], [x + 116 * scale, y], [x, y + 116 * scale], [x + 16 * scale, y + 132 * scale]], color);
+  fillRect(pixels, x + 42 * scale, y + 104 * scale, 54 * scale, 10 * scale, 0xffffff);
+}
+
+function drawThemeIcon(pixels, label, color) {
+  const accent = color || 0xffffff;
+  if (label === "ECONOMY") {
+    fillCircle(pixels, 110, 108, 54, accent);
+    fillCircle(pixels, 110, 108, 36, 0x0f172a);
+    fillCircle(pixels, 610, 84, 28, 0xfff1a6);
+    return;
+  }
+  if (label === "COMBAT") {
+    drawSwords(pixels, 66, 50, 0.95, accent);
+    drawBolt(pixels, 572, 46, 0.7, 0xffd166);
+    return;
+  }
+  if (label === "CLAN") {
+    drawShield(pixels, 58, 38, 1.0, accent);
+    drawDiamond(pixels, 610, 108, 34, 0xffffff);
+    return;
+  }
+  if (label === "GATHERING") {
+    drawLeaf(pixels, 62, 42, 0.95, accent);
+    drawDiamond(pixels, 604, 108, 30, 0xeaffd0);
+    return;
+  }
+  if (label === "PROGRESS") {
+    drawCrown(pixels, 70, 54, 0.88, accent);
+    drawDiamond(pixels, 606, 106, 34, 0xffffff);
+    return;
+  }
+  if (label === "ALERT") {
+    fillPolygon(pixels, [[110, 38], [176, 154], [44, 154]], accent);
+    fillRect(pixels, 104, 76, 12, 48, 0x0f172a);
+    fillRect(pixels, 104, 134, 12, 12, 0x0f172a);
+    return;
+  }
+  drawDiamond(pixels, 110, 108, 54, accent);
+  drawDiamond(pixels, 610, 108, 32, 0xffffff);
+}
+
 function drawGoldFrame(pixels) {
   strokeRect(pixels, 16, 16, WIDTH - 32, HEIGHT - 32, 0xffc857, 8);
   strokeRect(pixels, 30, 30, WIDTH - 60, HEIGHT - 60, 0x8f5f12, 3);
@@ -193,7 +273,30 @@ function buildProfileCosmeticAttachment(user) {
   return new AttachmentBuilder(encodePng(WIDTH, HEIGHT, pixels), { name: FILE_NAME });
 }
 
+function buildThemeBannerAttachment(theme = {}) {
+  const label = String(theme.label || "AURIX").toUpperCase();
+  const color = theme.color || 0x69c7ff;
+  const fileName = `aurix-${label.toLowerCase()}-banner.png`;
+  let buffer = themeBannerCache.get(label);
+
+  if (!buffer) {
+    const pixels = createCanvas(0x111827, color);
+    fillRect(pixels, 34, 48, WIDTH - 68, HEIGHT - 96, 0x0b1020, 230);
+    strokeRect(pixels, 24, 24, WIDTH - 48, HEIGHT - 48, color, 6);
+    strokeRect(pixels, 44, 44, WIDTH - 88, HEIGHT - 88, 0xffffff, 2);
+    for (let x = 210; x < WIDTH - 90; x += 46) {
+      drawDiamond(pixels, x, 72 + ((x / 46) % 2) * 76, 8, 0xffffff);
+    }
+    drawThemeIcon(pixels, label, color);
+    buffer = encodePng(WIDTH, HEIGHT, pixels);
+    themeBannerCache.set(label, buffer);
+  }
+
+  return new AttachmentBuilder(buffer, { name: fileName });
+}
+
 module.exports = {
   buildProfileCosmeticAttachment,
+  buildThemeBannerAttachment,
   FILE_NAME,
 };

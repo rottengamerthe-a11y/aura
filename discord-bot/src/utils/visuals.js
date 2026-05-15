@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { AttachmentBuilder, EmbedBuilder } = require("discord.js");
 const { COLORS, VISUALS_DIR } = require("../config/gameConfig");
+const { buildThemeBannerAttachment } = require("./cosmeticArt");
 
 const DIVIDER = "\u2501".repeat(20);
 const FOOTER_PREFIX = "AURIX";
@@ -131,11 +132,17 @@ function createGameEmbed({ title, description, color = COLORS.primary, fields = 
 
 function buildEmbedPayload(options) {
   const attachment = options.visual ? buildAttachment(options.visual) : null;
+  const theme = pickEmbedTheme(options || {});
+  const themeBanner = options.banner === false || attachment ? null : buildThemeBannerAttachment(theme);
   const embed = createGameEmbed({ ...options, visual: attachment ? options.visual : null });
   const payload = { embeds: [embed] };
 
   if (attachment) {
     payload.files = [attachment];
+  } else if (themeBanner) {
+    const fileName = themeBanner.name;
+    payload.files = [themeBanner];
+    payload.embeds[0].setImage(`attachment://${fileName}`);
   }
 
   return payload;
