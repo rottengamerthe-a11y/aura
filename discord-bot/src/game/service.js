@@ -1473,7 +1473,7 @@ const HELP_SECTIONS = [
       { name: "/profile [user]", description: "View your or another player's profile." },
       { name: "/stats [user]", description: "See a fuller breakdown of player activity." },
       { name: "/event", description: "View the current rotating world event." },
-      { name: "/setup", description: "Admin/mod command to repost the server setup guide." },
+      { name: "/setup", description: "Admin/mod command to choose where Aurix commands work." },
       { name: "/help", description: "Browse every command grouped by category." },
     ],
   },
@@ -1620,7 +1620,7 @@ function buildPlayerStartPayload(user) {
 
 function buildServerSetupPayload(guildName) {
   return buildEmbedPayload({
-    title: "Aurix Channel Configured",
+    title: "Setup Completed",
     description: `Aurix is ready in **${guildName}**. This is now the server's Aurix channel.`,
     visual: "help-core.svg",
     fields: [
@@ -3779,19 +3779,28 @@ async function handleSetup(interaction) {
     });
   }
 
-  const selectedChannel = interaction.options.getChannel("channel") || interaction.channel;
+  const optionChannel = interaction.options.getChannel("channel");
+  let selectedChannel = optionChannel || interaction.channel;
+  if (!selectedChannel?.isTextBased?.()) {
+    selectedChannel = await interaction.guild.channels.fetch(optionChannel?.id || interaction.channelId).catch(() => null);
+  }
+  if (selectedChannel?.isThread?.() && selectedChannel.parentId) {
+    selectedChannel = await interaction.guild.channels.fetch(selectedChannel.parentId).catch(() => selectedChannel);
+  }
+
   if (!selectedChannel?.isTextBased?.() || selectedChannel.isThread?.()) {
     return interaction.reply({
       ...buildEmbedPayload({
         title: "Setup Channel Invalid",
-        description: "Choose a normal text channel where Aurix can send messages.",
+        description: "Run `/setup` inside a normal text channel, or use `/setup channel:#aurix` and choose a text channel.",
         visual: "emblem-alert.svg",
       }),
       ephemeral: true,
     });
   }
 
-  const permissions = selectedChannel.permissionsFor(interaction.guild.members.me);
+  const botMember = interaction.guild.members.me || await interaction.guild.members.fetchMe().catch(() => null);
+  const permissions = selectedChannel.permissionsFor(botMember);
   if (!permissions?.has(PermissionsBitField.Flags.ViewChannel) || !permissions?.has(PermissionsBitField.Flags.SendMessages)) {
     return interaction.reply({
       ...buildEmbedPayload({
@@ -3812,7 +3821,7 @@ async function handleSetup(interaction) {
   await selectedChannel.send(payload);
   return interaction.reply({
     ...buildEmbedPayload({
-      title: "Aurix Channel Configured",
+      title: "Setup Completed",
       description: `Aurix is now configured to use ${selectedChannel}. I posted the short starter guide there. Commands used elsewhere will point members back here.`,
       visual: "emblem-success.svg",
     }),
