@@ -11,7 +11,7 @@ const { GuildSettings, PaddleWebhookLog, User } = require("./src/data/models");
 const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigration");
 const { applyPaddleWebhookEvent, buildCommands, recentInteractions, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
 
-const APP_VERSION = "aurix-combat-v6";
+const APP_VERSION = "aurix-hud-v3";
 const startedAt = Date.now();
 let discordClient = null;
 

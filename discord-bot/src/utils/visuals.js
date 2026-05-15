@@ -5,7 +5,7 @@ const { COLORS, VISUALS_DIR } = require("../config/gameConfig");
 
 const DIVIDER = "\u2501".repeat(20);
 const FOOTER_PREFIX = "AURIX";
-const HUD_VERSION = "HUD v2";
+const HUD_VERSION = "HUD v3";
 
 const EMBED_THEMES = [
   { match: /alert|invalid|failed|locked|cooling down|missing|blocked|not enough/i, emoji: "\u26A0\uFE0F", color: COLORS.warning, label: "ALERT" },
@@ -97,9 +97,10 @@ function createGameEmbed({ title, description, color = COLORS.primary, fields = 
   const theme = pickEmbedTheme({ title, description, footer, visual });
   const embed = new EmbedBuilder()
     .setColor(color === COLORS.primary ? theme.color : color)
+    .setAuthor({ name: `${theme.label} MODULE | ${HUD_VERSION}` })
     .setTitle(formatTitle(title, theme))
     .setDescription(decorateDescription(description))
-    .setFooter({ text: footer ? `${FOOTER_PREFIX} \u2022 ${footer}` : `${FOOTER_PREFIX} \u2022 ${theme.label} \u2022 ${HUD_VERSION}` })
+    .setFooter({ text: footer ? `${FOOTER_PREFIX} \u2022 ${theme.label} \u2022 ${HUD_VERSION} \u2022 ${footer}` : `${FOOTER_PREFIX} \u2022 ${theme.label} \u2022 ${HUD_VERSION}` })
     .setTimestamp();
 
   if (fields.length) {
