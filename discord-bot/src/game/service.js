@@ -8,6 +8,7 @@ const { buildEmbedPayload } = require("../utils/visuals");
 const activeBattles = new Map();
 const reminderIntervals = new WeakMap();
 const BATTLE_TIMEOUT_MS = 15 * 60 * 1000;
+const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
 const BATTLE_GEAR_SLOTS = Object.freeze([
   { id: "tool", label: "Tool" },
   { id: "charm", label: "Charm" },
@@ -841,7 +842,38 @@ function buildLoadoutComponents(state) {
 }
 
 function isBattleExpired(state) {
+  if (state?.phase === "invite" && state.inviteExpiresAt) {
+    return Date.now() > state.inviteExpiresAt;
+  }
   return !state?.createdAt || (Date.now() - state.createdAt) > BATTLE_TIMEOUT_MS;
+}
+
+async function expirePvpInvite(client, battleId) {
+  const state = activeBattles.get(battleId);
+  if (!state || state.phase !== "invite" || !isBattleExpired(state)) {
+    return;
+  }
+
+  activeBattles.delete(battleId);
+
+  if (!state.channelId || !state.messageId) {
+    return;
+  }
+
+  const channel = await client.channels.fetch(state.channelId).catch(() => null);
+  const message = await channel?.messages?.fetch?.(state.messageId).catch(() => null);
+  if (!message?.editable) {
+    return;
+  }
+
+  await message.edit({
+    ...buildEmbedPayload({
+      title: "PvP Invite Expired",
+      description: `${state.opponentName} did not accept ${state.challengerName}'s challenge in time. The duel slot is open again.`,
+      visual: "pvp-challenge.svg",
+    }),
+    components: [],
+  }).catch(() => null);
 }
 
 function pruneExpiredBattles() {
@@ -3465,6 +3497,18 @@ async function advanceBattle(interaction, state, acting, defending, actionSummar
 }
 
 async function handleInviteButton(interaction, state, action) {
+  if (isBattleExpired(state)) {
+    activeBattles.delete(state.id);
+    return interaction.update({
+      ...buildEmbedPayload({
+        title: "PvP Invite Expired",
+        description: "This duel invite expired. Send a new `/pvp` challenge to try again.",
+        visual: "pvp-challenge.svg",
+      }),
+      components: [],
+    });
+  }
+
   if (action === "accept") {
     if (interaction.user.id !== state.opponentId) {
       return interaction.reply({ content: "Only the challenged player can accept this duel.", ephemeral: true });
@@ -3675,18 +3719,30 @@ async function handlePvp(interaction) {
     opponentName: opponent.username,
     arena: pickPvpArena(),
     createdAt: Date.now(),
+    inviteExpiresAt: Date.now() + PVP_INVITE_TIMEOUT_MS,
   };
   activeBattles.set(battleId, state);
 
-  return interaction.reply({
+  const message = await interaction.reply({
     ...buildEmbedPayload({
       title: "PvP Duel Invite",
-      description: `${interaction.user.username} challenged ${opponent.username}.\nArena: **${state.arena.name}**\n${state.arena.description}\n\n${opponent.username} must accept before the duel can begin.`,
+      description: `${interaction.user.username} challenged ${opponent.username}.\nArena: **${state.arena.name}**\n${state.arena.description}\n\n${opponent.username} must accept within 2 minutes before the invite expires.`,
       visual: "pvp-challenge.svg",
       footer: "After accepting, both players can choose gear and review battle items before the first turn.",
     }),
     components: buildInviteComponents(battleId),
+    fetchReply: true,
   });
+
+  state.channelId = message.channelId;
+  state.messageId = message.id;
+  setTimeout(() => {
+    expirePvpInvite(interaction.client, battleId).catch((error) => {
+      console.error("Failed to expire PvP invite:", error);
+    });
+  }, PVP_INVITE_TIMEOUT_MS + 1000);
+
+  return message;
 }
 
 async function handleBoss(interaction) {
