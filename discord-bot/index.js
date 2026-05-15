@@ -12,7 +12,7 @@ const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigrat
 const { applyPaddleWebhookEvent, buildCommands, recentInteractions, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
 const { buildEmbedPayload } = require("./src/utils/visuals");
 
-const APP_VERSION = "aurix-immediate-defer-v6";
+const APP_VERSION = "aurix-clean-ui-v7";
 const startedAt = Date.now();
 let discordClient = null;
 const recentDiscordResponses = [];
@@ -499,13 +499,6 @@ function enforceHudEmbedStyle(options) {
       const data = builder.toJSON();
       const title = data.title || "AURIX";
       const footerText = data.footer?.text || "";
-
-      if (!title.includes("[HUD v4]")) {
-        builder.setTitle(`[HUD v4] ${title}`.slice(0, 256));
-      }
-      if (!footerText.includes("HUD v4")) {
-        builder.setFooter({ text: `${footerText ? `${footerText} • ` : ""}forced HUD v5` });
-      }
 
       return builder;
     }),

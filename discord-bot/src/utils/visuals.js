@@ -5,7 +5,7 @@ const { COLORS, VISUALS_DIR } = require("../config/gameConfig");
 
 const DIVIDER = "\u2501".repeat(20);
 const FOOTER_PREFIX = "AURIX";
-const HUD_VERSION = "HUD v4";
+const HUD_VERSION = "Live";
 
 const EMBED_THEMES = [
   { match: /alert|invalid|failed|locked|cooling down|missing|blocked|not enough/i, emoji: "\u26A0\uFE0F", color: COLORS.warning, label: "ALERT" },
@@ -59,29 +59,18 @@ function formatTitle(title, theme) {
   const cleanTitle = title.replace(/\s+/g, " ").trim();
   return hasLeadingEmoji(cleanTitle)
     ? cleanTitle
-    : `${theme.emoji} [${HUD_VERSION}] ${theme.label} // ${cleanTitle.toUpperCase()}`;
+    : `${theme.emoji} ${cleanTitle}`;
 }
 
 function isPreformattedLine(line) {
   return /^\s*(```|`|>|[-*]|\d+\.|[\u2022\u25E6\u25AA\u25B8\u25C6\u25C7\u2726\u2B25\u25A3])/u.test(line);
 }
 
-function getSummaryLine(title, description) {
-  const source = String(description || title || "Awaiting command result.")
-    .split("\n")
-    .map((line) => line.replace(/[`*_>]/g, "").trim())
-    .find(Boolean);
-  return source ? source.slice(0, 180) : "Awaiting command result.";
-}
-
 function decorateDescription(description, theme, title) {
-  const summary = getSummaryLine(title, description);
   if (!description) {
     return [
-      "```",
-      `AURIX ${HUD_VERSION} | ${theme.label}`,
-      `STATUS  ${summary}`,
-      "```",
+      `${theme.emoji} **${theme.label}**`,
+      DIVIDER,
     ].join("\n");
   }
 
@@ -97,12 +86,9 @@ function decorateDescription(description, theme, title) {
     .join("\n");
 
   return [
-    "```",
-    `AURIX ${HUD_VERSION} | ${theme.label}`,
-    `STATUS  ${summary}`,
-    "```",
-    body,
+    `${theme.emoji} **${theme.label}**`,
     DIVIDER,
+    body,
   ].join("\n");
 }
 
@@ -118,10 +104,10 @@ function createGameEmbed({ title, description, color = COLORS.primary, fields = 
   const theme = pickEmbedTheme({ title, description, footer, visual });
   const embed = new EmbedBuilder()
     .setColor(color === COLORS.primary ? theme.color : color)
-    .setAuthor({ name: `${theme.label} MODULE | ${HUD_VERSION}` })
+    .setAuthor({ name: "Aurix" })
     .setTitle(formatTitle(title, theme))
     .setDescription(decorateDescription(description, theme, title))
-    .setFooter({ text: footer ? `${FOOTER_PREFIX} \u2022 ${theme.label} \u2022 ${HUD_VERSION} \u2022 ${footer}` : `${FOOTER_PREFIX} \u2022 ${theme.label} \u2022 ${HUD_VERSION}` })
+    .setFooter({ text: footer ? `${FOOTER_PREFIX} \u2022 ${footer}` : `${FOOTER_PREFIX} \u2022 ${theme.label}` })
     .setTimestamp();
 
   if (fields.length) {
