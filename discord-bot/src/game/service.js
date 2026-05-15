@@ -3305,6 +3305,19 @@ function createBattleEmbed(title, description, visual, state) {
   const turnLabel = state.turnId === state.playerOne.id
     ? `${state.playerOne.name} (${state.playerOne.skill?.name || "Focus"})`
     : `${state.playerTwo.name} (${state.playerTwo.skill?.name || "Focus"})`;
+  if (state.isBoss) {
+    return buildEmbedPayload({
+      title,
+      description,
+      fields: [
+        { name: "Your HP", value: `${state.playerOne.hp}/${state.playerOne.maxHp}\n${progressBar(state.playerOne.hp, state.playerOne.maxHp, 14)}`, inline: false },
+        { name: "Boss HP", value: `${state.playerTwo.hp}/${state.playerTwo.maxHp}\n${progressBar(state.playerTwo.hp, state.playerTwo.maxHp, 14)}`, inline: false },
+        { name: "Turn", value: `${turnLabel}\nExchange ${(state.exchangeCount || 0) + 1}`, inline: false },
+        { name: "Status", value: `${state.playerOne.name}: ${getBattleStatuses(state.playerOne)}\n${state.playerTwo.name}: ${getBattleStatuses(state.playerTwo)}`, inline: false },
+      ],
+      footer: "Boss UI v2 - clean battle view",
+    });
+  }
   const extraFields = [];
   const fighterField = state.isBoss ? getCompactBattleFighterField : getBattleFighterField;
   if (state.arena) {
