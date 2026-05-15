@@ -86,6 +86,8 @@ const userSchema = new mongoose.Schema(
       grantedBy: { type: String, default: null },
       source: { type: String, default: null },
       lastAnnouncementEventId: { type: String, default: null },
+      lastWelcomeGrantEventId: { type: String, default: null },
+      lastChestAt: { type: Date, default: null },
     },
     billing: {
       provider: { type: String, default: null },

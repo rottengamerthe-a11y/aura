@@ -12,7 +12,7 @@ const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigrat
 const { applyPaddleWebhookEvent, buildCommands, recentInteractions, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
 const { buildEmbedPayload } = require("./src/utils/visuals");
 
-const APP_VERSION = "aurix-command-icons-v13";
+const APP_VERSION = "aurix-premium-value-v14";
 const startedAt = Date.now();
 let discordClient = null;
 const recentDiscordResponses = [];
@@ -194,8 +194,8 @@ function startWebServer() {
       title: "Premium Activated",
       description: `<@${result.userId}> just unlocked **${planLabel} Premium** for Aurix.`,
       fields: [
-        { name: "Unlocked", value: "Premium perks, profile cosmetics, extra reminder slots, and premium-only shop items." },
-        { name: "Start Here", value: "`/premium`, `/profile`, `/shop`, `/reminders status`" },
+        { name: "Unlocked", value: "Premium Chest, extra garden plots, battle bonuses, profile cosmetics, extra reminder slots, and premium-only shop items." },
+        { name: "Start Here", value: "`/premium`, `/premium-chest`, `/profile`, `/garden status`, `/shop`" },
       ],
       footer: { text: "Thanks for supporting Aurix Bot." },
       timestamp: new Date().toISOString(),

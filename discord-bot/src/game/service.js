@@ -9,7 +9,7 @@ const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 const activeBattles = new Map();
 const reminderIntervals = new WeakMap();
 const recentInteractions = [];
-const COMMAND_BUILD_ID = "aurix-command-icons-v13";
+const COMMAND_BUILD_ID = "aurix-premium-value-v14";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const BATTLE_ANIMATION_DELAY_MS = 900;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
@@ -27,6 +27,11 @@ const PREMIUM_PLANS = Object.freeze({
     dailyMultiplier: 1.25,
     dailyRareCrates: 1,
     cooldownReduction: 0.1,
+    gardenPlots: 3,
+    chestCooldownHours: 20,
+    welcome: Object.freeze({ aura: 2500, rareCrates: 2, epicCrates: 0 }),
+    battle: Object.freeze({ maxHpBonus: 8, critChanceBonus: 0.03 }),
+    chest: Object.freeze({ aura: [900, 1600], xp: [220, 380], rareCrates: 1, epicChance: 0.08, materials: 2 }),
     effects: Object.freeze({
       spinRewardBoost: 0.12,
       vaultInterestBoost: 0.03,
@@ -47,6 +52,11 @@ const PREMIUM_PLANS = Object.freeze({
     dailyMultiplier: 1.4,
     dailyRareCrates: 2,
     cooldownReduction: 0.2,
+    gardenPlots: 4,
+    chestCooldownHours: 16,
+    welcome: Object.freeze({ aura: 6500, rareCrates: 3, epicCrates: 1 }),
+    battle: Object.freeze({ maxHpBonus: 14, critChanceBonus: 0.05 }),
+    chest: Object.freeze({ aura: [1700, 2800], xp: [420, 720], rareCrates: 2, epicChance: 0.18, materials: 4 }),
     effects: Object.freeze({
       spinRewardBoost: 0.18,
       vaultInterestBoost: 0.045,
@@ -67,6 +77,11 @@ const PREMIUM_PLANS = Object.freeze({
     dailyMultiplier: 1.6,
     dailyRareCrates: 3,
     cooldownReduction: 0.3,
+    gardenPlots: 4,
+    chestCooldownHours: 12,
+    welcome: Object.freeze({ aura: 14000, rareCrates: 5, epicCrates: 2 }),
+    battle: Object.freeze({ maxHpBonus: 20, critChanceBonus: 0.07 }),
+    chest: Object.freeze({ aura: [3000, 5200], xp: [800, 1250], rareCrates: 3, epicChance: 0.35, materials: 6 }),
     effects: Object.freeze({
       spinRewardBoost: 0.25,
       vaultInterestBoost: 0.06,
@@ -336,8 +351,11 @@ function isPremiumActive(user) {
 
 function normalizePremiumState(user) {
   if (!user.premium) {
-    user.premium = { active: false, expiresAt: null, lifetime: false, grantedBy: null, source: null };
+    user.premium = { active: false, expiresAt: null, lifetime: false, grantedBy: null, source: null, lastAnnouncementEventId: null, lastWelcomeGrantEventId: null, lastChestAt: null };
   }
+  user.premium.lastAnnouncementEventId ||= null;
+  user.premium.lastWelcomeGrantEventId ||= null;
+  user.premium.lastChestAt ||= null;
   if (!user.billing) {
     user.billing = {
       provider: null,
@@ -497,6 +515,7 @@ async function applyPaddleWebhookEvent(event, eventId = null) {
 
   const shouldAnnounce = user.premium.lastAnnouncementEventId !== resolvedEventId
     && (!wasPremiumActive || previousPlanId !== plan.id || eventType === "transaction.completed");
+  const welcomeGrant = shouldAnnounce && resolvedEventId ? grantPremiumWelcomePack(user, plan, resolvedEventId) : null;
   if (shouldAnnounce) {
     user.premium.lastAnnouncementEventId = resolvedEventId;
   }
@@ -509,6 +528,7 @@ async function applyPaddleWebhookEvent(event, eventId = null) {
     planLabel: plan.label,
     eventType,
     shouldAnnounce,
+    welcomeGrant,
     announcementGuildId: customData.guildId || customData.guild_id || user.botContext?.lastGuildId || user.reminders?.guildId || user.guildId || null,
     announcementChannelId: customData.channelId || customData.channel_id || user.botContext?.lastChannelId || user.reminders?.channelId || null,
   };
@@ -559,6 +579,48 @@ function getPremiumCooldownReduction(user) {
   return getUserPremiumPlan(user)?.cooldownReduction || 0;
 }
 
+function getPremiumGardenPlotLimit(user) {
+  return getUserPremiumPlan(user)?.gardenPlots || 2;
+}
+
+function getPremiumBattleBonus(user) {
+  return getUserPremiumPlan(user)?.battle || {};
+}
+
+function getPremiumChestCooldownMs(user) {
+  const hours = getUserPremiumPlan(user)?.chestCooldownHours || 24;
+  return hours * 60 * 60 * 1000;
+}
+
+function ensureGardenPlotLimit(user) {
+  const targetPlots = getPremiumGardenPlotLimit(user);
+  if (!Array.isArray(user.gardenPlots) || user.gardenPlots.length === 0) {
+    user.gardenPlots = [];
+  }
+  while (user.gardenPlots.length < targetPlots) {
+    user.gardenPlots.push({ cropId: null, plantedAt: null });
+  }
+}
+
+function grantPremiumWelcomePack(user, plan, eventId) {
+  if (!plan?.welcome || user.premium.lastWelcomeGrantEventId === eventId) {
+    return null;
+  }
+
+  const welcome = plan.welcome;
+  user.aura += welcome.aura || 0;
+  if (welcome.rareCrates) {
+    user.crates.set("rare", (user.crates.get("rare") || 0) + welcome.rareCrates);
+  }
+  if (welcome.epicCrates) {
+    user.crates.set("epic", (user.crates.get("epic") || 0) + welcome.epicCrates);
+  }
+  grantCosmetic(user, { grantsCosmetic: { slot: "title", value: "Aurix VIP" } });
+  grantCosmetic(user, { grantsCosmetic: { slot: "frame", value: "Gold Frame" } });
+  user.premium.lastWelcomeGrantEventId = eventId;
+  return welcome;
+}
+
 function formatPremiumStatus(user) {
   const plan = getUserPremiumPlan(user);
   if (!plan) {
@@ -580,6 +642,10 @@ function formatPremiumPlanLabel(planId) {
 
 function buildPremiumFeatureSummary() {
   return [
+    "Premium welcome bundle on purchase: aura, crates, and profile cosmetics",
+    "Premium Chest command: recurring aura, XP, crates, and crafting materials",
+    "Extra garden plots for faster material farming",
+    "Battle edge in PvP and bosses: extra HP and passive crit chance",
     "Premium-only shop items: Premium Supply Drop, Executive Badge, Storm Pass",
     `${PREMIUM_REMINDER_LIMIT} reminder slots instead of ${FREE_REMINDER_LIMIT}`,
     "Profile membership status shown in /profile and /premium",
@@ -601,6 +667,9 @@ function formatPremiumPlanSummary(plan) {
     `+${formatPercent(effects.mineYieldBoost)} mining yield, +${formatPercent(effects.mineXpBoost)} mining XP`,
     `+${formatPercent(plan.dailyMultiplier - 1)} daily aura and XP`,
     `+${plan.dailyRareCrates} rare ${plan.dailyRareCrates === 1 ? "crate" : "crates"} from /daily`,
+    `${plan.gardenPlots} garden plots total`,
+    `/premium-chest every ${plan.chestCooldownHours}h`,
+    `Battle edge: +${plan.battle.maxHpBonus} HP, +${formatPercent(plan.battle.critChanceBonus)} crit`,
     `${formatPercent(plan.cooldownReduction)} shorter cooldowns`,
     `+${formatPercent(effects.vaultInterestBoost)}/hr vault interest`,
     `+${formatPercent(effects.bossRewardBoost)} boss rewards, +${formatPercent(effects.pvpRewardBoost)} PvP rewards`,
@@ -1371,6 +1440,7 @@ async function getOrCreatePlayer(guildId, userId) {
     user.lastVaultInterestAt = new Date();
   }
   normalizePremiumState(user);
+  ensureGardenPlotLimit(user);
   normalizeReminderState(user);
   return user;
 }
@@ -1688,6 +1758,7 @@ const HELP_SECTIONS = [
     visual: "economy-vault.svg",
     commands: [
       { name: "/daily", description: "Claim your streak reward and refresh quests." },
+      { name: "/premium-chest", description: "Premium-only recurring loot chest with aura, XP, crates, and materials." },
       { name: "/work", description: "Complete a shift for steady aura and XP." },
       { name: "/mine", description: "Gather crafting materials on a cooldown." },
       { name: "/spin", description: "Spin for aura and XP on a cooldown." },
@@ -1718,6 +1789,7 @@ const HELP_SECTIONS = [
       { name: "/leaderboard category:<type>", description: "See the top players or clans." },
       { name: "/authority user:<player>", description: "Use the Warden+ blessing command." },
       { name: "/premium", description: "View your premium status and website link." },
+      { name: "/premium-chest", description: "Open your premium recurring loot chest." },
     ],
   },
   {
@@ -2299,6 +2371,7 @@ async function handleEvent(interaction) {
 async function handleGarden(interaction) {
   const subcommand = interaction.options.getSubcommand();
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  ensureGardenPlotLimit(user);
   const effects = getCombinedEffects(user);
 
   if (subcommand === "status") {
@@ -2315,7 +2388,7 @@ async function handleGarden(interaction) {
       title: "Garden Status",
       description: lines,
       visual: "help-core.svg",
-      footer: "Use /garden plant or /garden harvest to manage plots.",
+      footer: `Use /garden plant or /garden harvest to manage plots. Premium plots: ${getPremiumGardenPlotLimit(user)} total.`,
     }));
   }
 
@@ -2327,8 +2400,8 @@ async function handleGarden(interaction) {
     if (!crop) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Crop Missing", description: "That crop is not available.", visual: "emblem-alert.svg" }), ephemeral: true });
     }
-    if (targetIndex < 0 || targetIndex >= user.gardenPlots.length) {
-      return interaction.reply({ ...buildEmbedPayload({ title: "Plot Missing", description: "Choose a valid garden plot.", visual: "emblem-alert.svg" }), ephemeral: true });
+    if (targetIndex < 0 || targetIndex >= getPremiumGardenPlotLimit(user)) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Plot Missing", description: `Choose a valid garden plot. Your current limit is ${getPremiumGardenPlotLimit(user)} plots.`, visual: "emblem-alert.svg" }), ephemeral: true });
     }
     if (user.gardenPlots[targetIndex].cropId) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Plot Occupied", description: "That plot already has a crop growing.", visual: "emblem-alert.svg" }), ephemeral: true });
@@ -2624,6 +2697,69 @@ async function handleDaily(interaction) {
   }));
 }
 
+async function handlePremiumChest(interaction) {
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const plan = getUserPremiumPlan(user);
+  if (!plan) {
+    return interaction.reply({
+      ...buildEmbedPayload({
+        title: "Premium Chest Locked",
+        description: `Premium Chest is for active members. Get premium here: ${PREMIUM_PURCHASE_URL}`,
+        visual: "emblem-alert.svg",
+      }),
+      ephemeral: true,
+    });
+  }
+
+  const remaining = getCooldownRemaining(user.premium.lastChestAt, getPremiumChestCooldownMs(user));
+  if (remaining > 0) {
+    return interaction.reply({
+      ...buildEmbedPayload({
+        title: "Premium Chest Recharging",
+        description: `Your next Premium Chest opens in ${humanizeMs(remaining)}.`,
+        visual: "emblem-alert.svg",
+      }),
+      ephemeral: true,
+    });
+  }
+
+  const chest = plan.chest;
+  const auraReward = randInt(chest.aura[0], chest.aura[1]);
+  const xpReward = randInt(chest.xp[0], chest.xp[1]);
+  const materialIds = Object.keys(MATERIALS);
+  const materialDrops = [];
+  for (let index = 0; index < chest.materials; index += 1) {
+    const materialId = materialIds[randInt(0, materialIds.length - 1)];
+    const quantity = randInt(1, plan.id === "monthly" ? 2 : 3);
+    addInventoryItem(user, materialId, quantity);
+    materialDrops.push(`${getInventoryLabel(materialId)} x${quantity}`);
+  }
+
+  user.aura += auraReward;
+  user.xp += xpReward;
+  user.crates.set("rare", (user.crates.get("rare") || 0) + chest.rareCrates);
+  const epicDropped = Math.random() < chest.epicChance;
+  if (epicDropped) {
+    user.crates.set("epic", (user.crates.get("epic") || 0) + 1);
+  }
+  user.premium.lastChestAt = new Date();
+  await syncRank(user);
+  await user.save();
+
+  return interaction.reply(buildEmbedPayload({
+    title: "Premium Chest Opened",
+    description: "Your membership chest cracked open with high-value progression loot.",
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
+      { name: "XP", value: `${formatNumber(xpReward)}`, inline: true },
+      { name: "Crates", value: `${chest.rareCrates} rare${epicDropped ? " + 1 epic" : ""}`, inline: true },
+      { name: "Materials", value: materialDrops.join("\n") || "None" },
+      { name: "Next Chest", value: humanizeMs(getPremiumChestCooldownMs(user)), inline: true },
+    ],
+  }));
+}
+
 async function handleVault(interaction) {
   const subcommand = interaction.options.getSubcommand();
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
@@ -2902,9 +3038,9 @@ function rotateBattleSkill(fighter) {
   hydrateBattleSkill(fighter);
 }
 
-function createBattleFighter({ id, name, hp, maxHp, skillCycle, critBoost = 0, loadout = {}, combatItems = {}, unlockedActions = ["strike"] }) {
+function createBattleFighter({ id, name, hp, maxHp, skillCycle, critBoost = 0, loadout = {}, combatItems = {}, unlockedActions = ["strike"], premiumBattleBonus = {} }) {
   const gearBonuses = getLoadoutBattleBonuses(loadout);
-  const totalMaxHp = maxHp + (gearBonuses.maxHpBonus || 0);
+  const totalMaxHp = maxHp + (gearBonuses.maxHpBonus || 0) + (premiumBattleBonus.maxHpBonus || 0);
   const fighter = {
     id,
     name,
@@ -2914,7 +3050,7 @@ function createBattleFighter({ id, name, hp, maxHp, skillCycle, critBoost = 0, l
     skillIndex: 0,
     skill: null,
     critBoost,
-    passiveCritBoost: gearBonuses.critChanceBonus || 0,
+    passiveCritBoost: (gearBonuses.critChanceBonus || 0) + (premiumBattleBonus.critChanceBonus || 0),
     loadout: cloneLoadout(loadout),
     gearBonuses,
     combatItems: { ...combatItems },
@@ -3757,6 +3893,7 @@ function initializePvpBattleFromLoadout(state, challenger, rival) {
     loadout: state.playerOne.loadout,
     combatItems: state.playerOne.combatItems,
     unlockedActions: getUnlockedBattleActions(challenger),
+    premiumBattleBonus: getPremiumBattleBonus(challenger),
   });
   state.playerTwo = createBattleFighter({
     id: rival.userId,
@@ -3767,6 +3904,7 @@ function initializePvpBattleFromLoadout(state, challenger, rival) {
     loadout: state.playerTwo.loadout,
     combatItems: state.playerTwo.combatItems,
     unlockedActions: getUnlockedBattleActions(rival),
+    premiumBattleBonus: getPremiumBattleBonus(rival),
   });
   state.turnId = challenger.userId;
   state.rewardAura = randInt(750, 1250);
@@ -4252,7 +4390,7 @@ async function handleBoss(interaction) {
     visual: boss.visual,
     createdAt: Date.now(),
     lastActionAt: Date.now(),
-    playerOne: createBattleFighter({ id: interaction.user.id, name: interaction.user.username, hp: 120, maxHp: 120, skillCycle: getBattleSkillRotation(user), loadout: normalizeBattleLoadout(user, user.equippedGear), combatItems: getPlayerCombatInventory(user), unlockedActions: getUnlockedBattleActions(user) }),
+    playerOne: createBattleFighter({ id: interaction.user.id, name: interaction.user.username, hp: 120, maxHp: 120, skillCycle: getBattleSkillRotation(user), loadout: normalizeBattleLoadout(user, user.equippedGear), combatItems: getPlayerCombatInventory(user), unlockedActions: getUnlockedBattleActions(user), premiumBattleBonus: getPremiumBattleBonus(user) }),
     playerTwo: createBattleFighter({ id: `boss:${boss.id}`, name: boss.name, hp: boss.hp, maxHp: boss.hp, skillCycle: ["focus"], critBoost: 0.12 }),
     turnId: interaction.user.id,
     rewardAura: boss.rewardAura,
@@ -4388,14 +4526,22 @@ async function handlePremium(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const activePlan = getUserPremiumPlan(user);
   return interaction.reply({
-    content: [
-      `**Aurix Premium**`,
-      `Status: ${formatPremiumStatus(user)}`,
-      `Active plan: ${activePlan ? `${activePlan.label} (${activePlan.priceLabel})` : "None"}`,
-      `Get premium: ${PREMIUM_PURCHASE_URL}`,
-      "",
-      "Login with Discord on the site before buying so premium links to your account.",
-    ].join("\n"),
+    ...buildEmbedPayload({
+      title: "Aurix Premium",
+      description: [
+        `Status: **${formatPremiumStatus(user)}**`,
+        `Active plan: **${activePlan ? `${activePlan.label} (${activePlan.priceLabel})` : "None"}**`,
+        `Get premium: ${PREMIUM_PURCHASE_URL}`,
+        "",
+        "Login with Discord on the site before buying so premium links to your account.",
+      ].join("\n"),
+      visual: "emblem-success.svg",
+      fields: [
+        { name: "Member Features", value: buildPremiumFeatureSummary() },
+        { name: "Premium Chest", value: activePlan ? `Use /premium-chest every ${activePlan.chestCooldownHours}h.` : "Unlocks recurring loot for members.", inline: true },
+        { name: "Garden", value: activePlan ? `${getPremiumGardenPlotLimit(user)} total plots` : "Premium unlocks 3-4 total plots", inline: true },
+      ],
+    }),
     ephemeral: true,
   });
 }
@@ -4990,7 +5136,7 @@ function buildCommands() {
     new SlashCommandBuilder().setName("inventory").setDescription("View your items, perks, skills, and crates."),
     new SlashCommandBuilder().setName("craft").setDescription("Craft something from mined materials.").addStringOption((option) => option.setName("recipe").setDescription("Recipe id").setRequired(true).addChoices(...CRAFTING_RECIPES.map((recipe) => ({ name: recipe.name, value: recipe.id })))),
     new SlashCommandBuilder().setName("crafting-guide").setDescription("See which bosses feed each crafting path."),
-    new SlashCommandBuilder().setName("garden").setDescription("Manage your growing garden.").addSubcommand((sub) => sub.setName("status").setDescription("View your garden plots.")).addSubcommand((sub) => sub.setName("plant").setDescription("Plant a crop in a plot.").addStringOption((option) => option.setName("crop").setDescription("Crop to plant").setRequired(true).addChoices(...Object.entries(GARDEN_CROPS).map(([cropId, crop]) => ({ name: crop.name, value: cropId })))).addIntegerOption((option) => option.setName("plot").setDescription("Optional plot number").setMinValue(1).setMaxValue(2))).addSubcommand((sub) => sub.setName("harvest").setDescription("Harvest any ready crops.")),
+    new SlashCommandBuilder().setName("garden").setDescription("Manage your growing garden.").addSubcommand((sub) => sub.setName("status").setDescription("View your garden plots.")).addSubcommand((sub) => sub.setName("plant").setDescription("Plant a crop in a plot.").addStringOption((option) => option.setName("crop").setDescription("Crop to plant").setRequired(true).addChoices(...Object.entries(GARDEN_CROPS).map(([cropId, crop]) => ({ name: crop.name, value: cropId })))).addIntegerOption((option) => option.setName("plot").setDescription("Optional plot number").setMinValue(1).setMaxValue(4))).addSubcommand((sub) => sub.setName("harvest").setDescription("Harvest any ready crops.")),
     new SlashCommandBuilder().setName("gear").setDescription("Manage your equipped gear.").addSubcommand((sub) => sub.setName("loadout").setDescription("View equipped gear.")).addSubcommand((sub) => sub.setName("equip").setDescription("Equip a crafted gear item.").addStringOption((option) => option.setName("item").setDescription("Gear item").setRequired(true).addChoices(...Object.entries(GEAR_ITEMS).map(([gearId, gear]) => ({ name: gear.name, value: gearId }))))),
     new SlashCommandBuilder().setName("rank").setDescription("View rank progression and prestige readiness."),
     new SlashCommandBuilder().setName("prestige").setDescription("Reset rank progression to gain prestige."),
@@ -5002,6 +5148,7 @@ function buildCommands() {
     new SlashCommandBuilder().setName("boss").setDescription("Fight a boss.").addStringOption((option) => option.setName("boss").setDescription("Boss id").addChoices({ name: "ember", value: "ember" }, { name: "oracle", value: "oracle" }, { name: "warden", value: "warden" }, { name: "codex", value: "codex" })),
     new SlashCommandBuilder().setName("leaderboard").setDescription("View top players and clans.").addStringOption((option) => option.setName("category").setDescription("Leaderboard type").setRequired(true).addChoices({ name: "aura", value: "aura" }, { name: "vault", value: "vault" }, { name: "xp", value: "xp" }, { name: "prestige", value: "prestige" }, { name: "clans", value: "clans" })).addStringOption((option) => option.setName("scope").setDescription("Global or this server only").addChoices({ name: "global", value: "global" }, { name: "server", value: "server" })),
     new SlashCommandBuilder().setName("premium").setDescription("View your premium status."),
+    new SlashCommandBuilder().setName("premium-chest").setDescription("Open your premium recurring loot chest."),
     new SlashCommandBuilder().setName("clan").setDescription("Manage your clan.").addSubcommand((sub) => sub.setName("create").setDescription("Create a clan for 50,000 aura.").addStringOption((option) => option.setName("name").setDescription("Clan name").setRequired(true))).addSubcommand((sub) => sub.setName("join").setDescription("Join a clan by code.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("apply").setDescription("Send a join request for approval.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("leave").setDescription("Leave your clan.")).addSubcommand((sub) => sub.setName("info").setDescription("View your clan.")).addSubcommand((sub) => sub.setName("members").setDescription("List clan members.")).addSubcommand((sub) => sub.setName("log").setDescription("View recent clan activity.")).addSubcommand((sub) => sub.setName("kick").setDescription("Owner-only member removal.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true))).addSubcommand((sub) => sub.setName("approve").setDescription("Owner or officer request approval.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("decline").setDescription("Owner or officer reject an applicant.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("role").setDescription("Owner-only officer management.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true)).addStringOption((option) => option.setName("role").setDescription("Role to set").setRequired(true).addChoices({ name: "officer", value: "officer" }, { name: "member", value: "member" }))).addSubcommand((sub) => sub.setName("transfer").setDescription("Owner-only leadership transfer.").addUserOption((option) => option.setName("user").setDescription("New owner").setRequired(true))).addSubcommand((sub) => sub.setName("disband").setDescription("Owner-only full clan deletion.")).addSubcommand((sub) => sub.setName("upgrade").setDescription("Spend clan vault aura on upgrades.").addStringOption((option) => option.setName("path").setDescription("Upgrade path").setRequired(true).addChoices({ name: "hall", value: "hall" }, { name: "vault", value: "vault" }, { name: "arsenal", value: "arsenal" }))).addSubcommand((sub) => sub.setName("raid").setDescription("Launch a cooldown-based clan raid.")).addSubcommand((sub) => sub.setName("donate").setDescription("Donate aura to your clan.").addIntegerOption((option) => option.setName("amount").setDescription("Amount").setRequired(true).setMinValue(1))).addSubcommand((sub) => sub.setName("war").setDescription("Fight another clan by code.").addStringOption((option) => option.setName("enemy").setDescription("Enemy clan code").setRequired(true))),
     new SlashCommandBuilder().setName("authority").setDescription("Rank-only blessing command.").addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true)),
   ].map((command) => command.toJSON());
@@ -5030,7 +5177,7 @@ async function routeInteraction(interaction) {
     return null;
   }
 
-  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, gift: handleGift, inventory: handleInventory, craft: handleCraft, "crafting-guide": handleCraftingGuide, garden: handleGarden, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, premium: handlePremium, clan: handleClan, authority: handleAuthority };
+  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, gift: handleGift, inventory: handleInventory, craft: handleCraft, "crafting-guide": handleCraftingGuide, garden: handleGarden, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, premium: handlePremium, clan: handleClan, authority: handleAuthority };
   const handler = handlers[interaction.commandName];
   if (!handler) {
     return interaction.reply({ content: "Unknown command.", ephemeral: true });
