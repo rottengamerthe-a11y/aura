@@ -7,9 +7,11 @@ const crypto = require("crypto");
 const express = require("express");
 const session = require("express-session");
 const mongoose = require("mongoose");
-const { PaddleWebhookLog, User } = require("./src/data/models");
+const { GuildSettings, PaddleWebhookLog, User } = require("./src/data/models");
 const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigration");
-const { applyPaddleWebhookEvent, buildCommands, routeInteraction, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
+const { applyPaddleWebhookEvent, buildCommands, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
+
+let discordClient = null;
 
 const requiredEnv = [
   "DISCORD_TOKEN",
@@ -177,6 +179,56 @@ function startWebServer() {
     });
   }
 
+  async function sendPremiumAnnouncement(result) {
+    if (!discordClient?.isReady?.() || !result?.shouldAnnounce || !result.userId) {
+      return { sent: false, reason: "not_ready_or_not_needed" };
+    }
+
+    const planLabel = result.planLabel || result.planId || "Premium";
+    const embed = {
+      color: 0xffc857,
+      title: "Premium Activated",
+      description: `<@${result.userId}> just unlocked **${planLabel} Premium** for Aurix.`,
+      fields: [
+        { name: "Unlocked", value: "Premium perks, profile cosmetics, extra reminder slots, and premium-only shop items." },
+        { name: "Start Here", value: "`/premium`, `/profile`, `/shop`, `/reminders status`" },
+      ],
+      footer: { text: "Thanks for supporting Aurix Bot." },
+      timestamp: new Date().toISOString(),
+    };
+
+    const guildSettings = result.announcementGuildId
+      ? await GuildSettings.findOne({ guildId: result.announcementGuildId }).lean()
+      : null;
+    const channelIds = [
+      guildSettings?.aurixChannelId,
+      process.env.PREMIUM_ANNOUNCEMENT_CHANNEL_ID,
+      result.announcementChannelId,
+    ].filter(Boolean);
+
+    for (const channelId of channelIds) {
+      const channel = await discordClient.channels.fetch(channelId).catch(() => null);
+      if (channel?.isTextBased?.() && channel.send) {
+        await channel.send({
+          content: `<@${result.userId}>`,
+          embeds: [embed],
+          allowedMentions: { users: [result.userId] },
+        });
+        return { sent: true, target: "channel", channelId };
+      }
+    }
+
+    const user = await discordClient.users.fetch(result.userId).catch(() => null);
+    if (user) {
+      const dm = await user.send({ embeds: [embed] }).then(() => true).catch(() => false);
+      if (dm) {
+        return { sent: true, target: "dm" };
+      }
+    }
+
+    return { sent: false, reason: "no_target" };
+  }
+
   app.set("trust proxy", 1);
 
   app.get("/paddle/webhook", (_req, res) => {
@@ -205,17 +257,20 @@ function startWebServer() {
     try {
       const event = JSON.parse(rawBody);
       const result = await applyPaddleWebhookEvent(event, event.event_id || event.eventId || null);
+      const announcement = await sendPremiumAnnouncement(result);
       rememberPaddleWebhook({
         ok: true,
         eventType: event.event_type || event.eventType || event.type || null,
         eventId: event.event_id || event.eventId || null,
         customData: event.data?.custom_data || event.data?.customData || null,
         result,
+        announcement,
       });
       console.log("Paddle webhook processed:", {
         eventType: event.event_type || event.eventType || event.type,
         eventId: event.event_id || event.eventId || null,
         result,
+        announcement,
       });
       return res.status(200).json({ ok: true, ...result });
     } catch (error) {
@@ -351,6 +406,7 @@ async function main() {
   const client = new Client({
     intents: [GatewayIntentBits.Guilds],
   });
+  discordClient = client;
 
   client.on("warn", (message) => {
     console.warn("Discord warn:", message);
@@ -387,9 +443,9 @@ async function main() {
 
   client.on("guildCreate", async (guild) => {
     try {
-      const channel = await sendServerSetupMessage(guild);
+      const channel = await sendServerJoinMessage(guild);
       console.log(channel
-        ? `Posted setup guide in ${guild.name} (#${channel.name}).`
+        ? `Posted join setup guide in ${guild.name} (#${channel.name}).`
         : `Joined ${guild.name}, but no writable setup channel was found.`);
     } catch (error) {
       console.error(`Failed to post setup guide in ${guild.name}:`, error);

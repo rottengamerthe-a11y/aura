@@ -69,6 +69,12 @@ const userSchema = new mongoose.Schema(
       charm: { type: String, default: null },
       relic: { type: String, default: null },
     },
+    cosmetics: {
+      activeTitle: { type: String, default: null },
+      activeFrame: { type: String, default: null },
+      ownedTitles: { type: [String], default: [] },
+      ownedFrames: { type: [String], default: [] },
+    },
     crates: { type: Map, of: Number, default: {} },
     quests: { type: [questSchema], default: [] },
     claimedAchievements: { type: [String], default: [] },
@@ -78,6 +84,7 @@ const userSchema = new mongoose.Schema(
       lifetime: { type: Boolean, default: false },
       grantedBy: { type: String, default: null },
       source: { type: String, default: null },
+      lastAnnouncementEventId: { type: String, default: null },
     },
     billing: {
       provider: { type: String, default: null },
@@ -112,6 +119,10 @@ const userSchema = new mongoose.Schema(
       channelId: { type: String, default: null },
       enabledActions: { type: [String], default: [] },
       lastNotifiedAt: { type: Map, of: Date, default: {} },
+    },
+    botContext: {
+      lastGuildId: { type: String, default: null },
+      lastChannelId: { type: String, default: null },
     },
     clanId: { type: mongoose.Schema.Types.ObjectId, ref: "Clan", default: null },
     clanMemberships: { type: Map, of: mongoose.Schema.Types.ObjectId, default: {} },
@@ -171,8 +182,19 @@ const paddleWebhookLogSchema = new mongoose.Schema(
   { versionKey: false }
 );
 
+const guildSettingsSchema = new mongoose.Schema(
+  {
+    guildId: { type: String, required: true, unique: true, index: true },
+    aurixChannelId: { type: String, default: null },
+    configuredBy: { type: String, default: null },
+    configuredAt: { type: Date, default: null },
+  },
+  { timestamps: true }
+);
+
 const User = mongoose.models.User || mongoose.model("User", userSchema);
 const Clan = mongoose.models.Clan || mongoose.model("Clan", clanSchema);
+const GuildSettings = mongoose.models.GuildSettings || mongoose.model("GuildSettings", guildSettingsSchema);
 const PaddleWebhookLog = mongoose.models.PaddleWebhookLog || mongoose.model("PaddleWebhookLog", paddleWebhookLogSchema);
 
-module.exports = { Clan, PaddleWebhookLog, User };
+module.exports = { Clan, GuildSettings, PaddleWebhookLog, User };

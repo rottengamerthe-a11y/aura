@@ -1,7 +1,7 @@
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
 const crypto = require("crypto");
 const { BOSSES, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
-const { Clan, User } = require("../data/models");
+const { Clan, GuildSettings, User } = require("../data/models");
 const { buildClanCreateData, buildClanLeaderboardFilter, buildClanLookup, buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
 const { buildEmbedPayload } = require("../utils/visuals");
 
@@ -395,6 +395,7 @@ function mergePaddleBilling(user, data, eventId, plan) {
 async function applyPaddleWebhookEvent(event, eventId = null) {
   const eventType = event?.event_type || event?.eventType || event?.type;
   const data = event?.data || {};
+  const customData = getPaddleCustomData(data);
   const user = await findPaddleUser(data);
 
   if (!user) {
@@ -402,8 +403,11 @@ async function applyPaddleWebhookEvent(event, eventId = null) {
   }
 
   normalizePremiumState(user);
+  const previousPlanId = user.premium?.source || null;
+  const wasPremiumActive = isPremiumActive(user);
   const plan = getPaddlePlan(data, user);
-  mergePaddleBilling(user, data, eventId || event?.event_id || event?.eventId || null, plan);
+  const resolvedEventId = eventId || event?.event_id || event?.eventId || null;
+  mergePaddleBilling(user, data, resolvedEventId, plan);
 
   const activeSubscriptionStatuses = new Set(["active", "trialing"]);
   const inactiveSubscriptionStatuses = new Set(["canceled", "paused", "past_due"]);
@@ -435,8 +439,23 @@ async function applyPaddleWebhookEvent(event, eventId = null) {
   user.premium.grantedBy = "paddle";
   user.premium.source = plan.id;
 
+  const shouldAnnounce = user.premium.lastAnnouncementEventId !== resolvedEventId
+    && (!wasPremiumActive || previousPlanId !== plan.id || eventType === "transaction.completed");
+  if (shouldAnnounce) {
+    user.premium.lastAnnouncementEventId = resolvedEventId;
+  }
+
   await user.save();
-  return { action: "activated", userId: user.userId, planId: plan.id, eventType };
+  return {
+    action: "activated",
+    userId: user.userId,
+    planId: plan.id,
+    planLabel: plan.label,
+    eventType,
+    shouldAnnounce,
+    announcementGuildId: customData.guildId || customData.guild_id || user.botContext?.lastGuildId || user.reminders?.guildId || user.guildId || null,
+    announcementChannelId: customData.channelId || customData.channel_id || user.botContext?.lastChannelId || user.reminders?.channelId || null,
+  };
 }
 
 function getUserPremiumPlan(user) {
@@ -508,6 +527,7 @@ function buildPremiumFeatureSummary() {
     "Premium-only shop items: Premium Supply Drop, Executive Badge, Storm Pass",
     `${PREMIUM_REMINDER_LIMIT} reminder slots instead of ${FREE_REMINDER_LIMIT}`,
     "Profile membership status shown in /profile and /premium",
+    "Premium-only profile cosmetics: Aurix VIP Title, Gold Profile Frame, Storm Nameplate",
   ].join("\n");
 }
 
@@ -542,6 +562,56 @@ function buildPremiumPlanFields() {
 
 function isPremiumOnlyItem(item) {
   return Boolean(item?.premiumOnly);
+}
+
+function normalizeCosmetics(user) {
+  if (!user.cosmetics) {
+    user.cosmetics = { activeTitle: null, activeFrame: null, ownedTitles: [], ownedFrames: [] };
+  }
+  user.cosmetics.ownedTitles ||= [];
+  user.cosmetics.ownedFrames ||= [];
+}
+
+function formatProfileCosmetics(user) {
+  normalizeCosmetics(user);
+  const title = user.cosmetics.activeTitle || "None";
+  const frame = user.cosmetics.activeFrame || "Default";
+  return `Title: ${title}\nFrame: ${frame}`;
+}
+
+function grantCosmetic(user, item) {
+  normalizeCosmetics(user);
+  const cosmetic = item?.grantsCosmetic;
+  if (!cosmetic?.slot || !cosmetic?.value) {
+    return false;
+  }
+  if (cosmetic.slot === "title") {
+    if (!user.cosmetics.ownedTitles.includes(cosmetic.value)) {
+      user.cosmetics.ownedTitles.push(cosmetic.value);
+    }
+    user.cosmetics.activeTitle = cosmetic.value;
+    return true;
+  }
+  if (cosmetic.slot === "frame") {
+    if (!user.cosmetics.ownedFrames.includes(cosmetic.value)) {
+      user.cosmetics.ownedFrames.push(cosmetic.value);
+    }
+    user.cosmetics.activeFrame = cosmetic.value;
+    return true;
+  }
+  return false;
+}
+
+function userOwnsCosmeticItem(user, item) {
+  normalizeCosmetics(user);
+  const cosmetic = item?.grantsCosmetic;
+  if (cosmetic?.slot === "title") {
+    return user.cosmetics.ownedTitles.includes(cosmetic.value);
+  }
+  if (cosmetic?.slot === "frame") {
+    return user.cosmetics.ownedFrames.includes(cosmetic.value);
+  }
+  return false;
 }
 
 function getDisplayShopItems(user) {
@@ -1099,6 +1169,37 @@ async function getOrCreatePlayer(guildId, userId) {
   return user;
 }
 
+async function rememberPlayerContext(user, interaction) {
+  if (!user || !interaction?.guildId || !interaction?.channelId) {
+    return;
+  }
+  user.botContext = user.botContext || {};
+  user.botContext.lastGuildId = interaction.guildId;
+  user.botContext.lastChannelId = interaction.channelId;
+}
+
+async function getGuildSettings(guildId) {
+  if (!guildId) {
+    return null;
+  }
+  return GuildSettings.findOne({ guildId });
+}
+
+async function setAurixChannel(guildId, channelId, configuredBy) {
+  return GuildSettings.findOneAndUpdate(
+    { guildId },
+    {
+      $set: {
+        guildId,
+        aurixChannelId: channelId,
+        configuredBy,
+        configuredAt: new Date(),
+      },
+    },
+    { new: true, upsert: true }
+  );
+}
+
 function getHarvestReadyAt(user) {
   const readyTimes = (user.gardenPlots || [])
     .filter((plot) => plot?.cropId && plot?.plantedAt)
@@ -1321,12 +1422,15 @@ async function claimVaultInterest(user) {
 }
 
 function buildProfileEmbed(user, targetUser) {
+  normalizeCosmetics(user);
   const currentRank = RANKS[user.rankIndex];
   const next = nextRank(user.rankIndex);
   const rankProgressCurrent = user.xp - currentRank.xpRequired;
   const rankProgressTotal = Math.max(1, next.xpRequired - currentRank.xpRequired);
+  const titlePrefix = user.cosmetics.activeTitle ? `[${user.cosmetics.activeTitle}] ` : "";
+  const frameSuffix = user.cosmetics.activeFrame ? ` - ${user.cosmetics.activeFrame}` : "";
   return buildEmbedPayload({
-    title: `${targetUser.username}'s Aura Profile`,
+    title: `${titlePrefix}${targetUser.username}'s Aura Profile${frameSuffix}`,
     description: "A complete snapshot of progression, economy, and combat readiness.",
     visual: "core-profile.svg",
     fields: [
@@ -1336,6 +1440,7 @@ function buildProfileEmbed(user, targetUser) {
       { name: "Rank", value: `${currentRank.name}`, inline: true },
       { name: "Prestige", value: `${user.prestige}`, inline: true },
       { name: "Membership", value: formatPremiumStatus(user), inline: true },
+      { name: "Cosmetics", value: formatProfileCosmetics(user), inline: true },
       { name: "Daily Streak", value: `${user.streak} days`, inline: true },
       { name: "Rank Progress", value: `${progressBar(rankProgressCurrent, rankProgressTotal)}\n${formatNumber(rankProgressCurrent)} / ${formatNumber(rankProgressTotal)} XP` },
       { name: "Battle Record", value: `PvP ${user.stats.pvpWins}-${user.stats.pvpLosses} | Boss ${user.stats.bossWins}-${user.stats.bossLosses}` },
@@ -1504,15 +1609,39 @@ function buildServerSetupPayload(guildName) {
     fields: [
       { name: "Player Onboarding", value: "Members should run `/start` to create their save and see the quick-start path." },
       { name: "Best First Commands", value: "`/daily`, `/work`, `/spin`, `/mine`, `/profile`, `/help`" },
-      { name: "Admin Tools", value: "Admins or moderators can run `/setup` any time to repost this guide." },
+      { name: "Admin Tools", value: "Admins or moderators can run `/setup channel:#your-bot-channel` to choose where Aurix works." },
       { name: "Official Server", value: buildOfficialServerValue() },
     ],
     footer: "Tip: post this in a welcome or bot-commands channel so new members can find it easily.",
   });
 }
 
+function buildServerJoinPayload(guildName) {
+  return buildEmbedPayload({
+    title: "Aurix Setup Required",
+    description: `Thanks for adding Aurix to **${guildName}**. An admin should choose the channel where Aurix is allowed to work before members start using commands.`,
+    visual: "help-core.svg",
+    fields: [
+      { name: "1. Create or Choose a Channel", value: "Use a channel like `#aurix`, `#bot-commands`, or `#economy`." },
+      { name: "2. Configure Aurix", value: "Run `/setup channel:#your-channel` in this server. After that, Aurix commands will point members to that channel." },
+      { name: "3. Player Start", value: "Members should run `/start`, then use `/daily`, `/work`, `/spin`, `/mine`, and `/profile`." },
+      { name: "4. Premium and Support", value: "Use `/premium` to view membership status and `/help` to browse every command." },
+    ],
+    footer: "Admins can rerun /setup any time to change the Aurix channel.",
+  });
+}
+
 async function sendServerSetupMessage(guild, preferredChannel = null) {
   const payload = buildServerSetupPayload(guild.name);
+  return sendGuildMessageToBestChannel(guild, payload, preferredChannel);
+}
+
+async function sendServerJoinMessage(guild, preferredChannel = null) {
+  const payload = buildServerJoinPayload(guild.name);
+  return sendGuildMessageToBestChannel(guild, payload, preferredChannel);
+}
+
+async function sendGuildMessageToBestChannel(guild, payload, preferredChannel = null) {
   const candidates = [];
 
   if (preferredChannel?.isTextBased?.() && preferredChannel.send) {
@@ -2353,6 +2482,11 @@ async function handleBuy(interaction) {
   if (isPremiumOnlyItem(item) && !isPremiumActive(user)) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Premium Required", description: "That item is reserved for premium members. Use `/premium` to view available plans.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
+  if (item.type === "cosmetic" && userOwnsCosmeticItem(user, item)) {
+    grantCosmetic(user, item);
+    await user.save();
+    return interaction.reply({ ...buildEmbedPayload({ title: "Cosmetic Equipped", description: `You already own **${item.name}**, so it has been equipped on your profile.`, visual: "emblem-success.svg" }), ephemeral: true });
+  }
   if (user.aura < item.price) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: "You do not have enough aura for that purchase.", visual: "emblem-economy.svg" }), ephemeral: true });
   }
@@ -2373,6 +2507,9 @@ async function handleBuy(interaction) {
     addInventoryItem(user, item.id);
   } else if (item.type === "crate") {
     user.crates.set(item.grantsCrate, (user.crates.get(item.grantsCrate) || 0) + 1);
+  } else if (item.type === "cosmetic") {
+    grantCosmetic(user, item);
+    addInventoryItem(user, item.id);
   }
 
   await applyQuestProgress(user, "shopBuys", 1);
@@ -2392,6 +2529,7 @@ async function handleBuy(interaction) {
 
 async function handleInventory(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  normalizeCosmetics(user);
   const perkLines = user.inventory.filter((item) => item.quantity > 0).length ? user.inventory.filter((item) => item.quantity > 0).map((item) => `- ${getInventoryLabel(item.id)} x${item.quantity}`).join("\n") : "No owned items yet.";
   const crateEntries = Array.from(user.crates.entries()).filter(([, count]) => count > 0);
   const crateLines = crateEntries.length ? crateEntries.map(([crateId, count]) => `- ${crateId} crate x${count}`).join("\n") : "No crates stored.";
@@ -2404,6 +2542,7 @@ async function handleInventory(interaction) {
       { name: "Skills", value: user.skills.map((skillId) => `- ${SKILLS[skillId]?.name || skillId}`).join("\n") || "No skills." },
       { name: "Crates", value: crateLines },
       { name: "Membership", value: formatPremiumStatus(user) },
+      { name: "Active Cosmetics", value: formatProfileCosmetics(user) },
       { name: "Effect Caps", value: buildEffectCapLines() },
     ],
   }));
@@ -3624,7 +3763,45 @@ async function handleSetup(interaction) {
     });
   }
 
-  return interaction.reply(buildServerSetupPayload(interaction.guild?.name || "this server"));
+  const selectedChannel = interaction.options.getChannel("channel") || interaction.channel;
+  if (!selectedChannel?.isTextBased?.() || selectedChannel.isThread?.()) {
+    return interaction.reply({
+      ...buildEmbedPayload({
+        title: "Setup Channel Invalid",
+        description: "Choose a normal text channel where Aurix can send messages.",
+        visual: "emblem-alert.svg",
+      }),
+      ephemeral: true,
+    });
+  }
+
+  const permissions = selectedChannel.permissionsFor(interaction.guild.members.me);
+  if (!permissions?.has(PermissionsBitField.Flags.ViewChannel) || !permissions?.has(PermissionsBitField.Flags.SendMessages)) {
+    return interaction.reply({
+      ...buildEmbedPayload({
+        title: "Setup Channel Blocked",
+        description: `I need View Channel and Send Messages permission in ${selectedChannel}.`,
+        visual: "emblem-alert.svg",
+      }),
+      ephemeral: true,
+    });
+  }
+
+  await setAurixChannel(interaction.guildId, selectedChannel.id, interaction.user.id);
+  const payload = buildServerSetupPayload(interaction.guild?.name || "this server");
+  if (selectedChannel.id === interaction.channelId) {
+    return interaction.reply(payload);
+  }
+
+  await selectedChannel.send(payload);
+  return interaction.reply({
+    ...buildEmbedPayload({
+      title: "Aurix Channel Configured",
+      description: `Aurix is now configured to use ${selectedChannel}. Commands used elsewhere will point members back here.`,
+      visual: "emblem-success.svg",
+    }),
+    ephemeral: true,
+  });
 }
 
 async function handlePremium(interaction) {
@@ -4215,7 +4392,7 @@ function buildCommands() {
   return [
     new SlashCommandBuilder().setName("help").setDescription("Browse game commands by category.").addStringOption((option) => option.setName("category").setDescription("Open one help category").addChoices(...HELP_SECTIONS.map((section) => ({ name: section.name, value: section.id })))),
     new SlashCommandBuilder().setName("event").setDescription("View the current rotating world event."),
-    new SlashCommandBuilder().setName("setup").setDescription("Admin/mod command to post the server setup guide."),
+    new SlashCommandBuilder().setName("setup").setDescription("Admin/mod command to choose the Aurix bot channel.").addChannelOption((option) => option.setName("channel").setDescription("Channel where Aurix should work").addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
     new SlashCommandBuilder().setName("start").setDescription("Create your save and open the quick-start guide."),
     new SlashCommandBuilder().setName("profile").setDescription("View your or another player's profile.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
     new SlashCommandBuilder().setName("stats").setDescription("View deeper player stats.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
@@ -4267,6 +4444,25 @@ async function routeInteraction(interaction) {
   if (!handler) {
     return interaction.reply({ content: "Unknown command.", ephemeral: true });
   }
+
+  if (interaction.guildId && interaction.commandName !== "setup") {
+    const settings = await getGuildSettings(interaction.guildId);
+    if (settings?.aurixChannelId && settings.aurixChannelId !== interaction.channelId) {
+      return interaction.reply({
+        ...buildEmbedPayload({
+          title: "Aurix Channel",
+          description: `Aurix is configured to work in <#${settings.aurixChannelId}> for this server.`,
+          visual: "emblem-help.svg",
+        }),
+        ephemeral: true,
+      });
+    }
+
+    const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+    await rememberPlayerContext(user, interaction);
+    await user.save();
+  }
+
   return handler(interaction);
 }
 
@@ -4274,6 +4470,7 @@ module.exports = {
   applyPaddleWebhookEvent,
   buildCommands,
   routeInteraction,
+  sendServerJoinMessage,
   sendServerSetupMessage,
   startReminderLoop,
 };

@@ -157,6 +157,33 @@ const SHOP_ITEMS = [
     description: "+10% boss rewards and +8% PvP rewards while premium is active.",
     effects: { bossRewardBoost: 0.1, pvpRewardBoost: 0.08 },
   },
+  {
+    id: "aurix_vip_title",
+    name: "Aurix VIP Title",
+    price: 2500,
+    type: "cosmetic",
+    premiumOnly: true,
+    grantsCosmetic: { slot: "title", value: "Aurix VIP" },
+    description: "Premium-only profile title. Auto-equips on purchase.",
+  },
+  {
+    id: "gold_profile_frame",
+    name: "Gold Profile Frame",
+    price: 3500,
+    type: "cosmetic",
+    premiumOnly: true,
+    grantsCosmetic: { slot: "frame", value: "Gold Frame" },
+    description: "Premium-only profile frame shown on /profile. Auto-equips on purchase.",
+  },
+  {
+    id: "storm_nameplate",
+    name: "Storm Nameplate",
+    price: 4500,
+    type: "cosmetic",
+    premiumOnly: true,
+    grantsCosmetic: { slot: "title", value: "Stormbound" },
+    description: "Premium-only profile title for boss and PvP grinders. Auto-equips on purchase.",
+  },
 ];
 
 const SKILLS = {
