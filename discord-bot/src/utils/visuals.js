@@ -114,13 +114,9 @@ function createGameEmbed({ title, description, color = COLORS.primary, fields = 
 }
 
 function buildEmbedPayload(options) {
-  const theme = pickEmbedTheme(options || {});
   const attachment = options.visual ? buildAttachment(options.visual) : null;
   const embed = createGameEmbed(options);
-  const payload = {
-    content: `${theme.emoji} **AURIX ${HUD_VERSION} // ${theme.label}**`,
-    embeds: [embed],
-  };
+  const payload = { embeds: [embed] };
 
   if (attachment) {
     payload.files = [attachment];
