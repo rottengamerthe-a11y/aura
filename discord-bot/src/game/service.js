@@ -2,7 +2,7 @@ const { ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionsBitField, Slash
 const crypto = require("crypto");
 const { BOSSES, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
 const { Clan, User } = require("../data/models");
-const { buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
+const { buildClanCreateData, buildClanLeaderboardFilter, buildClanLookup, buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
 const { buildEmbedPayload } = require("../utils/visuals");
 
 const activeBattles = new Map();
@@ -92,6 +92,8 @@ const REMINDER_ACTIONS = Object.freeze({
 });
 const REMINDER_ACTION_CHOICES = Object.entries(REMINDER_ACTIONS).map(([value, action]) => ({ name: action.label, value }));
 const REMINDER_POLL_MS = 60 * 1000;
+const FREE_REMINDER_LIMIT = 2;
+const PREMIUM_REMINDER_LIMIT = 7;
 const PVP_ARENAS = Object.freeze([
   {
     id: "bloodmoon",
@@ -208,12 +210,32 @@ function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+async function generateClanCode(name, guildId) {
+  const base = name.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) || "clan";
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const code = `${base}${randInt(10, 99)}`;
+    const existingClan = await Clan.exists(buildClanLookup(guildId, code));
+    if (!existingClan) {
+      return code;
+    }
+  }
+  return `${base}${crypto.randomUUID().replace(/-/g, "").slice(0, 6)}`;
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
 function formatNumber(value) {
   return Intl.NumberFormat("en-US").format(Math.floor(value));
+}
+
+async function isUserInGuild(guild, userId) {
+  if (!guild || !userId) {
+    return false;
+  }
+  const member = await guild.members.fetch(userId).catch(() => null);
+  return Boolean(member);
 }
 
 function getPvpStreak(user) {
@@ -482,7 +504,11 @@ function formatPremiumPlanLabel(planId) {
 }
 
 function buildPremiumFeatureSummary() {
-  return "Premium-only shop items: Premium Supply Drop, Executive Badge, Storm Pass";
+  return [
+    "Premium-only shop items: Premium Supply Drop, Executive Badge, Storm Pass",
+    `${PREMIUM_REMINDER_LIMIT} reminder slots instead of ${FREE_REMINDER_LIMIT}`,
+    "Profile membership status shown in /profile and /premium",
+  ].join("\n");
 }
 
 function formatPercent(value) {
@@ -1154,6 +1180,7 @@ function buildBalancePayload(user, targetUser) {
 
 function buildReminderStatusPayload(user) {
   normalizeReminderState(user);
+  const reminderLimit = getReminderLimit(user);
   const enabled = user.reminders.enabledActions
     .map((action) => `\`${REMINDER_ACTIONS[action]?.command || action}\``)
     .join(", ");
@@ -1166,6 +1193,7 @@ function buildReminderStatusPayload(user) {
     visual: "emblem-help.svg",
     fields: [
       { name: "Enabled", value: enabled || "None" },
+      { name: "Slots", value: `${user.reminders.enabledActions.length} / ${reminderLimit}`, inline: true },
       { name: "Channel", value: user.reminders.channelId ? `<#${user.reminders.channelId}>` : "Not set", inline: true },
       { name: "Server", value: user.reminders.guildId || "Not set", inline: true },
     ],
@@ -1173,26 +1201,30 @@ function buildReminderStatusPayload(user) {
   });
 }
 
+function getReminderLimit(user) {
+  return isPremiumActive(user) ? PREMIUM_REMINDER_LIMIT : FREE_REMINDER_LIMIT;
+}
+
 async function sendReadyReminder(client, user, action) {
   normalizeReminderState(user);
   if (!user.reminders.channelId || !REMINDER_ACTIONS[action]) {
-    return false;
+    return { sent: false, reason: "not_configured" };
   }
 
   try {
     const channel = await client.channels.fetch(user.reminders.channelId);
     if (!channel?.isTextBased?.() || !channel.send) {
-      return false;
+      return { sent: false, reason: "channel_unavailable" };
     }
 
     await channel.send({
       content: `<@${user.userId}> ${REMINDER_ACTIONS[action].command} is ready again.`,
       allowedMentions: { users: [user.userId] },
     });
-    return true;
+    return { sent: true };
   } catch (error) {
     console.error(`Failed to send reminder for ${user.userId} (${action}):`, error.message || error);
-    return false;
+    return { sent: false, reason: "send_failed" };
   }
 }
 
@@ -1218,14 +1250,22 @@ async function checkReminderQueue(client) {
         continue;
       }
 
-      const sent = await sendReadyReminder(client, user, action);
-      if (sent) {
+      const result = await sendReadyReminder(client, user, action);
+      if (result.sent) {
         user.reminders.lastNotifiedAt.set(action, new Date(now));
+        changed = true;
+      } else if (["channel_unavailable", "send_failed"].includes(result.reason)) {
+        user.reminders.enabledActions = user.reminders.enabledActions.filter((entry) => entry !== action);
+        user.reminders.lastNotifiedAt.delete(action);
         changed = true;
       }
     }
 
     if (changed) {
+      if (!user.reminders.enabledActions.length) {
+        user.reminders.channelId = null;
+        user.reminders.guildId = null;
+      }
       user.markModified("reminders");
       await user.save();
     }
@@ -2005,7 +2045,21 @@ async function handleReminders(interaction) {
   }
 
   if (subcommand === "enable") {
+    const reminderLimit = getReminderLimit(user);
     if (!user.reminders.enabledActions.includes(action)) {
+      if (user.reminders.enabledActions.length >= reminderLimit) {
+        return interaction.reply({
+          ...buildEmbedPayload({
+            title: "Reminder Limit Reached",
+            description: `You can enable up to **${reminderLimit}** reminders right now. Disable another reminder first${isPremiumActive(user) ? "." : ", or upgrade premium for more reminder slots."}`,
+            visual: "emblem-alert.svg",
+            fields: [
+              { name: "Current Reminders", value: user.reminders.enabledActions.length ? user.reminders.enabledActions.map((entry) => REMINDER_ACTIONS[entry].command).join(", ") : "None" },
+            ],
+          }),
+          ephemeral: true,
+        });
+      }
       user.reminders.enabledActions.push(action);
     }
     user.reminders.guildId = interaction.guildId;
@@ -3595,24 +3649,49 @@ async function handlePremium(interaction) {
 
 async function handleLeaderboard(interaction) {
   const category = interaction.options.getString("category", true);
+  const scope = interaction.options.getString("scope") || "global";
+  const serverOnly = scope === "server";
   if (category === "clans") {
-    const clans = await Clan.find({ guildId: interaction.guildId }).sort({ trophies: -1 }).limit(10);
+    const rawClans = await Clan.find(buildClanLeaderboardFilter(interaction.guildId)).sort({ trophies: -1 });
+    const clans = [];
+    for (const clan of rawClans) {
+      if (!serverOnly) {
+        clans.push(clan);
+      } else {
+        const hasServerMember = await Promise.any(
+          clan.memberIds.map((memberId) => isUserInGuild(interaction.guild, memberId).then((exists) => exists ? true : Promise.reject()))
+        ).catch(() => false);
+        if (hasServerMember) {
+          clans.push(clan);
+        }
+      }
+      if (clans.length >= 10) {
+        break;
+      }
+    }
     const lines = clans.length ? clans.map((clan, index) => `${index + 1}. **${clan.name}** - ${formatNumber(clan.trophies)} trophies - ${clan.memberIds.length} members`).join("\n") : "No clans created yet.";
-    return interaction.reply(buildEmbedPayload({ title: "Clan Leaderboard", description: lines, visual: "clan-top.svg" }));
+    return interaction.reply(buildEmbedPayload({ title: `${serverOnly ? "Server" : "Global"} Clan Leaderboard`, description: lines, visual: "clan-top.svg" }));
   }
 
   const sortMap = { aura: { aura: -1 }, xp: { xp: -1 }, prestige: { prestige: -1, xp: -1 }, vault: { vaultAura: -1 } };
   let users;
-  if (isGlobalPlayerDataEnabled()) {
+  if (isGlobalPlayerDataEnabled() || serverOnly) {
     const rawUsers = await User.find(buildPlayerLeaderboardFilter(interaction.guildId)).sort({ ...(sortMap[category] || { aura: -1 }), updatedAt: -1 });
     const seenUserIds = new Set();
-    users = rawUsers.filter((player) => {
+    users = [];
+    for (const player of rawUsers) {
       if (seenUserIds.has(player.userId)) {
-        return false;
+        continue;
       }
       seenUserIds.add(player.userId);
-      return true;
-    }).slice(0, 10);
+      if (serverOnly && !(await isUserInGuild(interaction.guild, player.userId))) {
+        continue;
+      }
+      users.push(player);
+      if (users.length >= 10) {
+        break;
+      }
+    }
   } else {
     users = await User.find(buildPlayerLeaderboardFilter(interaction.guildId)).sort(sortMap[category] || { aura: -1 }).limit(10);
   }
@@ -3624,7 +3703,7 @@ async function handleLeaderboard(interaction) {
     const value = category === "xp" ? `${formatNumber(entry.player.xp)} XP` : category === "prestige" ? `${entry.player.prestige} prestige` : category === "vault" ? `${formatNumber(entry.player.vaultAura)} vault aura` : `${formatNumber(entry.player.aura)} aura`;
     return `${index + 1}. **${entry.name}** - ${value}`;
   }).join("\n");
-  return interaction.reply(buildEmbedPayload({ title: "Player Leaderboard", description: lines || "No player data yet.", visual: "help-summary.svg" }));
+  return interaction.reply(buildEmbedPayload({ title: `${serverOnly ? "Server" : "Global"} Player Leaderboard`, description: lines || "No player data yet.", visual: "help-summary.svg" }));
 }
 
 async function handleClan(interaction) {
@@ -3642,8 +3721,8 @@ async function handleClan(interaction) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Clan Creation Locked", description: `Creating a clan costs **${formatNumber(clanCreateCost)} aura**. Keep farming and try again.`, visual: "clan-hall.svg" }), ephemeral: true });
     }
     const name = interaction.options.getString("name", true);
-    const code = name.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) + randInt(10, 99);
-    const clan = await Clan.create({ guildId: interaction.guildId, name, code, ownerId: interaction.user.id, memberIds: [interaction.user.id] });
+    const code = await generateClanCode(name, interaction.guildId);
+    const clan = await Clan.create(buildClanCreateData(interaction.guildId, { name, code, ownerId: interaction.user.id, memberIds: [interaction.user.id] }));
     addClanLog(clan, "create", interaction.user.id, `Created the clan with invite code ${code}.`);
     user.aura -= clanCreateCost;
     setGuildClanId(user, interaction.guildId, clan._id);
@@ -3665,7 +3744,7 @@ async function handleClan(interaction) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Already In Clan", description: "Leave your current clan before joining another one.", visual: "clan-hall.svg" }), ephemeral: true });
     }
     const code = interaction.options.getString("code", true);
-    const clan = await Clan.findOne({ guildId: interaction.guildId, code });
+    const clan = await Clan.findOne(buildClanLookup(interaction.guildId, code));
     if (!clan) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Clan Not Found", description: "That clan invite code is invalid.", visual: "clan-hall.svg" }), ephemeral: true });
     }
@@ -3689,7 +3768,7 @@ async function handleClan(interaction) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Already In Clan", description: "Leave your current clan before applying to another one.", visual: "clan-hall.svg" }), ephemeral: true });
     }
     const code = interaction.options.getString("code", true);
-    const clan = await Clan.findOne({ guildId: interaction.guildId, code });
+    const clan = await Clan.findOne(buildClanLookup(interaction.guildId, code));
     if (!clan) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Clan Not Found", description: "That clan invite code is invalid.", visual: "clan-hall.svg" }), ephemeral: true });
     }
@@ -4053,7 +4132,7 @@ async function handleClan(interaction) {
 
   if (subcommand === "war") {
     const enemyCode = interaction.options.getString("enemy", true);
-    const enemy = await Clan.findOne({ guildId: interaction.guildId, code: enemyCode });
+    const enemy = await Clan.findOne(buildClanLookup(interaction.guildId, enemyCode));
     if (!enemy || String(enemy._id) === String(clan._id)) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Invalid Rival Clan", description: "Choose a different valid clan code.", visual: "clan-war.svg" }), ephemeral: true });
     }
@@ -4168,7 +4247,7 @@ function buildCommands() {
     new SlashCommandBuilder().setName("skills").setDescription("View unlocked combat skills and attack styles."),
     new SlashCommandBuilder().setName("pvp").setDescription("Invite another player into a loadout-based interactive battle.").addUserOption((option) => option.setName("user").setDescription("Opponent").setRequired(true)),
     new SlashCommandBuilder().setName("boss").setDescription("Fight a boss.").addStringOption((option) => option.setName("boss").setDescription("Boss id").addChoices({ name: "ember", value: "ember" }, { name: "oracle", value: "oracle" }, { name: "warden", value: "warden" }, { name: "codex", value: "codex" })),
-    new SlashCommandBuilder().setName("leaderboard").setDescription("View top players and clans.").addStringOption((option) => option.setName("category").setDescription("Leaderboard type").setRequired(true).addChoices({ name: "aura", value: "aura" }, { name: "vault", value: "vault" }, { name: "xp", value: "xp" }, { name: "prestige", value: "prestige" }, { name: "clans", value: "clans" })),
+    new SlashCommandBuilder().setName("leaderboard").setDescription("View top players and clans.").addStringOption((option) => option.setName("category").setDescription("Leaderboard type").setRequired(true).addChoices({ name: "aura", value: "aura" }, { name: "vault", value: "vault" }, { name: "xp", value: "xp" }, { name: "prestige", value: "prestige" }, { name: "clans", value: "clans" })).addStringOption((option) => option.setName("scope").setDescription("Global or this server only").addChoices({ name: "global", value: "global" }, { name: "server", value: "server" })),
     new SlashCommandBuilder().setName("premium").setDescription("View your premium status."),
     new SlashCommandBuilder().setName("clan").setDescription("Manage your clan.").addSubcommand((sub) => sub.setName("create").setDescription("Create a clan for 50,000 aura.").addStringOption((option) => option.setName("name").setDescription("Clan name").setRequired(true))).addSubcommand((sub) => sub.setName("join").setDescription("Join a clan by code.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("apply").setDescription("Send a join request for approval.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("leave").setDescription("Leave your clan.")).addSubcommand((sub) => sub.setName("info").setDescription("View your clan.")).addSubcommand((sub) => sub.setName("members").setDescription("List clan members.")).addSubcommand((sub) => sub.setName("log").setDescription("View recent clan activity.")).addSubcommand((sub) => sub.setName("kick").setDescription("Owner-only member removal.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true))).addSubcommand((sub) => sub.setName("approve").setDescription("Owner or officer request approval.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("decline").setDescription("Owner or officer reject an applicant.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("role").setDescription("Owner-only officer management.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true)).addStringOption((option) => option.setName("role").setDescription("Role to set").setRequired(true).addChoices({ name: "officer", value: "officer" }, { name: "member", value: "member" }))).addSubcommand((sub) => sub.setName("transfer").setDescription("Owner-only leadership transfer.").addUserOption((option) => option.setName("user").setDescription("New owner").setRequired(true))).addSubcommand((sub) => sub.setName("disband").setDescription("Owner-only full clan deletion.")).addSubcommand((sub) => sub.setName("upgrade").setDescription("Spend clan vault aura on upgrades.").addStringOption((option) => option.setName("path").setDescription("Upgrade path").setRequired(true).addChoices({ name: "hall", value: "hall" }, { name: "vault", value: "vault" }, { name: "arsenal", value: "arsenal" }))).addSubcommand((sub) => sub.setName("raid").setDescription("Launch a cooldown-based clan raid.")).addSubcommand((sub) => sub.setName("donate").setDescription("Donate aura to your clan.").addIntegerOption((option) => option.setName("amount").setDescription("Amount").setRequired(true).setMinValue(1))).addSubcommand((sub) => sub.setName("war").setDescription("Fight another clan by code.").addStringOption((option) => option.setName("enemy").setDescription("Enemy clan code").setRequired(true))),
     new SlashCommandBuilder().setName("authority").setDescription("Rank-only blessing command.").addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true)),

@@ -339,7 +339,7 @@ async function main() {
   await connectDatabase();
   const migrationResult = await migrateToGlobalPlayerProfiles();
   if (migrationResult.ran) {
-    console.log(`Global player migration complete. Merged ${migrationResult.mergedUsers} users and removed ${migrationResult.removedProfiles} duplicate profiles.`);
+    console.log(`Global data migration complete. Merged ${migrationResult.mergedUsers} users, removed ${migrationResult.removedProfiles} duplicate profiles, normalized ${migrationResult.normalizedClans || 0} clans and ${migrationResult.normalizedClanMemberships || 0} clan memberships.`);
   }
   try {
     await verifyDiscordConfiguration();

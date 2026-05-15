@@ -1,6 +1,6 @@
 const { RANKS } = require("../config/gameConfig");
-const { User } = require("./models");
-const { isGlobalPlayerDataEnabled } = require("./playerScope");
+const { Clan, User } = require("./models");
+const { isGlobalClanDataEnabled, isGlobalPlayerDataEnabled } = require("./playerScope");
 
 function asDate(value) {
   if (!value) {
@@ -328,7 +328,71 @@ async function migrateToGlobalPlayerProfiles() {
     mergedUsers += 1;
   }
 
-  return { ran: true, mergedUsers, removedProfiles };
+  const clanResult = await migrateToGlobalClanProfiles();
+
+  return { ran: true, mergedUsers, removedProfiles, ...clanResult };
+}
+
+async function migrateToGlobalClanProfiles() {
+  if (!isGlobalClanDataEnabled()) {
+    return { normalizedClans: 0, normalizedClanMemberships: 0 };
+  }
+
+  const clans = await Clan.find({});
+  let normalizedClans = 0;
+  const usedCodes = new Set();
+
+  for (const clan of clans) {
+    let changed = false;
+    const baseCode = String(clan.code || clan.name || "clan").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) || "clan";
+    let nextCode = clan.code || baseCode;
+    let suffix = 10;
+
+    while (usedCodes.has(nextCode)) {
+      nextCode = `${baseCode}${suffix}`;
+      suffix += 1;
+    }
+
+    usedCodes.add(nextCode);
+
+    if (clan.code !== nextCode) {
+      clan.code = nextCode;
+      changed = true;
+    }
+
+    if (clan.guildId !== undefined) {
+      clan.guildId = undefined;
+      changed = true;
+    }
+
+    if (changed) {
+      await clan.save();
+      normalizedClans += 1;
+    }
+  }
+
+  const users = await User.find({});
+  let normalizedClanMemberships = 0;
+
+  for (const user of users) {
+    const memberships = user?.clanMemberships?.entries
+      ? [...user.clanMemberships.entries()]
+      : Object.entries(user?.clanMemberships || {});
+    const firstMembership = memberships.find(([, clanId]) => clanId);
+    const nextClanId = user.clanId || firstMembership?.[1] || null;
+
+    if (!nextClanId && memberships.length === 0) {
+      continue;
+    }
+
+    user.clanId = nextClanId || null;
+    user.clanMemberships = new Map();
+    user.markModified("clanMemberships");
+    await user.save();
+    normalizedClanMemberships += 1;
+  }
+
+  return { normalizedClans, normalizedClanMemberships };
 }
 
 module.exports = {

@@ -120,12 +120,19 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.index({ guildId: 1, userId: 1 }, { unique: true });
+userSchema.index(
+  { userId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { guildId: { $exists: false } },
+  }
+);
 
 const clanSchema = new mongoose.Schema(
   {
     guildId: { type: String, index: true },
     name: String,
-    code: { type: String, index: true },
+    code: String,
     ownerId: String,
     memberIds: { type: [String], default: [] },
     officerIds: { type: [String], default: [] },
@@ -147,6 +154,9 @@ const clanSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+clanSchema.index({ guildId: 1, code: 1 });
+clanSchema.index({ code: 1 });
 
 const paddleWebhookLogSchema = new mongoose.Schema(
   {
