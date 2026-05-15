@@ -11,7 +11,7 @@ const { GuildSettings, PaddleWebhookLog, User } = require("./src/data/models");
 const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigration");
 const { applyPaddleWebhookEvent, buildCommands, recentInteractions, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
 
-const APP_VERSION = "aurix-ui-hud-v2";
+const APP_VERSION = "aurix-ui-hud-v3";
 const startedAt = Date.now();
 let discordClient = null;
 
@@ -409,6 +409,33 @@ function startWebServer() {
   });
 }
 
+function prepareInteractionResponse(interaction) {
+  if (!interaction.isChatInputCommand?.()) {
+    return () => {};
+  }
+
+  const originalReply = interaction.reply.bind(interaction);
+  const originalEditReply = interaction.editReply.bind(interaction);
+  const deferTimer = setTimeout(() => {
+    if (!interaction.deferred && !interaction.replied) {
+      interaction.deferReply().catch((error) => {
+        console.warn("Failed to defer interaction:", error?.code || error?.message || error);
+      });
+    }
+  }, 1500);
+
+  interaction.reply = async (options) => {
+    clearTimeout(deferTimer);
+    if (interaction.deferred && !interaction.replied) {
+      const { ephemeral, flags, ...editOptions } = options || {};
+      return originalEditReply(editOptions);
+    }
+    return originalReply(options);
+  };
+
+  return () => clearTimeout(deferTimer);
+}
+
 async function main() {
   startWebServer();
   console.log("Connecting to MongoDB...");
@@ -474,6 +501,7 @@ async function main() {
   });
 
   client.on("interactionCreate", async (interaction) => {
+    const clearPreparedResponse = prepareInteractionResponse(interaction);
     try {
       await routeInteraction(interaction);
     } catch (error) {
@@ -484,6 +512,8 @@ async function main() {
       } else {
         await interaction.reply(payload).catch(() => null);
       }
+    } finally {
+      clearPreparedResponse();
     }
   });
 
