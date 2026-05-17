@@ -9,7 +9,7 @@ const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 const activeBattles = new Map();
 const reminderIntervals = new WeakMap();
 const recentInteractions = [];
-const COMMAND_BUILD_ID = "aurix-economy-systems-v15";
+const COMMAND_BUILD_ID = "aurix-entity-emojis-v16";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const BATTLE_ANIMATION_DELAY_MS = 900;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
@@ -873,8 +873,68 @@ function getRecipe(recipeId) {
   return CRAFTING_RECIPES.find((recipe) => recipe.id === recipeId) || null;
 }
 
+function toEnvToken(value) {
+  return String(value || "")
+    .replace(/['’]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toUpperCase();
+}
+
+function getEntityEmoji(kind, id) {
+  const token = toEnvToken(id);
+  if (!token) {
+    return "";
+  }
+  return process.env[`AURIX_${kind}_EMOJI_${token}`] || process.env[`AURIX_${kind}_ICON_${token}`] || "";
+}
+
+function formatEntityLabel(kind, id, label) {
+  const emoji = getEntityEmoji(kind, id);
+  return emoji ? `${emoji} ${label}` : label;
+}
+
+function getCrateLabel(crateId) {
+  return formatEntityLabel("CRATE", crateId, `${crateId} crate`);
+}
+
 function getInventoryLabel(id) {
-  return getItem(id)?.name || getMaterial(id)?.name || getGearItem(id)?.name || id;
+  const item = getItem(id);
+  if (item) {
+    return formatEntityLabel("ITEM", id, item.name);
+  }
+  const material = getMaterial(id);
+  if (material) {
+    return formatEntityLabel("MATERIAL", id, material.name);
+  }
+  const gear = getGearItem(id);
+  if (gear) {
+    return formatEntityLabel("GEAR", id, gear.name);
+  }
+  if (CRATES[id]) {
+    return getCrateLabel(id);
+  }
+  return id;
+}
+
+function getRankLabel(rank) {
+  return formatEntityLabel("RANK", rank?.name, rank?.name || "Unknown Rank");
+}
+
+function getBossLabel(boss) {
+  return formatEntityLabel("BOSS", boss?.id || boss?.name, boss?.name || "Boss");
+}
+
+function getPropertyLabel(property) {
+  return formatEntityLabel("PROPERTY", property?.id || property?.name, property?.name || "Property");
+}
+
+function getExpeditionLabel(expedition) {
+  return formatEntityLabel("EXPEDITION", expedition?.id || expedition?.name, expedition?.name || "Expedition");
+}
+
+function getSkillLabel(skillId) {
+  return formatEntityLabel("SKILL", skillId, SKILLS[skillId]?.name || skillId);
 }
 
 function getCombatItem(itemId) {
@@ -1360,7 +1420,7 @@ function rollCombatLoot(kind, sourceId = null) {
     const lootTable = boss?.loot;
     Object.entries(lootTable?.crateChance || {}).forEach(([crateId, chance]) => {
       if (Math.random() < chance) {
-        drops.push({ type: "crate", id: crateId, quantity: 1, label: `${crateId} crate x1` });
+        drops.push({ type: "crate", id: crateId, quantity: 1, label: `${getCrateLabel(crateId)} x1` });
       }
     });
     (lootTable?.materials || []).forEach((material) => {
@@ -1373,7 +1433,7 @@ function rollCombatLoot(kind, sourceId = null) {
 
   if (kind === "pvp") {
     if (Math.random() < 0.2) {
-      drops.push({ type: "crate", id: "common", quantity: 1, label: "common crate x1" });
+      drops.push({ type: "crate", id: "common", quantity: 1, label: `${getCrateLabel("common")} x1` });
     }
     if (Math.random() < 0.5) {
       const materialPool = [
@@ -1838,7 +1898,7 @@ function buildProfileEmbed(user, targetUser) {
       { name: "Aura Wallet", value: `${formatNumber(user.aura)}`, inline: true },
       { name: "Vault Aura", value: `${formatNumber(user.vaultAura)}`, inline: true },
       { name: "XP", value: `${formatNumber(user.xp)}`, inline: true },
-      { name: "Rank", value: `${currentRank.name}`, inline: true },
+      { name: "Rank", value: getRankLabel(currentRank), inline: true },
       { name: "Prestige", value: `${user.prestige}`, inline: true },
       { name: "Membership", value: formatPremiumStatus(user), inline: true },
       { name: "Profile Style", value: `Title: ${cosmeticStyle.titleLabel}\nFrame: ${cosmeticStyle.frameLabel}`, inline: true },
@@ -2650,7 +2710,7 @@ function formatForgeStatus(user) {
   const lines = Object.keys(GEAR_ITEMS).map((gearId) => {
     const gear = getGearItem(gearId);
     const owned = getInventoryQuantity(user, gearId) > 0;
-    return `${gear.name}: ${owned ? `+${getGearUpgradeLevel(user, gearId)} | ${getGearDurability(user, gearId)}% durability` : "Not owned"}`;
+    return `${getInventoryLabel(gearId)}: ${owned ? `+${getGearUpgradeLevel(user, gearId)} | ${getGearDurability(user, gearId)}% durability` : "Not owned"}`;
   });
   return lines.join("\n");
 }
@@ -2681,18 +2741,18 @@ async function handleForge(interaction) {
   if (subcommand === "repair") {
     const durability = getGearDurability(user, gearId);
     if (durability >= 100) {
-      return interaction.reply({ ...buildEmbedPayload({ title: "Repair Not Needed", description: `${gear.name} is already at full durability.`, visual: "emblem-help.svg" }), ephemeral: true });
+      return interaction.reply({ ...buildEmbedPayload({ title: "Repair Not Needed", description: `${getInventoryLabel(gearId)} is already at full durability.`, visual: "emblem-help.svg" }), ephemeral: true });
     }
     const cost = getForgeRepairCost(user, gearId);
     if (user.aura < cost) {
-      return interaction.reply({ ...buildEmbedPayload({ title: "Repair Failed", description: `Repairing ${gear.name} costs ${formatNumber(cost)} aura.`, visual: "emblem-alert.svg" }), ephemeral: true });
+      return interaction.reply({ ...buildEmbedPayload({ title: "Repair Failed", description: `Repairing ${getInventoryLabel(gearId)} costs ${formatNumber(cost)} aura.`, visual: "emblem-alert.svg" }), ephemeral: true });
     }
     user.aura -= cost;
     setGearDurability(user, gearId, 100);
     await user.save();
     return interaction.reply(buildEmbedPayload({
       title: "Gear Repaired",
-      description: `${gear.name} is back to full durability.`,
+      description: `${getInventoryLabel(gearId)} is back to full durability.`,
       visual: "emblem-success.svg",
       fields: [
         { name: "Cost", value: `${formatNumber(cost)} aura`, inline: true },
@@ -2703,11 +2763,11 @@ async function handleForge(interaction) {
 
   const level = getGearUpgradeLevel(user, gearId);
   if (level >= FORGE_MAX_LEVEL) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Forge Capped", description: `${gear.name} is already at +${FORGE_MAX_LEVEL}.`, visual: "emblem-help.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "Forge Capped", description: `${getInventoryLabel(gearId)} is already at +${FORGE_MAX_LEVEL}.`, visual: "emblem-help.svg" }), ephemeral: true });
   }
   const cost = getForgeUpgradeCost(level);
   if (user.aura < cost) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Forge Failed", description: `Upgrading ${gear.name} costs ${formatNumber(cost)} aura.`, visual: "emblem-alert.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "Forge Failed", description: `Upgrading ${getInventoryLabel(gearId)} costs ${formatNumber(cost)} aura.`, visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
   const failChance = 0.12 + level * 0.06;
@@ -2725,8 +2785,8 @@ async function handleForge(interaction) {
   return interaction.reply(buildEmbedPayload({
     title: success ? "Forge Upgrade Complete" : "Forge Failed",
     description: success
-      ? `${gear.name} reached **+${level + 1}**. Its effects are now stronger.`
-      : `${gear.name} resisted the forge. The aura was spent and durability dropped.`,
+      ? `${getInventoryLabel(gearId)} reached **+${level + 1}**. Its effects are now stronger.`
+      : `${getInventoryLabel(gearId)} resisted the forge. The aura was spent and durability dropped.`,
     visual: success ? "emblem-success.svg" : "emblem-alert.svg",
     fields: [
       { name: "Cost", value: `${formatNumber(cost)} aura`, inline: true },
@@ -2766,7 +2826,7 @@ async function handleProperty(interaction) {
   if (subcommand === "list") {
     const lines = Object.values(PROPERTY_TYPES).map((property) => {
       const owned = user.properties.get(property.id);
-      return `**${property.name}**\n${property.description}\n${owned ? `Owned level ${owned.level || 1}` : `Buy: ${formatNumber(property.cost)} aura`}`;
+      return `**${getPropertyLabel(property)}**\n${property.description}\n${owned ? `Owned level ${owned.level || 1}` : `Buy: ${formatNumber(property.cost)} aura`}`;
     }).join("\n\n");
     return interaction.reply(buildEmbedPayload({
       title: "Aura Properties",
@@ -2784,10 +2844,10 @@ async function handleProperty(interaction) {
 
   if (subcommand === "buy") {
     if (user.properties.has(type)) {
-      return interaction.reply({ ...buildEmbedPayload({ title: "Already Owned", description: `You already own ${config.name}.`, visual: "emblem-help.svg" }), ephemeral: true });
+      return interaction.reply({ ...buildEmbedPayload({ title: "Already Owned", description: `You already own ${getPropertyLabel(config)}.`, visual: "emblem-help.svg" }), ephemeral: true });
     }
     if (user.aura < config.cost) {
-      return interaction.reply({ ...buildEmbedPayload({ title: "Property Locked", description: `${config.name} costs ${formatNumber(config.cost)} aura.`, visual: "emblem-alert.svg" }), ephemeral: true });
+      return interaction.reply({ ...buildEmbedPayload({ title: "Property Locked", description: `${getPropertyLabel(config)} costs ${formatNumber(config.cost)} aura.`, visual: "emblem-alert.svg" }), ephemeral: true });
     }
     user.aura -= config.cost;
     user.properties.set(type, { level: 1, lastClaimAt: new Date() });
@@ -2795,7 +2855,7 @@ async function handleProperty(interaction) {
     await user.save();
     return interaction.reply(buildEmbedPayload({
       title: "Property Purchased",
-      description: `You bought **${config.name}**. It will start producing passive rewards now.`,
+      description: `You bought **${getPropertyLabel(config)}**. It will start producing passive rewards now.`,
       visual: "emblem-success.svg",
       fields: [
         { name: "Cost", value: `${formatNumber(config.cost)} aura`, inline: true },
@@ -2805,18 +2865,18 @@ async function handleProperty(interaction) {
   }
 
   if (!user.properties.has(type)) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Property Not Owned", description: `Buy ${config.name} before using this action.`, visual: "emblem-alert.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "Property Not Owned", description: `Buy ${getPropertyLabel(config)} before using this action.`, visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
   if (subcommand === "upgrade") {
     const owned = user.properties.get(type);
     const level = owned.level || 1;
     if (level >= config.maxLevel) {
-      return interaction.reply({ ...buildEmbedPayload({ title: "Property Maxed", description: `${config.name} is already level ${config.maxLevel}.`, visual: "emblem-help.svg" }), ephemeral: true });
+      return interaction.reply({ ...buildEmbedPayload({ title: "Property Maxed", description: `${getPropertyLabel(config)} is already level ${config.maxLevel}.`, visual: "emblem-help.svg" }), ephemeral: true });
     }
     const cost = getPropertyUpgradeCost(config, level);
     if (user.aura < cost) {
-      return interaction.reply({ ...buildEmbedPayload({ title: "Upgrade Locked", description: `Upgrading ${config.name} costs ${formatNumber(cost)} aura.`, visual: "emblem-alert.svg" }), ephemeral: true });
+      return interaction.reply({ ...buildEmbedPayload({ title: "Upgrade Locked", description: `Upgrading ${getPropertyLabel(config)} costs ${formatNumber(cost)} aura.`, visual: "emblem-alert.svg" }), ephemeral: true });
     }
     user.aura -= cost;
     owned.level = level + 1;
@@ -2825,7 +2885,7 @@ async function handleProperty(interaction) {
     await user.save();
     return interaction.reply(buildEmbedPayload({
       title: "Property Upgraded",
-      description: `${config.name} is now level **${owned.level}**.`,
+      description: `${getPropertyLabel(config)} is now level **${owned.level}**.`,
       visual: "emblem-success.svg",
       fields: [
         { name: "Cost", value: `${formatNumber(cost)} aura`, inline: true },
@@ -2836,7 +2896,7 @@ async function handleProperty(interaction) {
 
   const claim = calculatePropertyClaim(user, type);
   if (!claim || claim.elapsedHours < 0.05) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Nothing To Claim", description: `${config.name} needs more time to produce rewards.`, visual: "emblem-help.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "Nothing To Claim", description: `${getPropertyLabel(config)} needs more time to produce rewards.`, visual: "emblem-help.svg" }), ephemeral: true });
   }
   user.aura += claim.aura;
   user.xp += claim.xp;
@@ -2859,7 +2919,7 @@ async function handleProperty(interaction) {
   await user.save();
   return interaction.reply(buildEmbedPayload({
     title: "Property Income Claimed",
-    description: `${config.name} paid out after ${claim.elapsedHours.toFixed(1)} hours.`,
+    description: `${getPropertyLabel(config)} paid out after ${claim.elapsedHours.toFixed(1)} hours.`,
     visual: "economy-vault.svg",
     fields: [
       { name: "Aura", value: `${formatNumber(claim.aura)}`, inline: true },
@@ -2886,7 +2946,7 @@ async function handleExpedition(interaction) {
     const remaining = new Date(user.expedition.endsAt).getTime() - Date.now();
     return interaction.reply(buildEmbedPayload({
       title: "Expedition Status",
-      description: remaining <= 0 ? `${config.name} is ready to claim.` : `${config.name} returns in ${humanizeMs(remaining)}.`,
+      description: remaining <= 0 ? `${getExpeditionLabel(config)} is ready to claim.` : `${getExpeditionLabel(config)} returns in ${humanizeMs(remaining)}.`,
       visual: "help-summary.svg",
     }));
   }
@@ -2905,7 +2965,7 @@ async function handleExpedition(interaction) {
     await user.save();
     return interaction.reply(buildEmbedPayload({
       title: "Expedition Started",
-      description: `${interaction.user.username} departed on **${config.name}**.\n${config.description}`,
+      description: `${interaction.user.username} departed on **${getExpeditionLabel(config)}**.\n${config.description}`,
       visual: "help-summary.svg",
       fields: [
         { name: "Returns In", value: `${config.hours}h`, inline: true },
@@ -2920,7 +2980,7 @@ async function handleExpedition(interaction) {
   const config = EXPEDITION_TYPES[user.expedition.type];
   const remaining = new Date(user.expedition.endsAt).getTime() - Date.now();
   if (remaining > 0) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Expedition Not Back", description: `${config.name} returns in ${humanizeMs(remaining)}.`, visual: "emblem-alert.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "Expedition Not Back", description: `${getExpeditionLabel(config)} returns in ${humanizeMs(remaining)}.`, visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
   const auraReward = randInt(config.aura[0], config.aura[1]);
@@ -2937,7 +2997,7 @@ async function handleExpedition(interaction) {
   if (config.crateChance && Math.random() < config.crateChance) {
     const crateId = config.rareChance && Math.random() < config.rareChance ? "rare" : "common";
     user.crates.set(crateId, (user.crates.get(crateId) || 0) + 1);
-    crateDrops.push(`${crateId} crate`);
+    crateDrops.push(getCrateLabel(crateId));
   }
   user.aura += auraReward;
   user.xp += xpReward;
@@ -2946,7 +3006,7 @@ async function handleExpedition(interaction) {
   await user.save();
   return interaction.reply(buildEmbedPayload({
     title: "Expedition Complete",
-    description: `${config.name} returned with a travel log full of loot.`,
+    description: `${getExpeditionLabel(config)} returned with a travel log full of loot.`,
     visual: "emblem-success.svg",
     fields: [
       { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
@@ -2966,7 +3026,7 @@ async function handleGear(interaction) {
       if (!gearId) {
         return `${slot}: Empty`;
       }
-      return `${slot}: ${getGearItem(gearId)?.name || gearId} +${getGearUpgradeLevel(user, gearId)} (${getGearDurability(user, gearId)}% durability)`;
+      return `${slot}: ${getInventoryLabel(gearId)} +${getGearUpgradeLevel(user, gearId)} (${getGearDurability(user, gearId)}% durability)`;
     }).join("\n");
     return interaction.reply(buildEmbedPayload({
       title: "Gear Loadout",
@@ -2983,14 +3043,14 @@ async function handleGear(interaction) {
   }
   const ownedQuantity = user.inventory.find((entry) => entry.id === gearId)?.quantity || 0;
   if (ownedQuantity <= 0) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Gear Not Owned", description: `You do not own **${gear.name}** yet. Craft it first.`, visual: "emblem-alert.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "Gear Not Owned", description: `You do not own **${getInventoryLabel(gearId)}** yet. Craft it first.`, visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
   user.equippedGear[gear.slot] = gearId;
   await user.save();
   return interaction.reply(buildEmbedPayload({
     title: "Gear Equipped",
-    description: `You equipped **${gear.name}** in the **${gear.slot}** slot.`,
+    description: `You equipped **${getInventoryLabel(gearId)}** in the **${gear.slot}** slot.`,
     visual: "help-skills.svg",
     fields: [
       { name: "Effect", value: gear.description },
@@ -3130,7 +3190,7 @@ async function handleDaily(interaction) {
     fields: [
       { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
       { name: "XP", value: `${formatNumber(xpReward)}`, inline: true },
-      { name: "Bonus", value: premiumRareCrates > 0 ? `Premium bonus ${premiumRareCrates} rare ${premiumRareCrates === 1 ? "crate" : "crates"} + ${user.streak % 7 === 0 ? "streak rare crate" : "common crate"}` : user.streak % 7 === 0 ? "Rare crate earned" : "Common crate earned", inline: true },
+      { name: "Bonus", value: premiumRareCrates > 0 ? `Premium bonus ${getCrateLabel("rare")} x${premiumRareCrates} + ${user.streak % 7 === 0 ? `streak ${getCrateLabel("rare")}` : getCrateLabel("common")}` : user.streak % 7 === 0 ? `${getCrateLabel("rare")} earned` : `${getCrateLabel("common")} earned`, inline: true },
     ],
   }));
 }
@@ -3191,7 +3251,7 @@ async function handlePremiumChest(interaction) {
     fields: [
       { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
       { name: "XP", value: `${formatNumber(xpReward)}`, inline: true },
-      { name: "Crates", value: `${chest.rareCrates} rare${epicDropped ? " + 1 epic" : ""}`, inline: true },
+      { name: "Crates", value: `${getCrateLabel("rare")} x${chest.rareCrates}${epicDropped ? ` + ${getCrateLabel("epic")} x1` : ""}`, inline: true },
       { name: "Materials", value: materialDrops.join("\n") || "None" },
       { name: "Next Chest", value: humanizeMs(getPremiumChestCooldownMs(user)), inline: true },
     ],
@@ -3256,7 +3316,7 @@ async function handleShop(interaction) {
     if (item.premiumLocked) {
       badges.push("locked");
     }
-    return `**${item.name}** - ${formatNumber(item.price)} aura\n\`${item.id}\` • ${badges.join(" • ")}\n${item.description}`;
+    return `**${getInventoryLabel(item.id)}** - ${formatNumber(item.price)} aura\n\`${item.id}\` • ${badges.join(" • ")}\n${item.description}`;
   }).join("\n\n");
   return interaction.reply(buildEmbedPayload({
     title: "Aura Shop",
@@ -3282,7 +3342,7 @@ async function handleBuy(interaction) {
   if (item.type === "cosmetic" && userOwnsCosmeticItem(user, item)) {
     grantCosmetic(user, item);
     await user.save();
-    return interaction.reply({ ...buildEmbedPayload({ title: "Cosmetic Equipped", description: `You already own **${item.name}**, so it has been equipped on your profile.`, visual: "emblem-success.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "Cosmetic Equipped", description: `You already own **${getInventoryLabel(item.id)}**, so it has been equipped on your profile.`, visual: "emblem-success.svg" }), ephemeral: true });
   }
   if (user.aura < item.price) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: "You do not have enough aura for that purchase.", visual: "emblem-economy.svg" }), ephemeral: true });
@@ -3314,7 +3374,7 @@ async function handleBuy(interaction) {
 
   return interaction.reply(buildEmbedPayload({
     title: "Purchase Complete",
-    description: `You bought **${item.name}**.`,
+    description: `You bought **${getInventoryLabel(item.id)}**.`,
     visual: "emblem-success.svg",
     fields: [
       { name: "Cost", value: `${formatNumber(item.price)} aura`, inline: true },
@@ -3329,14 +3389,14 @@ async function handleInventory(interaction) {
   normalizeCosmetics(user);
   const perkLines = user.inventory.filter((item) => item.quantity > 0).length ? user.inventory.filter((item) => item.quantity > 0).map((item) => `- ${getInventoryLabel(item.id)} x${item.quantity}`).join("\n") : "No owned items yet.";
   const crateEntries = Array.from(user.crates.entries()).filter(([, count]) => count > 0);
-  const crateLines = crateEntries.length ? crateEntries.map(([crateId, count]) => `- ${crateId} crate x${count}`).join("\n") : "No crates stored.";
+  const crateLines = crateEntries.length ? crateEntries.map(([crateId, count]) => `- ${getCrateLabel(crateId)} x${count}`).join("\n") : "No crates stored.";
   return interaction.reply(buildEmbedPayload({
     title: "Inventory",
     description: "Your owned perks, materials, unlocks, and unopened crates.",
     visual: "help-skills.svg",
     fields: [
       { name: "Items", value: perkLines },
-      { name: "Skills", value: user.skills.map((skillId) => `- ${SKILLS[skillId]?.name || skillId}`).join("\n") || "No skills." },
+      { name: "Skills", value: user.skills.map((skillId) => `- ${getSkillLabel(skillId)}`).join("\n") || "No skills." },
       { name: "Crates", value: crateLines },
       { name: "Membership", value: formatPremiumStatus(user) },
       { name: "Active Cosmetics", value: formatProfileCosmetics(user) },
@@ -3356,8 +3416,8 @@ async function handleRank(interaction) {
     description: "Rank is based on XP, separate from aura. Losing combat can rank you down if XP falls below the threshold.",
     visual: "core-profile.svg",
     fields: [
-      { name: "Current Rank", value: current.name, inline: true },
-      { name: "Next Rank", value: next.name, inline: true },
+      { name: "Current Rank", value: getRankLabel(current), inline: true },
+      { name: "Next Rank", value: getRankLabel(next), inline: true },
       { name: "Prestige", value: `${user.prestige}`, inline: true },
       { name: "Progress", value: `${progressBar(currentXp, totalXp)}\n${formatNumber(currentXp)} / ${formatNumber(totalXp)} XP` },
     ],
@@ -3369,7 +3429,7 @@ async function handlePrestige(interaction) {
   const atCap = user.rankIndex === RANKS.length - 1;
   const auraCost = 10000 + user.prestige * 2500;
   if (!atCap || user.aura < auraCost) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Prestige Locked", description: `Reach **${RANKS[RANKS.length - 1].name}** and hold **${formatNumber(auraCost)} aura** to prestige.`, visual: "emblem-help.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "Prestige Locked", description: `Reach **${getRankLabel(RANKS[RANKS.length - 1])}** and hold **${formatNumber(auraCost)} aura** to prestige.`, visual: "emblem-help.svg" }), ephemeral: true });
   }
 
   user.aura -= auraCost;
@@ -3407,7 +3467,7 @@ async function handleCrate(interaction) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Unknown Crate", description: "That crate type is not available.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
   if ((user.crates.get(type) || 0) <= 0) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "No Crates Available", description: `You do not own a ${type} crate.`, visual: "emblem-alert.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "No Crates Available", description: `You do not own ${getCrateLabel(type)}.`, visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
   user.crates.set(type, (user.crates.get(type) || 0) - 1);
@@ -3432,7 +3492,7 @@ async function handleCrate(interaction) {
         bonusLines.push(item?.name || drop.id);
       } else if (drop.type === "crate") {
         user.crates.set(drop.id, (user.crates.get(drop.id) || 0) + 1);
-        bonusLines.push(`${drop.id} crate`);
+        bonusLines.push(getCrateLabel(drop.id));
       }
     }
   });
@@ -3441,7 +3501,7 @@ async function handleCrate(interaction) {
   await user.save();
 
   return interaction.reply(buildEmbedPayload({
-    title: `${type.toUpperCase()} Crate Opened`,
+    title: `${getCrateLabel(type)} Opened`,
     description: "The crate burst open with progression loot.",
     visual: "emblem-success.svg",
     fields: [
@@ -4839,7 +4899,7 @@ async function handleBoss(interaction) {
     createdAt: Date.now(),
     lastActionAt: Date.now(),
     playerOne: createBattleFighter({ id: interaction.user.id, name: interaction.user.username, hp: 120, maxHp: 120, skillCycle: getBattleSkillRotation(user), loadout: normalizeBattleLoadout(user, user.equippedGear), gearOwner: user, combatItems: getPlayerCombatInventory(user), unlockedActions: getUnlockedBattleActions(user), premiumBattleBonus: getPremiumBattleBonus(user) }),
-    playerTwo: createBattleFighter({ id: `boss:${boss.id}`, name: boss.name, hp: boss.hp, maxHp: boss.hp, skillCycle: ["focus"], critBoost: 0.12 }),
+    playerTwo: createBattleFighter({ id: `boss:${boss.id}`, name: getBossLabel(boss), hp: boss.hp, maxHp: boss.hp, skillCycle: ["focus"], critBoost: 0.12 }),
     turnId: interaction.user.id,
     rewardAura: boss.rewardAura,
     rewardXp: boss.rewardXp,
@@ -4852,14 +4912,14 @@ async function handleBoss(interaction) {
   activeBattles.set(battleId, state);
   await saveBattleSession(state);
   return interaction.reply({
-    ...createBattleEmbed("Boss Encounter", `You challenged **${boss.name}**.\n${getBossCraftingHint(boss)}`, boss.visual, state),
+    ...createBattleEmbed("Boss Encounter", `You challenged **${getBossLabel(boss)}**.\n${getBossCraftingHint(boss)}`, boss.visual, state),
     components: buildBattleComponents(state, state.playerOne),
   });
 }
 
 async function handleSkills(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  const skillLines = user.skills.map((skillId) => `**${SKILLS[skillId].name}**\n${SKILLS[skillId].description}`).join("\n\n");
+  const skillLines = user.skills.map((skillId) => `**${getSkillLabel(skillId)}**\n${SKILLS[skillId].description}`).join("\n\n");
   return interaction.reply(buildEmbedPayload({
     title: "Combat Kit",
     description: "Skills come from items and crates. Attack styles unlock automatically as your rank and prestige rise.",
