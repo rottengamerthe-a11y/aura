@@ -426,6 +426,29 @@ function startWebServer() {
     });
   });
 
+  app.get("/debug/emoji/:id", async (req, res) => {
+    const emojiId = String(req.params.id || "").trim();
+    const cached = discordClient?.emojis?.cache?.get(emojiId) || null;
+    const sproutEnv = process.env.AURIX_RANK_EMOJI_SPROUT || "";
+    res.status(200).json({
+      ok: true,
+      version: APP_VERSION,
+      ready: Boolean(discordClient?.isReady?.()),
+      emojiId,
+      cached: cached ? {
+        id: cached.id,
+        name: cached.name,
+        animated: Boolean(cached.animated),
+        guildId: cached.guild?.id || cached.guildId || null,
+        identifier: cached.identifier,
+        rendered: cached.toString(),
+      } : null,
+      sproutEnvSet: Boolean(sproutEnv),
+      sproutEnvValid: /^<a?:[A-Za-z0-9_]+:\d+>$/.test(sproutEnv),
+      sproutEnvMatchesId: sproutEnv.includes(emojiId),
+    });
+  });
+
   app.get("/debug/responses", (_req, res) => {
     res.status(200).json({
       ok: true,
