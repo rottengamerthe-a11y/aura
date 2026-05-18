@@ -240,7 +240,7 @@ const BATTLE_ACTIONS = Object.freeze({
   heavy: {
     label: "Heavy",
     style: ButtonStyle.Danger,
-    requirement: `Reach ${RANKS[2]?.name || "Aura Warden"}`,
+    requirement: `Reach ${RANKS[2]?.name || "Riftkeeper"}`,
     description: "Big damage with self-exposure if the target survives.",
     cooldownRounds: 2,
     unlocked: (user) => user.rankIndex >= 2 || user.prestige >= 1,
@@ -248,7 +248,7 @@ const BATTLE_ACTIONS = Object.freeze({
   hook: {
     label: "Hook",
     style: ButtonStyle.Primary,
-    requirement: `Reach ${RANKS[2]?.name || "Aura Warden"}`,
+    requirement: `Reach ${RANKS[2]?.name || "Riftkeeper"}`,
     description: "Disrupt the target's combo and leave them weakened.",
     cooldownRounds: 1,
     unlocked: (user) => user.rankIndex >= 2 || user.prestige >= 1,
@@ -256,7 +256,7 @@ const BATTLE_ACTIONS = Object.freeze({
   pierce: {
     label: "Pierce",
     style: ButtonStyle.Success,
-    requirement: `Reach ${RANKS[3]?.name || "Star Oracle"}`,
+    requirement: `Reach ${RANKS[3]?.name || "Astral Sage"}`,
     description: "Guard-piercing strike that punishes defensive opponents.",
     cooldownRounds: 1,
     unlocked: (user) => user.rankIndex >= 3 || user.prestige >= 1,
@@ -1969,7 +1969,7 @@ const HELP_SECTIONS = [
       { name: "/quests", description: "View your current daily quest set." },
       { name: "/achievements", description: "Claim milestone rewards you have unlocked." },
       { name: "/leaderboard category:<type>", description: "See the top players or clans." },
-      { name: "/authority user:<player>", description: "Use the Aura Warden+ blessing command." },
+      { name: "/authority user:<player>", description: "Use the Riftkeeper+ blessing command." },
       { name: "/premium", description: "View your premium status and website link." },
       { name: "/premium-chest", description: "Open your premium recurring loot chest." },
     ],
@@ -5588,7 +5588,7 @@ async function handleClan(interaction) {
 async function handleAuthority(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   if (user.rankIndex < 2) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Authority Locked", description: "You need rank Aura Warden or higher to use rank-only commands.", visual: "emblem-alert.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "Authority Locked", description: "You need rank Riftkeeper or higher to use rank-only commands.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
   const remaining = getCooldownRemaining(user.lastAuthorityAt, COOLDOWNS.authorityMs, user);
   if (remaining > 0) {
