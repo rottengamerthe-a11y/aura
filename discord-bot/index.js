@@ -449,6 +449,35 @@ function startWebServer() {
     });
   });
 
+  app.get("/debug/emoji-guilds/:id", (_req, res) => {
+    const emojiId = String(_req.params.id || "").trim();
+    const guilds = discordClient?.guilds?.cache?.map((guild) => {
+      const emojis = guild.emojis?.cache || new Map();
+      const found = emojis.get?.(emojiId) || null;
+      return {
+        id: guild.id,
+        name: guild.name,
+        emojiCount: emojis.size || 0,
+        hasEmoji: Boolean(found),
+        matchedEmoji: found ? {
+          id: found.id,
+          name: found.name,
+          animated: Boolean(found.animated),
+          rendered: found.toString(),
+        } : null,
+      };
+    }) || [];
+
+    res.status(200).json({
+      ok: true,
+      version: APP_VERSION,
+      ready: Boolean(discordClient?.isReady?.()),
+      emojiId,
+      guildCount: guilds.length,
+      guilds,
+    });
+  });
+
   app.get("/debug/responses", (_req, res) => {
     res.status(200).json({
       ok: true,
