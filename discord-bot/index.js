@@ -12,7 +12,7 @@ const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigrat
 const { applyPaddleWebhookEvent, buildCommands, recentInteractions, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
 const { buildEmbedPayload } = require("./src/utils/visuals");
 
-const APP_VERSION = "aurix-entity-emojis-v16";
+const APP_VERSION = "aurix-emoji-cache-v17";
 const startedAt = Date.now();
 let discordClient = null;
 const recentDiscordResponses = [];
@@ -564,7 +564,7 @@ async function main() {
   console.log("Starting Discord client...");
 
   const client = new Client({
-    intents: [GatewayIntentBits.Guilds],
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildEmojisAndStickers],
   });
   discordClient = client;
 
