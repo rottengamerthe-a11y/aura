@@ -35,8 +35,8 @@ const EFFECT_CAPS = {
 const RANKS = [
   { name: "Sprout", xpRequired: 0, rewardAura: 250, rewardCrates: { common: 1 } },
   { name: "Harvester", xpRequired: 400, rewardAura: 650, rewardCrates: { common: 1 } },
-  { name: "Warden", xpRequired: 1200, rewardAura: 1100, rewardCrates: { rare: 1 } },
-  { name: "Oracle", xpRequired: 2800, rewardAura: 1800, rewardCrates: { rare: 1 } },
+  { name: "Aura Warden", xpRequired: 1200, rewardAura: 1100, rewardCrates: { rare: 1 } },
+  { name: "Star Oracle", xpRequired: 2800, rewardAura: 1800, rewardCrates: { rare: 1 } },
   { name: "Mythic", xpRequired: 5600, rewardAura: 3100, rewardCrates: { epic: 1 } },
   { name: "Ascendant", xpRequired: 9500, rewardAura: 5200, rewardCrates: { epic: 1, legendary: 1 } },
 ];

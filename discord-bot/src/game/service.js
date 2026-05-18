@@ -240,7 +240,7 @@ const BATTLE_ACTIONS = Object.freeze({
   heavy: {
     label: "Heavy",
     style: ButtonStyle.Danger,
-    requirement: `Reach ${RANKS[2]?.name || "Warden"}`,
+    requirement: `Reach ${RANKS[2]?.name || "Aura Warden"}`,
     description: "Big damage with self-exposure if the target survives.",
     cooldownRounds: 2,
     unlocked: (user) => user.rankIndex >= 2 || user.prestige >= 1,
@@ -248,7 +248,7 @@ const BATTLE_ACTIONS = Object.freeze({
   hook: {
     label: "Hook",
     style: ButtonStyle.Primary,
-    requirement: `Reach ${RANKS[2]?.name || "Warden"}`,
+    requirement: `Reach ${RANKS[2]?.name || "Aura Warden"}`,
     description: "Disrupt the target's combo and leave them weakened.",
     cooldownRounds: 1,
     unlocked: (user) => user.rankIndex >= 2 || user.prestige >= 1,
@@ -256,7 +256,7 @@ const BATTLE_ACTIONS = Object.freeze({
   pierce: {
     label: "Pierce",
     style: ButtonStyle.Success,
-    requirement: `Reach ${RANKS[3]?.name || "Oracle"}`,
+    requirement: `Reach ${RANKS[3]?.name || "Star Oracle"}`,
     description: "Guard-piercing strike that punishes defensive opponents.",
     cooldownRounds: 1,
     unlocked: (user) => user.rankIndex >= 3 || user.prestige >= 1,
@@ -1478,7 +1478,7 @@ function buildCraftingGuidePayload() {
       { name: "Oracle of Static", value: "Oracle Relic\nSun resin support" },
       { name: "Vault Warden", value: "Vault Key\nMiner's Lantern\nCommon Crate" },
       { name: "Codex Prime", value: "Oracle Relic\nLate-game mixed loot\nHigher crate spikes" },
-      { name: "Best Mixed Routes", value: "Combat Manual: Ember + Warden\nCommon Crate: Ember + Warden\nOracle Relic: Oracle + Codex" },
+      { name: "Best Mixed Routes", value: "Combat Manual: Ember + Vault Warden\nCommon Crate: Ember + Vault Warden\nOracle Relic: Oracle of Static + Codex" },
     ],
     footer: "Check /boss before a fight and /craft when you are ready to spend materials.",
   });
@@ -1969,7 +1969,7 @@ const HELP_SECTIONS = [
       { name: "/quests", description: "View your current daily quest set." },
       { name: "/achievements", description: "Claim milestone rewards you have unlocked." },
       { name: "/leaderboard category:<type>", description: "See the top players or clans." },
-      { name: "/authority user:<player>", description: "Use the Warden+ blessing command." },
+      { name: "/authority user:<player>", description: "Use the Aura Warden+ blessing command." },
       { name: "/premium", description: "View your premium status and website link." },
       { name: "/premium-chest", description: "Open your premium recurring loot chest." },
     ],
@@ -5588,7 +5588,7 @@ async function handleClan(interaction) {
 async function handleAuthority(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   if (user.rankIndex < 2) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Authority Locked", description: "You need rank Warden or higher to use rank-only commands.", visual: "emblem-alert.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "Authority Locked", description: "You need rank Aura Warden or higher to use rank-only commands.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
   const remaining = getCooldownRemaining(user.lastAuthorityAt, COOLDOWNS.authorityMs, user);
   if (remaining > 0) {
