@@ -135,9 +135,9 @@ const SHOP_ITEMS = [
     name: "Premium Supply Drop",
     price: 26000,
     type: "crate",
-    grantsCrate: "rare",
+    grantsCrates: { rare: 3, epic: 1 },
     premiumOnly: true,
-    description: "Premium-only rare crate bundle for faster progression.",
+    description: "Premium-only crate bundle with 3 rare crates and 1 epic crate.",
   },
   {
     id: "executive_badge",

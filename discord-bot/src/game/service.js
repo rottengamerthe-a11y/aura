@@ -202,7 +202,7 @@ const MICROTRANSACTION_PRODUCTS = Object.freeze({
     priceEnv: "PADDLE_BOOST_SUPPLY_PACK_PRICE_ID",
     grants: Object.freeze({
       inventory: Object.freeze({ lucky_charm: 1, vault_key: 1, coinflip_gloves: 1, adrenaline_tonic: 2 }),
-      aura: 4000,
+      aura: 20000,
     }),
   }),
 });
@@ -3540,7 +3540,13 @@ async function handleBuy(interaction) {
   } else if (item.type === "combat") {
     addInventoryItem(user, item.id);
   } else if (item.type === "crate") {
-    user.crates.set(item.grantsCrate, (user.crates.get(item.grantsCrate) || 0) + 1);
+    if (item.grantsCrates) {
+      Object.entries(item.grantsCrates).forEach(([crateId, quantity]) => {
+        user.crates.set(crateId, (user.crates.get(crateId) || 0) + quantity);
+      });
+    } else if (item.grantsCrate) {
+      user.crates.set(item.grantsCrate, (user.crates.get(item.grantsCrate) || 0) + 1);
+    }
   } else if (item.type === "cosmetic") {
     grantCosmetic(user, item);
     addInventoryItem(user, item.id);
