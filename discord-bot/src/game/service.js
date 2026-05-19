@@ -10,7 +10,7 @@ const activeBattles = new Map();
 const pendingRankUps = new Map();
 const reminderIntervals = new WeakMap();
 const recentInteractions = [];
-const COMMAND_BUILD_ID = "aurix-premium-buffs-v19";
+const COMMAND_BUILD_ID = "aurix-premium-buffs-v20";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const BATTLE_ANIMATION_DELAY_MS = 900;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
@@ -23,7 +23,7 @@ const PREMIUM_PLANS = Object.freeze({
   monthly: {
     id: "monthly",
     label: "Monthly",
-    priceLabel: "$5/month",
+    priceLabel: "$4.99/month",
     durationDays: 30,
     dailyMultiplier: 1.6,
     dailyRareCrates: 2,
@@ -48,7 +48,7 @@ const PREMIUM_PLANS = Object.freeze({
   yearly: {
     id: "yearly",
     label: "Yearly",
-    priceLabel: "$20/year",
+    priceLabel: "$19.99/year",
     durationDays: 365,
     dailyMultiplier: 2,
     dailyRareCrates: 3,
@@ -73,7 +73,7 @@ const PREMIUM_PLANS = Object.freeze({
   lifetime: {
     id: "lifetime",
     label: "Lifetime",
-    priceLabel: "$50 one-time",
+    priceLabel: "$49.99 one-time",
     durationDays: null,
     dailyMultiplier: 2.5,
     dailyRareCrates: 5,
@@ -166,6 +166,45 @@ const PADDLE_PRICE_PLAN_ENV = Object.freeze({
   monthly: "PADDLE_MONTHLY_PRICE_ID",
   yearly: "PADDLE_YEARLY_PRICE_ID",
   lifetime: "PADDLE_LIFETIME_PRICE_ID",
+});
+const MICROTRANSACTION_PRODUCTS = Object.freeze({
+  starter_crate_bundle: Object.freeze({
+    id: "starter_crate_bundle",
+    label: "Starter Crate Bundle",
+    priceEnv: "PADDLE_STARTER_CRATE_BUNDLE_PRICE_ID",
+    grants: Object.freeze({
+      crates: Object.freeze({ common: 8, rare: 2 }),
+      aura: 12500,
+    }),
+  }),
+  rare_crate_stack: Object.freeze({
+    id: "rare_crate_stack",
+    label: "Rare Crate Stack",
+    priceEnv: "PADDLE_RARE_CRATE_STACK_PRICE_ID",
+    grants: Object.freeze({
+      crates: Object.freeze({ rare: 8, epic: 2 }),
+      aura: 30000,
+    }),
+  }),
+  legendary_vault_drop: Object.freeze({
+    id: "legendary_vault_drop",
+    label: "Legendary Vault Drop",
+    priceEnv: "PADDLE_LEGENDARY_VAULT_DROP_PRICE_ID",
+    grants: Object.freeze({
+      crates: Object.freeze({ rare: 6, epic: 3, legendary: 1 }),
+      aura: 90000,
+      inventory: Object.freeze({ adrenaline_tonic: 3, health_vial: 4 }),
+    }),
+  }),
+  boost_supply_pack: Object.freeze({
+    id: "boost_supply_pack",
+    label: "Boost Supply Pack",
+    priceEnv: "PADDLE_BOOST_SUPPLY_PACK_PRICE_ID",
+    grants: Object.freeze({
+      inventory: Object.freeze({ lucky_charm: 1, vault_key: 1, coinflip_gloves: 1, adrenaline_tonic: 2 }),
+      aura: 4000,
+    }),
+  }),
 });
 const REMINDER_ACTIONS = Object.freeze({
   spin: { label: "Spin", command: "/spin" },
@@ -431,8 +470,10 @@ function normalizePremiumState(user) {
       paddleLastEventId: null,
       paddlePlanId: null,
       paddleStatus: null,
+      paddleGrantedTransactionIds: [],
     };
   }
+  user.billing.paddleGrantedTransactionIds ||= [];
   if (!isPremiumActive(user) && user.premium.active) {
     user.premium.active = false;
     user.premium.lifetime = false;
@@ -452,6 +493,19 @@ function getPaddlePlanByPriceId(priceId) {
   return planId ? getPremiumPlan(planId) : null;
 }
 
+function getMicrotransactionProduct(productId) {
+  return MICROTRANSACTION_PRODUCTS[productId] || null;
+}
+
+function getMicrotransactionProductByPriceId(priceId) {
+  if (!priceId) {
+    return null;
+  }
+  const productId = Object.entries(MICROTRANSACTION_PRODUCTS)
+    .find(([, product]) => process.env[product.priceEnv] === priceId)?.[0];
+  return productId ? getMicrotransactionProduct(productId) : null;
+}
+
 function getPaddleCustomData(data) {
   return data?.custom_data || data?.customData || data?.customDataJson || data?.custom_data_json || {};
 }
@@ -462,18 +516,16 @@ function getPaddleFirstPriceId(data) {
 }
 
 function getPaddlePlan(data, existingUser = null) {
-  const customData = getPaddleCustomData(data);
-  const customPlan = getPremiumPlan(customData.planId || customData.plan_id || customData.plan);
-  if (customPlan) {
-    return customPlan;
-  }
-
   const pricePlan = getPaddlePlanByPriceId(getPaddleFirstPriceId(data));
   if (pricePlan) {
     return pricePlan;
   }
 
   return getPremiumPlan(existingUser?.billing?.paddlePlanId) || getPremiumPlan(existingUser?.premium?.source);
+}
+
+function getPaddleMicrotransactionProduct(data) {
+  return getMicrotransactionProductByPriceId(getPaddleFirstPriceId(data));
 }
 
 function getPaddleBillingPeriodEnd(data) {
@@ -529,6 +581,7 @@ function mergePaddleBilling(user, data, eventId, plan) {
   user.billing.paddleLastEventId = eventId || user.billing.paddleLastEventId || null;
   user.billing.paddlePlanId = plan?.id || user.billing.paddlePlanId || null;
   user.billing.paddleStatus = ids.status || user.billing.paddleStatus || null;
+  user.billing.paddleGrantedTransactionIds ||= [];
 }
 
 async function applyPaddleWebhookEvent(event, eventId = null) {
@@ -545,8 +598,42 @@ async function applyPaddleWebhookEvent(event, eventId = null) {
   const previousPlanId = user.premium?.source || null;
   const wasPremiumActive = isPremiumActive(user);
   const plan = getPaddlePlan(data, user);
+  const microtransactionProduct = getPaddleMicrotransactionProduct(data);
   const resolvedEventId = eventId || event?.event_id || event?.eventId || null;
   mergePaddleBilling(user, data, resolvedEventId, plan);
+
+  const ids = getPaddleIds(data);
+  const purchaseGrantId = ids.transactionId || resolvedEventId;
+  if (eventType === "transaction.completed" && microtransactionProduct) {
+    if (purchaseGrantId && user.billing.paddleGrantedTransactionIds.includes(purchaseGrantId)) {
+      await user.save();
+      return {
+        action: "duplicate_purchase_ignored",
+        userId: user.userId,
+        productId: microtransactionProduct.id,
+        productLabel: microtransactionProduct.label,
+        eventType,
+      };
+    }
+
+    const grantSummary = grantMicrotransactionProduct(user, microtransactionProduct);
+    if (purchaseGrantId) {
+      user.billing.paddleGrantedTransactionIds.push(purchaseGrantId);
+      user.billing.paddleGrantedTransactionIds = user.billing.paddleGrantedTransactionIds.slice(-50);
+    }
+    await syncRank(user);
+    await user.save();
+    return {
+      action: "purchase_granted",
+      userId: user.userId,
+      productId: microtransactionProduct.id,
+      productLabel: microtransactionProduct.label,
+      eventType,
+      grantSummary,
+      announcementGuildId: customData.guildId || customData.guild_id || user.botContext?.lastGuildId || user.reminders?.guildId || user.guildId || null,
+      announcementChannelId: customData.channelId || customData.channel_id || user.botContext?.lastChannelId || user.reminders?.channelId || null,
+    };
+  }
 
   const activeSubscriptionStatuses = new Set(["active", "trialing"]);
   const inactiveSubscriptionStatuses = new Set(["canceled", "paused", "past_due"]);
@@ -1558,6 +1645,43 @@ function ensureInventoryEntry(user, id) {
 function addInventoryItem(user, id, quantity = 1) {
   const entry = ensureInventoryEntry(user, id);
   entry.quantity += quantity;
+}
+
+function grantMicrotransactionProduct(user, product) {
+  const grants = product?.grants || {};
+  const summary = [];
+
+  if (grants.aura) {
+    user.aura += grants.aura;
+    summary.push(`${formatNumber(grants.aura)} aura`);
+  }
+
+  if (grants.xp) {
+    user.xp += grants.xp;
+    summary.push(`${formatNumber(grants.xp)} XP`);
+  }
+
+  Object.entries(grants.crates || {}).forEach(([crateId, quantity]) => {
+    if (!CRATES[crateId] || quantity <= 0) {
+      return;
+    }
+    user.crates.set(crateId, (user.crates.get(crateId) || 0) + quantity);
+    summary.push(`${quantity} ${getCrateLabel(crateId)}${quantity === 1 ? "" : "s"}`);
+  });
+
+  Object.entries(grants.inventory || {}).forEach(([itemId, quantity]) => {
+    if (!getItem(itemId) || quantity <= 0) {
+      return;
+    }
+    addInventoryItem(user, itemId, quantity);
+    const item = getItem(itemId);
+    if (item.type === "perk" && !user.ownedPerks.includes(itemId)) {
+      user.ownedPerks.push(itemId);
+    }
+    summary.push(`${quantity} ${getInventoryLabel(itemId)}`);
+  });
+
+  return summary;
 }
 
 function queueRankUpMessage(user, ranks) {

@@ -184,22 +184,36 @@ function startWebServer() {
   }
 
   async function sendPremiumAnnouncement(result) {
-    if (!discordClient?.isReady?.() || !result?.shouldAnnounce || !result.userId) {
+    const isPremiumActivation = result?.shouldAnnounce && result.userId;
+    const isPurchaseGrant = result?.action === "purchase_granted" && result.userId;
+    if (!discordClient?.isReady?.() || (!isPremiumActivation && !isPurchaseGrant)) {
       return { sent: false, reason: "not_ready_or_not_needed" };
     }
 
     const planLabel = result.planLabel || result.planId || "Premium";
-    const embed = {
-      color: 0xffc857,
-      title: "Premium Activated",
-      description: `<@${result.userId}> just unlocked **${planLabel} Premium** for Aurix.`,
-      fields: [
-        { name: "Unlocked", value: "Premium Chest, extra garden plots, battle bonuses, profile cosmetics, extra reminder slots, and premium-only shop items." },
-        { name: "Start Here", value: "`/premium`, `/premium-chest`, `/profile`, `/garden status`, `/shop`" },
-      ],
-      footer: { text: "Thanks for supporting Aurix Bot." },
-      timestamp: new Date().toISOString(),
-    };
+    const embed = isPurchaseGrant
+      ? {
+        color: 0x69c7ff,
+        title: "Aurix Purchase Delivered",
+        description: `<@${result.userId}> received **${result.productLabel || result.productId}**.`,
+        fields: [
+          { name: "Delivered", value: result.grantSummary?.length ? result.grantSummary.join("\n") : "Your digital items were added to your Aurix profile." },
+          { name: "Start Here", value: "`/inventory`, `/crate`, `/profile`, `/shop`" },
+        ],
+        footer: { text: "All Aurix items are virtual bot features with no cash value." },
+        timestamp: new Date().toISOString(),
+      }
+      : {
+        color: 0xffc857,
+        title: "Premium Activated",
+        description: `<@${result.userId}> just unlocked **${planLabel} Premium** for Aurix.`,
+        fields: [
+          { name: "Unlocked", value: "Premium Chest, extra garden plots, battle bonuses, profile cosmetics, extra reminder slots, and premium-only shop items." },
+          { name: "Start Here", value: "`/premium`, `/premium-chest`, `/profile`, `/garden status`, `/shop`" },
+        ],
+        footer: { text: "Thanks for supporting Aurix Bot." },
+        timestamp: new Date().toISOString(),
+      };
 
     const guildSettings = result.announcementGuildId
       ? await GuildSettings.findOne({ guildId: result.announcementGuildId }).lean()

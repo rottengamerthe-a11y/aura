@@ -7,15 +7,18 @@ const { User } = require("../data/models");
 const { applyPaddleWebhookEvent } = require("../game/service");
 
 async function main() {
-  const [, , userId, planId = "monthly"] = process.argv;
+  const [, , userId, purchaseId = "monthly"] = process.argv;
 
   if (!userId) {
-    throw new Error("Usage: node src/billing/testPremiumWebhook.js <discordUserId> [monthly|yearly|lifetime]");
+    throw new Error("Usage: node src/billing/testPremiumWebhook.js <discordUserId> [monthly|yearly|lifetime|starter_crate_bundle|rare_crate_stack|legendary_vault_drop|boost_supply_pack]");
   }
 
   if (!process.env.MONGODB_URI) {
     throw new Error("Missing MONGODB_URI.");
   }
+
+  const priceEnvKey = `PADDLE_${purchaseId.toUpperCase()}_PRICE_ID`;
+  process.env[priceEnvKey] ||= `price_test_${purchaseId}`;
 
   await mongoose.connect(process.env.MONGODB_URI, {
     serverSelectionTimeoutMS: 10000,
@@ -29,12 +32,13 @@ async function main() {
       status: "completed",
       custom_data: {
         discord_user_id: userId,
-        plan_id: planId,
+        plan_id: ["monthly", "yearly", "lifetime"].includes(purchaseId) ? purchaseId : undefined,
+        product_id: ["monthly", "yearly", "lifetime"].includes(purchaseId) ? undefined : purchaseId,
       },
       items: [
         {
           price: {
-            id: process.env[`PADDLE_${planId.toUpperCase()}_PRICE_ID`] || `price_test_${planId}`,
+            id: process.env[priceEnvKey],
           },
         },
       ],
@@ -47,6 +51,9 @@ async function main() {
   console.log(JSON.stringify({
     result,
     premium: user?.premium || null,
+    aura: user?.aura || null,
+    crates: user?.crates ? Object.fromEntries(user.crates.entries()) : null,
+    inventory: user?.inventory || null,
     billing: user?.billing || null,
   }, null, 2));
 

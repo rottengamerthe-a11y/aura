@@ -119,6 +119,7 @@ const userSchema = new mongoose.Schema(
       paddleLastEventId: { type: String, default: null },
       paddlePlanId: { type: String, default: null },
       paddleStatus: { type: String, default: null },
+      paddleGrantedTransactionIds: { type: [String], default: [] },
     },
     stats: {
       spins: { type: Number, default: 0 },
