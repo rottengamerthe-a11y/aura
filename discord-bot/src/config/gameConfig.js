@@ -45,7 +45,7 @@ const SHOP_ITEMS = [
   {
     id: "lucky_charm",
     name: "Lucky Charm",
-    price: 1200,
+    price: 1900,
     type: "perk",
     description: "+8% better spin rewards.",
     effects: { spinRewardBoost: 0.08 },
@@ -53,7 +53,7 @@ const SHOP_ITEMS = [
   {
     id: "vault_key",
     name: "Vault Key",
-    price: 1800,
+    price: 2900,
     type: "perk",
     description: "+2% vault interest rate.",
     effects: { vaultInterestBoost: 0.02 },
@@ -61,7 +61,7 @@ const SHOP_ITEMS = [
   {
     id: "coinflip_gloves",
     name: "Coinflip Gloves",
-    price: 2500,
+    price: 4000,
     type: "perk",
     description: "+4% better coinflip win chance.",
     effects: { coinflipWinBoost: 0.04 },
@@ -69,7 +69,7 @@ const SHOP_ITEMS = [
   {
     id: "combat_manual",
     name: "Combat Manual",
-    price: 2200,
+    price: 3600,
     type: "skill_unlock",
     description: "Unlocks the Slash skill for PvP and bosses.",
     grantsSkill: "slash",
@@ -77,7 +77,7 @@ const SHOP_ITEMS = [
   {
     id: "guardian_core",
     name: "Guardian Core",
-    price: 3200,
+    price: 5200,
     type: "skill_unlock",
     description: "Unlocks the Guard Break skill for PvP and bosses.",
     grantsSkill: "guard_break",
@@ -85,7 +85,7 @@ const SHOP_ITEMS = [
   {
     id: "health_vial",
     name: "Health Vial",
-    price: 950,
+    price: 1500,
     type: "combat",
     description: "Battle consumable. Restore 18 HP during a duel or boss fight.",
     battle: { effect: "heal", heal: 18 },
@@ -93,7 +93,7 @@ const SHOP_ITEMS = [
   {
     id: "smoke_bomb",
     name: "Smoke Bomb",
-    price: 1150,
+    price: 1800,
     type: "combat",
     description: "Battle consumable. Deals light damage and leaves the target exposed.",
     battle: { effect: "smoke", damage: [4, 8], exposeTurns: 2 },
@@ -101,7 +101,7 @@ const SHOP_ITEMS = [
   {
     id: "adrenaline_tonic",
     name: "Adrenaline Tonic",
-    price: 1350,
+    price: 2200,
     type: "combat",
     description: "Battle consumable. Clear bleed/exposed and boost your next attack.",
     battle: { effect: "adrenaline", critBoost: 0.22, combo: 1, clearBleed: true, clearExpose: true },
@@ -109,7 +109,7 @@ const SHOP_ITEMS = [
   {
     id: "common_crate",
     name: "Common Crate",
-    price: 900,
+    price: 1500,
     type: "crate",
     grantsCrate: "common",
     description: "Contains aura, XP, and the occasional perk.",
@@ -117,7 +117,7 @@ const SHOP_ITEMS = [
   {
     id: "rare_crate",
     name: "Rare Crate",
-    price: 2200,
+    price: 3600,
     type: "crate",
     grantsCrate: "rare",
     description: "Higher payout and stronger drop table.",
@@ -125,7 +125,7 @@ const SHOP_ITEMS = [
   {
     id: "epic_crate",
     name: "Epic Crate",
-    price: 5200,
+    price: 8500,
     type: "crate",
     grantsCrate: "epic",
     description: "Rare progression spike in a box.",
@@ -133,7 +133,7 @@ const SHOP_ITEMS = [
   {
     id: "premium_supply_drop",
     name: "Premium Supply Drop",
-    price: 6800,
+    price: 11000,
     type: "crate",
     grantsCrate: "rare",
     premiumOnly: true,
@@ -142,7 +142,7 @@ const SHOP_ITEMS = [
   {
     id: "executive_badge",
     name: "Executive Badge",
-    price: 4800,
+    price: 7800,
     type: "perk",
     premiumOnly: true,
     description: "+10% work aura and +6% vault interest while premium is active.",
@@ -151,7 +151,7 @@ const SHOP_ITEMS = [
   {
     id: "storm_pass",
     name: "Storm Pass",
-    price: 7200,
+    price: 11500,
     type: "perk",
     premiumOnly: true,
     description: "+10% boss rewards and +8% PvP rewards while premium is active.",
@@ -160,7 +160,7 @@ const SHOP_ITEMS = [
   {
     id: "aurix_vip_title",
     name: "Aurix VIP Title",
-    price: 2500,
+    price: 4000,
     type: "cosmetic",
     premiumOnly: true,
     grantsCosmetic: { slot: "title", value: "Aurix VIP" },
@@ -169,7 +169,7 @@ const SHOP_ITEMS = [
   {
     id: "gold_profile_frame",
     name: "Gold Profile Frame",
-    price: 3500,
+    price: 5600,
     type: "cosmetic",
     premiumOnly: true,
     grantsCosmetic: { slot: "frame", value: "Gold Frame" },
@@ -178,7 +178,7 @@ const SHOP_ITEMS = [
   {
     id: "storm_nameplate",
     name: "Storm Nameplate",
-    price: 4500,
+    price: 7200,
     type: "cosmetic",
     premiumOnly: true,
     grantsCosmetic: { slot: "title", value: "Stormbound" },
@@ -215,6 +215,8 @@ const CRATES = {
     drops: [
       { type: "item", id: "lucky_charm", chance: 0.08 },
       { type: "item", id: "vault_key", chance: 0.06 },
+      { type: "item", id: "health_vial", chance: 0.16 },
+      { type: "item", id: "smoke_bomb", chance: 0.12 },
     ],
   },
   rare: {
@@ -223,6 +225,9 @@ const CRATES = {
     drops: [
       { type: "item", id: "coinflip_gloves", chance: 0.12 },
       { type: "item", id: "combat_manual", chance: 0.1 },
+      { type: "item", id: "health_vial", chance: 0.18 },
+      { type: "item", id: "smoke_bomb", chance: 0.16 },
+      { type: "item", id: "adrenaline_tonic", chance: 0.1 },
     ],
   },
   epic: {
@@ -230,6 +235,10 @@ const CRATES = {
     xp: [450, 850],
     drops: [
       { type: "item", id: "guardian_core", chance: 0.14 },
+      { type: "item", id: "combat_manual", chance: 0.12 },
+      { type: "item", id: "coinflip_gloves", chance: 0.12 },
+      { type: "item", id: "adrenaline_tonic", chance: 0.18 },
+      { type: "item", id: "smoke_bomb", chance: 0.12 },
       { type: "crate", id: "legendary", chance: 0.06 },
     ],
   },
@@ -239,6 +248,11 @@ const CRATES = {
     drops: [
       { type: "item", id: "guardian_core", chance: 0.22 },
       { type: "item", id: "combat_manual", chance: 0.22 },
+      { type: "item", id: "lucky_charm", chance: 0.14 },
+      { type: "item", id: "vault_key", chance: 0.14 },
+      { type: "item", id: "coinflip_gloves", chance: 0.16 },
+      { type: "item", id: "adrenaline_tonic", chance: 0.22 },
+      { type: "item", id: "health_vial", chance: 0.18 },
     ],
   },
 };
