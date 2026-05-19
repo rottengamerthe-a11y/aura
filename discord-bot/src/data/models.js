@@ -229,6 +229,7 @@ const pvpMatchmakingQueueSchema = new mongoose.Schema(
     userId: { type: String, required: true, unique: true, index: true },
     guildId: { type: String, default: null },
     channelId: { type: String, required: true },
+    messageId: { type: String, default: null },
     displayName: { type: String, required: true },
     joinedAt: { type: Date, default: Date.now, index: true },
     expiresAt: { type: Date, required: true, index: true },

@@ -2181,7 +2181,7 @@ const HELP_SECTIONS = [
       { name: "/skills", description: "See unlocked battle skills and attack styles." },
       { name: "/pvp user:<player>", description: "Send a duel invite, lock a loadout, and fight another player." },
       { name: "/pvp", description: "Join global matchmaking for a cross-server PvP opponent." },
-      { name: "/pvp mode:leave/status", description: "Leave the global queue or check your current search." },
+      { name: "/pvp mode:status", description: "Check your current global matchmaking search." },
       { name: "/boss [boss]", description: "Fight one of the available bosses." },
     ],
   },
@@ -5216,12 +5216,31 @@ async function findOpenPvpQueueEntry(userId) {
   return PvpMatchmakingQueue.findOne({ userId: { $ne: userId }, expiresAt: { $gt: new Date() } }).sort({ joinedAt: 1 }).lean();
 }
 
-async function leavePvpQueue(interaction) {
+function buildPvpQueueComponents(userId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`pvpqueue:leave:${userId}`).setLabel("Leave Queue").setStyle(ButtonStyle.Secondary)
+    ),
+  ];
+}
+
+async function handlePvpQueueButton(interaction) {
+  const [, action, ownerId] = interaction.customId.split(":");
+  if (action !== "leave") {
+    return interaction.reply({ content: "That matchmaking action is not supported.", ephemeral: true });
+  }
+  if (ownerId !== interaction.user.id) {
+    return interaction.reply({ content: "Only the queued player can leave from this message.", ephemeral: true });
+  }
+
   const result = await PvpMatchmakingQueue.deleteOne({ userId: interaction.user.id });
   const description = result.deletedCount
     ? "You left the global PvP matchmaking queue."
-    : "You are not currently in the global PvP matchmaking queue.";
-  return interaction.reply({ ...buildEmbedPayload({ title: "PvP Matchmaking", description, visual: "emblem-pvp.svg" }), ephemeral: true });
+    : "This queue entry is no longer active.";
+  return interaction.update({
+    ...buildEmbedPayload({ title: "PvP Matchmaking", description, visual: "emblem-pvp.svg" }),
+    components: [],
+  });
 }
 
 async function showPvpQueueStatus(interaction) {
@@ -5236,6 +5255,7 @@ async function showPvpQueueStatus(interaction) {
       description: `You are searching for a global PvP opponent. Queue expires in ${humanizeMs(Math.max(0, expiresAt - Date.now()))}.`,
       visual: "emblem-pvp.svg",
     }),
+    components: buildPvpQueueComponents(interaction.user.id),
     ephemeral: true,
   });
 }
@@ -5273,9 +5293,23 @@ async function startMatchedPvp(interaction, queuedEntry, currentUser) {
     components: buildLoadoutComponents(state),
   };
 
+  const firstChannel = await interaction.client.channels.fetch(queuedEntry.channelId).catch(() => null);
+  const queueMessage = queuedEntry.messageId
+    ? await firstChannel?.messages?.fetch?.(queuedEntry.messageId).catch(() => null)
+    : null;
+  if (queueMessage?.editable) {
+    await queueMessage.edit({
+      ...buildEmbedPayload({
+        title: "Global PvP Match Found",
+        description: `${currentUser.username} matched with you through the global PvP queue. Your duel lobby is below.`,
+        visual: "pvp-challenge.svg",
+      }),
+      components: [],
+    }).catch(() => null);
+  }
+
   let firstMessage = null;
   if (queuedEntry.channelId !== interaction.channelId) {
-    const firstChannel = await interaction.client.channels.fetch(queuedEntry.channelId).catch(() => null);
     firstMessage = await firstChannel?.send?.(payload).catch(() => null);
     if (!firstMessage) {
       await PvpMatchmakingQueue.deleteOne({ userId: queuedEntry.userId }).catch(() => null);
@@ -5317,6 +5351,7 @@ async function joinPvpQueue(interaction) {
         userId: interaction.user.id,
         guildId: interaction.guildId,
         channelId: interaction.channelId,
+        messageId: null,
         displayName: interaction.user.username,
         joinedAt: new Date(),
         expiresAt: new Date(Date.now() + PVP_MATCHMAKING_TIMEOUT_MS),
@@ -5325,20 +5360,21 @@ async function joinPvpQueue(interaction) {
     { upsert: true }
   );
 
-  return interaction.reply({
+  const message = await interaction.reply({
     ...buildEmbedPayload({
       title: "Global PvP Matchmaking",
-      description: `${interaction.user.username} entered the global PvP queue. I will match you with the next available fighter across servers.\n\nQueue expires in ${humanizeMs(PVP_MATCHMAKING_TIMEOUT_MS)}. Use \`/pvp mode:leave\` to cancel.`,
+      description: `${interaction.user.username} entered the global PvP queue. I will match you with the next available fighter across servers.\n\nQueue expires in ${humanizeMs(PVP_MATCHMAKING_TIMEOUT_MS)}.`,
       visual: "pvp-challenge.svg",
     }),
+    components: buildPvpQueueComponents(interaction.user.id),
+    fetchReply: true,
   });
+  await PvpMatchmakingQueue.updateOne({ userId: interaction.user.id }, { $set: { messageId: message.id } }).catch(() => null);
+  return message;
 }
 
 async function handlePvp(interaction) {
   const mode = interaction.options.getString("mode");
-  if (mode === "leave") {
-    return leavePvpQueue(interaction);
-  }
   if (mode === "status") {
     return showPvpQueueStatus(interaction);
   }
@@ -6213,7 +6249,7 @@ function buildCommands() {
     new SlashCommandBuilder().setName("skills").setDescription("View unlocked combat skills and attack styles."),
     new SlashCommandBuilder().setName("pvp").setDescription("Challenge a player or join global PvP matchmaking.")
       .addUserOption((option) => option.setName("user").setDescription("Optional direct opponent"))
-      .addStringOption((option) => option.setName("mode").setDescription("Global matchmaking control").addChoices({ name: "join", value: "join" }, { name: "leave", value: "leave" }, { name: "status", value: "status" })),
+      .addStringOption((option) => option.setName("mode").setDescription("Global matchmaking control").addChoices({ name: "join", value: "join" }, { name: "status", value: "status" })),
     new SlashCommandBuilder().setName("boss").setDescription("Fight a boss.").addStringOption((option) => option.setName("boss").setDescription("Boss id").addChoices({ name: "ember", value: "ember" }, { name: "oracle", value: "oracle" }, { name: "warden", value: "warden" }, { name: "codex", value: "codex" })),
     new SlashCommandBuilder().setName("leaderboard").setDescription("View top players and clans.").addStringOption((option) => option.setName("category").setDescription("Leaderboard type").setRequired(true).addChoices({ name: "aura", value: "aura" }, { name: "vault", value: "vault" }, { name: "xp", value: "xp" }, { name: "prestige", value: "prestige" }, { name: "clans", value: "clans" })).addStringOption((option) => option.setName("scope").setDescription("Global or this server only").addChoices({ name: "global", value: "global" }, { name: "server", value: "server" })),
     new SlashCommandBuilder().setName("premium").setDescription("View your premium status."),
@@ -6238,6 +6274,12 @@ async function routeInteraction(interaction) {
   recentInteractions.unshift(interactionLog);
   recentInteractions.splice(25);
   console.log("Aurix interaction routed:", interactionLog);
+
+  if (interaction.isButton() && interaction.customId?.startsWith("pvpqueue:")) {
+    const result = await handlePvpQueueButton(interaction);
+    await sendPendingRankUpMessages(interaction);
+    return result;
+  }
 
   if (interaction.isButton() || interaction.isStringSelectMenu()) {
     const result = await handleBattleComponentInteraction(interaction);
