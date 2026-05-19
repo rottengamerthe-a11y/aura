@@ -12,7 +12,7 @@ const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigrat
 const { applyPaddleWebhookEvent, buildCommands, recentInteractions, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
 const { buildEmbedPayload } = require("./src/utils/visuals");
 
-const APP_VERSION = "aurix-emoji-cache-v17";
+const APP_VERSION = "aurix-premium-buffs-v18";
 const startedAt = Date.now();
 let discordClient = null;
 const recentDiscordResponses = [];

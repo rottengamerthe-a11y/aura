@@ -9,7 +9,7 @@ const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 const activeBattles = new Map();
 const reminderIntervals = new WeakMap();
 const recentInteractions = [];
-const COMMAND_BUILD_ID = "aurix-emoji-cache-v17";
+const COMMAND_BUILD_ID = "aurix-premium-buffs-v18";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const BATTLE_ANIMATION_DELAY_MS = 900;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
@@ -24,24 +24,24 @@ const PREMIUM_PLANS = Object.freeze({
     label: "Monthly",
     priceLabel: "$5/month",
     durationDays: 30,
-    dailyMultiplier: 1.25,
-    dailyRareCrates: 1,
-    cooldownReduction: 0.1,
+    dailyMultiplier: 1.4,
+    dailyRareCrates: 2,
+    cooldownReduction: 0.18,
     gardenPlots: 3,
-    chestCooldownHours: 20,
-    welcome: Object.freeze({ aura: 2500, rareCrates: 2, epicCrates: 0 }),
-    battle: Object.freeze({ maxHpBonus: 8, critChanceBonus: 0.03 }),
-    chest: Object.freeze({ aura: [900, 1600], xp: [220, 380], rareCrates: 1, epicChance: 0.08, materials: 2 }),
+    chestCooldownHours: 16,
+    welcome: Object.freeze({ aura: 6000, rareCrates: 3, epicCrates: 1, legendaryCrates: 0 }),
+    battle: Object.freeze({ maxHpBonus: 14, critChanceBonus: 0.05 }),
+    chest: Object.freeze({ aura: [1800, 3200], xp: [420, 760], rareCrates: 2, epicChance: 0.18, legendaryChance: 0.02, materials: 4 }),
     effects: Object.freeze({
-      spinRewardBoost: 0.12,
-      vaultInterestBoost: 0.03,
-      workAuraBoost: 0.12,
-      workXpBoost: 0.1,
-      mineYieldBoost: 0.12,
-      mineXpBoost: 0.08,
-      bossRewardBoost: 0.1,
-      pvpRewardBoost: 0.08,
-      crateAuraBoost: 0.1,
+      spinRewardBoost: 0.22,
+      vaultInterestBoost: 0.045,
+      workAuraBoost: 0.22,
+      workXpBoost: 0.18,
+      mineYieldBoost: 0.22,
+      mineXpBoost: 0.15,
+      bossRewardBoost: 0.2,
+      pvpRewardBoost: 0.16,
+      crateAuraBoost: 0.18,
     }),
   },
   yearly: {
@@ -49,24 +49,24 @@ const PREMIUM_PLANS = Object.freeze({
     label: "Yearly",
     priceLabel: "$20/year",
     durationDays: 365,
-    dailyMultiplier: 1.4,
-    dailyRareCrates: 2,
-    cooldownReduction: 0.2,
+    dailyMultiplier: 1.75,
+    dailyRareCrates: 3,
+    cooldownReduction: 0.28,
     gardenPlots: 4,
-    chestCooldownHours: 16,
-    welcome: Object.freeze({ aura: 6500, rareCrates: 3, epicCrates: 1 }),
-    battle: Object.freeze({ maxHpBonus: 14, critChanceBonus: 0.05 }),
-    chest: Object.freeze({ aura: [1700, 2800], xp: [420, 720], rareCrates: 2, epicChance: 0.18, materials: 4 }),
+    chestCooldownHours: 12,
+    welcome: Object.freeze({ aura: 18000, rareCrates: 5, epicCrates: 2, legendaryCrates: 1 }),
+    battle: Object.freeze({ maxHpBonus: 24, critChanceBonus: 0.08 }),
+    chest: Object.freeze({ aura: [4200, 7200], xp: [900, 1500], rareCrates: 3, epicChance: 0.38, legendaryChance: 0.08, materials: 7 }),
     effects: Object.freeze({
-      spinRewardBoost: 0.18,
-      vaultInterestBoost: 0.045,
-      workAuraBoost: 0.18,
-      workXpBoost: 0.15,
-      mineYieldBoost: 0.18,
-      mineXpBoost: 0.12,
-      bossRewardBoost: 0.15,
-      pvpRewardBoost: 0.12,
-      crateAuraBoost: 0.15,
+      spinRewardBoost: 0.36,
+      vaultInterestBoost: 0.07,
+      workAuraBoost: 0.36,
+      workXpBoost: 0.3,
+      mineYieldBoost: 0.36,
+      mineXpBoost: 0.24,
+      bossRewardBoost: 0.32,
+      pvpRewardBoost: 0.26,
+      crateAuraBoost: 0.3,
     }),
   },
   lifetime: {
@@ -74,24 +74,24 @@ const PREMIUM_PLANS = Object.freeze({
     label: "Lifetime",
     priceLabel: "$50 one-time",
     durationDays: null,
-    dailyMultiplier: 1.6,
-    dailyRareCrates: 3,
-    cooldownReduction: 0.3,
+    dailyMultiplier: 2.1,
+    dailyRareCrates: 5,
+    cooldownReduction: 0.4,
     gardenPlots: 4,
-    chestCooldownHours: 12,
-    welcome: Object.freeze({ aura: 14000, rareCrates: 5, epicCrates: 2 }),
-    battle: Object.freeze({ maxHpBonus: 20, critChanceBonus: 0.07 }),
-    chest: Object.freeze({ aura: [3000, 5200], xp: [800, 1250], rareCrates: 3, epicChance: 0.35, materials: 6 }),
+    chestCooldownHours: 8,
+    welcome: Object.freeze({ aura: 45000, rareCrates: 8, epicCrates: 4, legendaryCrates: 2 }),
+    battle: Object.freeze({ maxHpBonus: 36, critChanceBonus: 0.12 }),
+    chest: Object.freeze({ aura: [9000, 15000], xp: [1900, 3200], rareCrates: 5, epicChance: 0.65, legendaryChance: 0.18, materials: 12 }),
     effects: Object.freeze({
-      spinRewardBoost: 0.25,
-      vaultInterestBoost: 0.06,
-      workAuraBoost: 0.25,
-      workXpBoost: 0.2,
-      mineYieldBoost: 0.25,
-      mineXpBoost: 0.16,
-      bossRewardBoost: 0.22,
-      pvpRewardBoost: 0.18,
-      crateAuraBoost: 0.22,
+      spinRewardBoost: 0.55,
+      vaultInterestBoost: 0.1,
+      workAuraBoost: 0.55,
+      workXpBoost: 0.45,
+      mineYieldBoost: 0.55,
+      mineXpBoost: 0.35,
+      bossRewardBoost: 0.5,
+      pvpRewardBoost: 0.4,
+      crateAuraBoost: 0.42,
     }),
   },
 });
@@ -678,6 +678,9 @@ function grantPremiumWelcomePack(user, plan, eventId) {
   }
   if (welcome.epicCrates) {
     user.crates.set("epic", (user.crates.get("epic") || 0) + welcome.epicCrates);
+  }
+  if (welcome.legendaryCrates) {
+    user.crates.set("legendary", (user.crates.get("legendary") || 0) + welcome.legendaryCrates);
   }
   grantCosmetic(user, { grantsCosmetic: { slot: "title", value: "Aurix VIP" } });
   grantCosmetic(user, { grantsCosmetic: { slot: "frame", value: "Gold Frame" } });
@@ -3240,6 +3243,10 @@ async function handlePremiumChest(interaction) {
   if (epicDropped) {
     user.crates.set("epic", (user.crates.get("epic") || 0) + 1);
   }
+  const legendaryDropped = Math.random() < (chest.legendaryChance || 0);
+  if (legendaryDropped) {
+    user.crates.set("legendary", (user.crates.get("legendary") || 0) + 1);
+  }
   user.premium.lastChestAt = new Date();
   await syncRank(user);
   await user.save();
@@ -3251,7 +3258,7 @@ async function handlePremiumChest(interaction) {
     fields: [
       { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
       { name: "XP", value: `${formatNumber(xpReward)}`, inline: true },
-      { name: "Crates", value: `${getCrateLabel("rare")} x${chest.rareCrates}${epicDropped ? ` + ${getCrateLabel("epic")} x1` : ""}`, inline: true },
+      { name: "Crates", value: `${getCrateLabel("rare")} x${chest.rareCrates}${epicDropped ? ` + ${getCrateLabel("epic")} x1` : ""}${legendaryDropped ? ` + ${getCrateLabel("legendary")} x1` : ""}`, inline: true },
       { name: "Materials", value: materialDrops.join("\n") || "None" },
       { name: "Next Chest", value: humanizeMs(getPremiumChestCooldownMs(user)), inline: true },
     ],
