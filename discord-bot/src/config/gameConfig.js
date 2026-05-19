@@ -34,18 +34,18 @@ const EFFECT_CAPS = {
 
 const RANKS = [
   { name: "Sprout", xpRequired: 0, rewardAura: 250, rewardCrates: { common: 1 } },
-  { name: "Harvester", xpRequired: 900, rewardAura: 650, rewardCrates: { common: 1 } },
-  { name: "Riftkeeper", xpRequired: 2600, rewardAura: 1100, rewardCrates: { rare: 1 } },
-  { name: "Astral Sage", xpRequired: 6200, rewardAura: 1800, rewardCrates: { rare: 1 } },
-  { name: "Mythic", xpRequired: 12500, rewardAura: 3100, rewardCrates: { epic: 1 } },
-  { name: "Ascendant", xpRequired: 22000, rewardAura: 5200, rewardCrates: { epic: 1, legendary: 1 } },
+  { name: "Harvester", xpRequired: 8000, rewardAura: 650, rewardCrates: { common: 1 } },
+  { name: "Riftkeeper", xpRequired: 30000, rewardAura: 1100, rewardCrates: { rare: 1 } },
+  { name: "Astral Sage", xpRequired: 90000, rewardAura: 1800, rewardCrates: { rare: 1 } },
+  { name: "Mythic", xpRequired: 180000, rewardAura: 3100, rewardCrates: { epic: 1 } },
+  { name: "Ascendant", xpRequired: 350000, rewardAura: 5200, rewardCrates: { epic: 1, legendary: 1 } },
 ];
 
 const SHOP_ITEMS = [
   {
     id: "lucky_charm",
     name: "Lucky Charm",
-    price: 1900,
+    price: 4200,
     type: "perk",
     description: "+8% better spin rewards.",
     effects: { spinRewardBoost: 0.08 },
@@ -53,7 +53,7 @@ const SHOP_ITEMS = [
   {
     id: "vault_key",
     name: "Vault Key",
-    price: 2900,
+    price: 6300,
     type: "perk",
     description: "+2% vault interest rate.",
     effects: { vaultInterestBoost: 0.02 },
@@ -61,7 +61,7 @@ const SHOP_ITEMS = [
   {
     id: "coinflip_gloves",
     name: "Coinflip Gloves",
-    price: 4000,
+    price: 8700,
     type: "perk",
     description: "+4% better coinflip win chance.",
     effects: { coinflipWinBoost: 0.04 },
@@ -69,7 +69,7 @@ const SHOP_ITEMS = [
   {
     id: "combat_manual",
     name: "Combat Manual",
-    price: 3600,
+    price: 8200,
     type: "skill_unlock",
     description: "Unlocks the Slash skill for PvP and bosses.",
     grantsSkill: "slash",
@@ -77,7 +77,7 @@ const SHOP_ITEMS = [
   {
     id: "guardian_core",
     name: "Guardian Core",
-    price: 5200,
+    price: 11800,
     type: "skill_unlock",
     description: "Unlocks the Guard Break skill for PvP and bosses.",
     grantsSkill: "guard_break",
@@ -85,7 +85,7 @@ const SHOP_ITEMS = [
   {
     id: "health_vial",
     name: "Health Vial",
-    price: 1500,
+    price: 3500,
     type: "combat",
     description: "Battle consumable. Restore 18 HP during a duel or boss fight.",
     battle: { effect: "heal", heal: 18 },
@@ -93,7 +93,7 @@ const SHOP_ITEMS = [
   {
     id: "smoke_bomb",
     name: "Smoke Bomb",
-    price: 1800,
+    price: 4100,
     type: "combat",
     description: "Battle consumable. Deals light damage and leaves the target exposed.",
     battle: { effect: "smoke", damage: [4, 8], exposeTurns: 2 },
@@ -101,7 +101,7 @@ const SHOP_ITEMS = [
   {
     id: "adrenaline_tonic",
     name: "Adrenaline Tonic",
-    price: 2200,
+    price: 5000,
     type: "combat",
     description: "Battle consumable. Clear bleed/exposed and boost your next attack.",
     battle: { effect: "adrenaline", critBoost: 0.22, combo: 1, clearBleed: true, clearExpose: true },
@@ -109,7 +109,7 @@ const SHOP_ITEMS = [
   {
     id: "common_crate",
     name: "Common Crate",
-    price: 1500,
+    price: 3800,
     type: "crate",
     grantsCrate: "common",
     description: "Contains aura, XP, and the occasional perk.",
@@ -117,7 +117,7 @@ const SHOP_ITEMS = [
   {
     id: "rare_crate",
     name: "Rare Crate",
-    price: 3600,
+    price: 8600,
     type: "crate",
     grantsCrate: "rare",
     description: "Higher payout and stronger drop table.",
@@ -125,7 +125,7 @@ const SHOP_ITEMS = [
   {
     id: "epic_crate",
     name: "Epic Crate",
-    price: 8500,
+    price: 20000,
     type: "crate",
     grantsCrate: "epic",
     description: "Rare progression spike in a box.",
@@ -133,7 +133,7 @@ const SHOP_ITEMS = [
   {
     id: "premium_supply_drop",
     name: "Premium Supply Drop",
-    price: 11000,
+    price: 26000,
     type: "crate",
     grantsCrate: "rare",
     premiumOnly: true,
@@ -142,7 +142,7 @@ const SHOP_ITEMS = [
   {
     id: "executive_badge",
     name: "Executive Badge",
-    price: 7800,
+    price: 18500,
     type: "perk",
     premiumOnly: true,
     description: "+10% work aura and +6% vault interest while premium is active.",
@@ -151,7 +151,7 @@ const SHOP_ITEMS = [
   {
     id: "storm_pass",
     name: "Storm Pass",
-    price: 11500,
+    price: 27000,
     type: "perk",
     premiumOnly: true,
     description: "+10% boss rewards and +8% PvP rewards while premium is active.",
@@ -160,7 +160,7 @@ const SHOP_ITEMS = [
   {
     id: "aurix_vip_title",
     name: "Aurix VIP Title",
-    price: 4000,
+    price: 9500,
     type: "cosmetic",
     premiumOnly: true,
     grantsCosmetic: { slot: "title", value: "Aurix VIP" },
@@ -169,7 +169,7 @@ const SHOP_ITEMS = [
   {
     id: "gold_profile_frame",
     name: "Gold Profile Frame",
-    price: 5600,
+    price: 13200,
     type: "cosmetic",
     premiumOnly: true,
     grantsCosmetic: { slot: "frame", value: "Gold Frame" },
@@ -178,7 +178,7 @@ const SHOP_ITEMS = [
   {
     id: "storm_nameplate",
     name: "Storm Nameplate",
-    price: 7200,
+    price: 17000,
     type: "cosmetic",
     premiumOnly: true,
     grantsCosmetic: { slot: "title", value: "Stormbound" },

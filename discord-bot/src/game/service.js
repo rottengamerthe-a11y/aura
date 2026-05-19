@@ -7,6 +7,7 @@ const { buildProfileCosmeticAttachment, FILE_NAME: PROFILE_COSMETIC_FILE } = req
 const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 
 const activeBattles = new Map();
+const pendingRankUps = new Map();
 const reminderIntervals = new WeakMap();
 const recentInteractions = [];
 const COMMAND_BUILD_ID = "aurix-premium-buffs-v19";
@@ -1559,6 +1560,48 @@ function addInventoryItem(user, id, quantity = 1) {
   entry.quantity += quantity;
 }
 
+function queueRankUpMessage(user, ranks) {
+  if (!user?.userId || !ranks?.length) {
+    return;
+  }
+  const key = `${user.guildId || "global"}:${user.userId}`;
+  const existing = pendingRankUps.get(key) || { guildId: user.guildId || null, userId: user.userId, ranks: [] };
+  existing.ranks.push(...ranks);
+  pendingRankUps.set(key, existing);
+}
+
+async function sendPendingRankUpMessages(interaction) {
+  if (!interaction?.guildId) {
+    return;
+  }
+
+  const messages = [];
+  for (const [key, entry] of pendingRankUps.entries()) {
+    if (entry.guildId && entry.guildId !== interaction.guildId) {
+      continue;
+    }
+    pendingRankUps.delete(key);
+    const latestRank = entry.ranks[entry.ranks.length - 1];
+    const rankLines = entry.ranks.map((rank) => `${getRankLabel(rank)} reward: ${formatNumber(rank.rewardAura)} aura${Object.entries(rank.rewardCrates || {}).length ? `, ${Object.entries(rank.rewardCrates).map(([crateId, amount]) => `${getCrateLabel(crateId)} x${amount}`).join(", ")}` : ""}`);
+    messages.push(buildEmbedPayload({
+      title: "Rank Up",
+      description: `<@${entry.userId}> ranked up to **${getRankLabel(latestRank)}**.`,
+      visual: "core-profile.svg",
+      fields: [
+        { name: "Unlocked Rank", value: rankLines.join("\n") },
+      ],
+    }));
+  }
+
+  for (const payload of messages) {
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp(payload).catch(() => null);
+    } else {
+      await interaction.channel?.send?.(payload).catch(() => null);
+    }
+  }
+}
+
 function setQuestSet(user) {
   if (user.quests.length > 0) {
     return;
@@ -1572,13 +1615,16 @@ async function syncRank(user) {
   const computedRank = getRankByXp(user.xp);
   user.rankIndex = computedRank;
   if (computedRank > previousRank) {
+    const rankedUp = [];
     for (let index = previousRank + 1; index <= computedRank; index += 1) {
       const rank = RANKS[index];
+      rankedUp.push(rank);
       user.aura += rank.rewardAura;
       Object.entries(rank.rewardCrates || {}).forEach(([crateId, amount]) => {
         user.crates.set(crateId, (user.crates.get(crateId) || 0) + amount);
       });
     }
+    queueRankUpMessage(user, rankedUp);
   }
 }
 
@@ -5699,7 +5745,9 @@ async function routeInteraction(interaction) {
   console.log("Aurix interaction routed:", interactionLog);
 
   if (interaction.isButton() || interaction.isStringSelectMenu()) {
-    return handleBattleComponentInteraction(interaction);
+    const result = await handleBattleComponentInteraction(interaction);
+    await sendPendingRankUpMessages(interaction);
+    return result;
   }
   if (!interaction.isChatInputCommand()) {
     return null;
@@ -5729,7 +5777,9 @@ async function routeInteraction(interaction) {
     await user.save();
   }
 
-  return handler(interaction);
+  const result = await handler(interaction);
+  await sendPendingRankUpMessages(interaction);
+  return result;
 }
 
 module.exports = {
