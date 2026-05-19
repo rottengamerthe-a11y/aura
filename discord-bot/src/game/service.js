@@ -1,7 +1,7 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
 const crypto = require("crypto");
 const { BOSSES, COLORS, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
-const { BattleSession, Clan, GuildSettings, PvpInvite, User } = require("../data/models");
+const { BattleSession, Clan, GuildSettings, PvpInvite, PvpMatchmakingQueue, User } = require("../data/models");
 const { buildClanCreateData, buildClanLeaderboardFilter, buildClanLookup, buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
 const { buildProfileCosmeticAttachment, FILE_NAME: PROFILE_COSMETIC_FILE } = require("../utils/cosmeticArt");
 const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
@@ -14,6 +14,7 @@ const COMMAND_BUILD_ID = "aurix-premium-buffs-v20";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const BATTLE_ANIMATION_DELAY_MS = 900;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
+const PVP_MATCHMAKING_TIMEOUT_MS = 10 * 60 * 1000;
 const BATTLE_GEAR_SLOTS = Object.freeze([
   { id: "tool", label: "Tool" },
   { id: "charm", label: "Charm" },
@@ -1279,6 +1280,25 @@ function buildLoadoutComponents(state) {
   return components;
 }
 
+function getBattleMirrorMessages(state) {
+  return Array.isArray(state?.messages) ? state.messages.filter((entry) => entry?.channelId && entry?.messageId) : [];
+}
+
+async function editBattleMirrorMessages(client, state, payload, skipMessageId = null) {
+  const messages = getBattleMirrorMessages(state).filter((entry) => entry.messageId !== skipMessageId);
+  await Promise.all(messages.map(async (entry) => {
+    const channel = await client.channels.fetch(entry.channelId).catch(() => null);
+    const message = await channel?.messages?.fetch?.(entry.messageId).catch(() => null);
+    if (message?.editable) {
+      await message.edit(payload).catch(() => null);
+    }
+  }));
+}
+
+function getBattleGuildIdForUser(state, userId, fallbackGuildId) {
+  return state?.playerGuildIds?.[userId] || state?.guildId || fallbackGuildId;
+}
+
 function isBattleExpired(state) {
   if (state?.phase === "invite" && state.inviteExpiresAt) {
     return Date.now() > state.inviteExpiresAt;
@@ -1327,11 +1347,17 @@ function buildPvpInviteStateFromRecord(invite) {
     challengerName: invite.challengerName,
     opponentId: invite.opponentId,
     opponentName: invite.opponentName,
+    guildId: invite.guildId,
+    playerGuildIds: {
+      [invite.challengerId]: invite.guildId,
+      [invite.opponentId]: invite.guildId,
+    },
     arena: invite.arena || pickPvpArena(),
     createdAt: invite.createdAt?.getTime ? invite.createdAt.getTime() : new Date(invite.createdAt || Date.now()).getTime(),
     inviteExpiresAt: invite.inviteExpiresAt?.getTime ? invite.inviteExpiresAt.getTime() : new Date(invite.inviteExpiresAt).getTime(),
     channelId: invite.channelId,
     messageId: invite.messageId,
+    messages: invite.channelId && invite.messageId ? [{ guildId: invite.guildId, channelId: invite.channelId, messageId: invite.messageId }] : [],
   };
 }
 
@@ -2154,6 +2180,8 @@ const HELP_SECTIONS = [
     commands: [
       { name: "/skills", description: "See unlocked battle skills and attack styles." },
       { name: "/pvp user:<player>", description: "Send a duel invite, lock a loadout, and fight another player." },
+      { name: "/pvp", description: "Join global matchmaking for a cross-server PvP opponent." },
+      { name: "/pvp mode:leave/status", description: "Leave the global queue or check your current search." },
       { name: "/boss [boss]", description: "Fight one of the available bosses." },
     ],
   },
@@ -4739,8 +4767,8 @@ function initializePvpBattleFromLoadout(state, challenger, rival) {
 async function finishBattle(interaction, state, winnerId) {
   activeBattles.delete(state.id);
   await deleteBattleSession(state.id);
-  const first = await getOrCreatePlayer(interaction.guildId, state.playerOne.id);
-  const second = state.isBoss ? null : await getOrCreatePlayer(interaction.guildId, state.playerTwo.id);
+  const first = await getOrCreatePlayer(getBattleGuildIdForUser(state, state.playerOne.id, interaction.guildId), state.playerOne.id);
+  const second = state.isBoss ? null : await getOrCreatePlayer(getBattleGuildIdForUser(state, state.playerTwo.id, interaction.guildId), state.playerTwo.id);
   const playerWon = state.playerOne.id === winnerId;
 
   if (state.isBoss) {
@@ -4755,7 +4783,7 @@ async function finishBattle(interaction, state, winnerId) {
       await applyQuestProgress(first, "bossWins", 1);
       await syncRank(first);
       await first.save();
-      return interaction.update({
+      const payload = {
         ...buildEmbedPayload({
           title: "Boss Defeated",
           description: `${formatBossDialogue(state, getBossDialogueLine(state, "defeat"))}\n\nYou beat **${state.playerTwo.name}** and earned boss rewards plus ${formatNumber(state.rewardXp)} XP.`,
@@ -4766,20 +4794,22 @@ async function finishBattle(interaction, state, winnerId) {
           ],
         }),
         components: [],
-      });
+      };
+      return interaction.update(payload);
     } else {
       first.xp = Math.max(0, first.xp - Math.floor(state.rewardXp / 3));
       first.stats.bossLosses += 1;
       await syncRank(first);
       await first.save();
-      return interaction.update({
+      const payload = {
         ...buildEmbedPayload({
           title: "Boss Fight Lost",
           description: `${formatBossDialogue(state, getBossDialogueLine(state, "victory"))}\n\nThe boss held its ground. You lost XP and can challenge again any time.`,
           visual: state.visual,
         }),
         components: [],
-      });
+      };
+      return interaction.update(payload);
     }
   }
 
@@ -4803,7 +4833,7 @@ async function finishBattle(interaction, state, winnerId) {
     await first.save();
     await second.save();
 
-    return interaction.update({
+    const payload = {
       ...buildEmbedPayload({
         title: "PvP Battle Finished",
         description: `**${state.playerOne.name}** won the duel in **${state.arena?.name || "the arena"}** and claimed ${formatNumber(auraReward)} aura plus ${formatNumber(state.rewardXp)} XP.`,
@@ -4815,7 +4845,10 @@ async function finishBattle(interaction, state, winnerId) {
         ],
       }),
       components: [],
-    });
+    };
+    await interaction.update(payload);
+    await editBattleMirrorMessages(interaction.client, state, payload, interaction.message?.id);
+    return null;
   } else {
     const effects = getCombinedEffects(second);
     const loot = rollCombatLoot("pvp");
@@ -4836,7 +4869,7 @@ async function finishBattle(interaction, state, winnerId) {
     await first.save();
     await second.save();
 
-    return interaction.update({
+    const payload = {
       ...buildEmbedPayload({
         title: "PvP Battle Finished",
         description: `**${state.playerTwo.name}** won the duel in **${state.arena?.name || "the arena"}** and claimed ${formatNumber(auraReward)} aura plus ${formatNumber(state.rewardXp)} XP.`,
@@ -4848,7 +4881,10 @@ async function finishBattle(interaction, state, winnerId) {
         ],
       }),
       components: [],
-    });
+    };
+    await interaction.update(payload);
+    await editBattleMirrorMessages(interaction.client, state, payload, interaction.message?.id);
+    return null;
   }
 }
 
@@ -4892,16 +4928,21 @@ async function advanceBattle(interaction, state, acting, defending, actionSummar
   const nextActor = state.turnId === state.playerOne.id ? state.playerOne : state.playerTwo;
   await saveBattleSession(state);
 
-  await interaction.update({
+  const resolvingPayload = {
     ...createBattleResolvingPayload(state, summary),
     components: [],
-  });
+  };
+  await interaction.update(resolvingPayload);
+  await editBattleMirrorMessages(interaction.client, state, resolvingPayload, interaction.message?.id);
   await sleep(BATTLE_ANIMATION_DELAY_MS);
 
-  return interaction.editReply({
+  const nextPayload = {
     ...createBattleEmbed(state.title, summary, state.visual, state),
     components: buildBattleComponents(state, nextActor),
-  });
+  };
+  await interaction.editReply(nextPayload);
+  await editBattleMirrorMessages(interaction.client, state, nextPayload, interaction.message?.id);
+  return null;
 }
 
 async function handleInviteButton(interaction, state, action) {
@@ -4923,8 +4964,8 @@ async function handleInviteButton(interaction, state, action) {
       return interaction.reply({ content: "Only the challenged player can accept this duel.", ephemeral: true });
     }
 
-    const challenger = await getOrCreatePlayer(interaction.guildId, state.challengerId);
-    const rival = await getOrCreatePlayer(interaction.guildId, state.opponentId);
+    const challenger = await getOrCreatePlayer(getBattleGuildIdForUser(state, state.challengerId, interaction.guildId), state.challengerId);
+    const rival = await getOrCreatePlayer(getBattleGuildIdForUser(state, state.opponentId, interaction.guildId), state.opponentId);
     await PvpInvite.deleteOne({ battleId: state.id }).catch(() => null);
     state.phase = "loadout";
     state.playerOne = createLoadoutParticipant(challenger, state.challengerName);
@@ -4976,14 +5017,17 @@ async function handleLoadoutButton(interaction, state, action) {
   if (action === "cancel") {
     activeBattles.delete(state.id);
     await deleteBattleSession(state.id);
-    return interaction.update({
+    const payload = {
       ...buildEmbedPayload({
         title: "PvP Duel Cancelled",
         description: `${interaction.user.username} cancelled the duel lobby.`,
         visual: "emblem-alert.svg",
       }),
       components: [],
-    });
+    };
+    await interaction.update(payload);
+    await editBattleMirrorMessages(interaction.client, state, payload, interaction.message?.id);
+    return null;
   }
 
   const fighter = state.playerOne.id === interaction.user.id ? state.playerOne : state.playerTwo;
@@ -4991,21 +5035,27 @@ async function handleLoadoutButton(interaction, state, action) {
 
   if (!state.playerOne.ready || !state.playerTwo.ready) {
     await saveBattleSession(state);
-    return interaction.update({
+    const payload = {
       ...createLoadoutEmbed(state, `${fighter.name} ${fighter.ready ? "locked in their loadout" : "unreadied to make changes"}.`),
       components: buildLoadoutComponents(state),
-    });
+    };
+    await interaction.update(payload);
+    await editBattleMirrorMessages(interaction.client, state, payload, interaction.message?.id);
+    return null;
   }
 
-  const challenger = await getOrCreatePlayer(interaction.guildId, state.playerOne.id);
-  const rival = await getOrCreatePlayer(interaction.guildId, state.playerTwo.id);
+  const challenger = await getOrCreatePlayer(getBattleGuildIdForUser(state, state.playerOne.id, interaction.guildId), state.playerOne.id);
+  const rival = await getOrCreatePlayer(getBattleGuildIdForUser(state, state.playerTwo.id, interaction.guildId), state.playerTwo.id);
   initializePvpBattleFromLoadout(state, challenger, rival);
   await saveBattleSession(state);
 
-  return interaction.update({
+  const payload = {
     ...createBattleEmbed("PvP Duel Started", `${state.playerOne.name} and ${state.playerTwo.name} locked in their loadouts.\nArena: **${state.arena.name}**\n${state.arena.description}`, "pvp-battle.svg", state),
     components: buildBattleComponents(state, state.playerOne),
-  });
+  };
+  await interaction.update(payload);
+  await editBattleMirrorMessages(interaction.client, state, payload, interaction.message?.id);
+  return null;
 }
 
 async function handleLoadoutSelect(interaction, state, slotId) {
@@ -5023,10 +5073,13 @@ async function handleLoadoutSelect(interaction, state, slotId) {
   fighter.ready = false;
   await saveBattleSession(state);
 
-  return interaction.update({
+  const payload = {
     ...createLoadoutEmbed(state, `${fighter.name} updated their ${slotId} slot.`),
     components: buildLoadoutComponents(state),
-  });
+  };
+  await interaction.update(payload);
+  await editBattleMirrorMessages(interaction.client, state, payload, interaction.message?.id);
+  return null;
 }
 
 async function handleBattleButton(interaction, state, action) {
@@ -5114,6 +5167,19 @@ async function handleBattleComponentInteraction(interaction) {
   state.lastActionAt = Date.now();
   await saveBattleSession(state);
 
+  if (scope === "invite" && state.phase !== "invite") {
+    return interaction.reply({ content: "That invite is no longer active.", ephemeral: true });
+  }
+  if ((scope === "loadout" || scope === "gear") && state.phase !== "loadout") {
+    return interaction.reply({ content: "That loadout lobby is no longer active.", ephemeral: true });
+  }
+  if (scope === "item" && state.phase !== "battle") {
+    return interaction.reply({ content: "That battle has not started yet.", ephemeral: true });
+  }
+  if (!["invite", "loadout", "gear", "item"].includes(scope) && state.phase !== "battle") {
+    return interaction.reply({ content: "That battle has not started yet.", ephemeral: true });
+  }
+
   if (interaction.isButton()) {
     if (scope === "invite") {
       return handleInviteButton(interaction, state, parts[0]);
@@ -5136,11 +5202,155 @@ async function handleBattleComponentInteraction(interaction) {
   return interaction.reply({ content: "That action is not supported for this battle.", ephemeral: true });
 }
 
+async function pruneExpiredPvpQueue() {
+  await PvpMatchmakingQueue.deleteMany({ expiresAt: { $lte: new Date() } }).catch(() => null);
+}
+
+async function findQueuedPvpForUser(userId) {
+  await pruneExpiredPvpQueue();
+  return PvpMatchmakingQueue.findOne({ userId }).lean();
+}
+
+async function findOpenPvpQueueEntry(userId) {
+  await pruneExpiredPvpQueue();
+  return PvpMatchmakingQueue.findOne({ userId: { $ne: userId }, expiresAt: { $gt: new Date() } }).sort({ joinedAt: 1 }).lean();
+}
+
+async function leavePvpQueue(interaction) {
+  const result = await PvpMatchmakingQueue.deleteOne({ userId: interaction.user.id });
+  const description = result.deletedCount
+    ? "You left the global PvP matchmaking queue."
+    : "You are not currently in the global PvP matchmaking queue.";
+  return interaction.reply({ ...buildEmbedPayload({ title: "PvP Matchmaking", description, visual: "emblem-pvp.svg" }), ephemeral: true });
+}
+
+async function showPvpQueueStatus(interaction) {
+  const entry = await findQueuedPvpForUser(interaction.user.id);
+  if (!entry) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "PvP Matchmaking", description: "You are not queued. Use `/pvp` with no opponent to search globally.", visual: "emblem-pvp.svg" }), ephemeral: true });
+  }
+  const expiresAt = entry.expiresAt?.getTime ? entry.expiresAt.getTime() : new Date(entry.expiresAt).getTime();
+  return interaction.reply({
+    ...buildEmbedPayload({
+      title: "PvP Matchmaking",
+      description: `You are searching for a global PvP opponent. Queue expires in ${humanizeMs(Math.max(0, expiresAt - Date.now()))}.`,
+      visual: "emblem-pvp.svg",
+    }),
+    ephemeral: true,
+  });
+}
+
+async function startMatchedPvp(interaction, queuedEntry, currentUser) {
+  await interaction.deferReply();
+  const first = await getOrCreatePlayer(queuedEntry.guildId, queuedEntry.userId);
+  const second = await getOrCreatePlayer(interaction.guildId, currentUser.id);
+  if (isOnActiveExpedition(first) || isOnActiveExpedition(second)) {
+    await PvpMatchmakingQueue.deleteOne({ userId: queuedEntry.userId }).catch(() => null);
+    return interaction.editReply(buildEmbedPayload({ title: "Player Away", description: "The matched player is currently on an expedition, so matchmaking skipped that entry. Try `/pvp` again to keep searching.", visual: "emblem-alert.svg" }));
+  }
+
+  const battleId = crypto.randomUUID();
+  const state = {
+    id: battleId,
+    phase: "loadout",
+    isBoss: false,
+    matchmade: true,
+    guildId: interaction.guildId,
+    playerGuildIds: {
+      [queuedEntry.userId]: queuedEntry.guildId,
+      [currentUser.id]: interaction.guildId,
+    },
+    arena: pickPvpArena(),
+    createdAt: Date.now(),
+    lastActionAt: Date.now(),
+    playerOne: createLoadoutParticipant(first, queuedEntry.displayName),
+    playerTwo: createLoadoutParticipant(second, currentUser.username),
+    messages: [],
+  };
+
+  const payload = {
+    ...createLoadoutEmbed(state, `${queuedEntry.displayName} and ${currentUser.username} matched through the global PvP queue. Both fighters can choose gear and ready up from their own battle message.`),
+    components: buildLoadoutComponents(state),
+  };
+
+  let firstMessage = null;
+  if (queuedEntry.channelId !== interaction.channelId) {
+    const firstChannel = await interaction.client.channels.fetch(queuedEntry.channelId).catch(() => null);
+    firstMessage = await firstChannel?.send?.(payload).catch(() => null);
+    if (!firstMessage) {
+      await PvpMatchmakingQueue.deleteOne({ userId: queuedEntry.userId }).catch(() => null);
+      return interaction.editReply(buildEmbedPayload({ title: "PvP Matchmaking", description: "The oldest queued fighter could not be reached, so they were removed from the queue. Use `/pvp` again to search for the next opponent.", visual: "emblem-alert.svg" }));
+    }
+    state.messages.push({ guildId: queuedEntry.guildId, channelId: firstMessage.channelId, messageId: firstMessage.id });
+  }
+
+  const secondMessage = await interaction.editReply(payload);
+  state.messages.push({ guildId: interaction.guildId, channelId: secondMessage.channelId, messageId: secondMessage.id });
+
+  await PvpMatchmakingQueue.deleteMany({ userId: { $in: [queuedEntry.userId, currentUser.id] } }).catch(() => null);
+  activeBattles.set(battleId, state);
+  await saveBattleSession(state);
+  return secondMessage;
+}
+
+async function joinPvpQueue(interaction) {
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  if (isOnActiveExpedition(user)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Away On Expedition", description: "You cannot join PvP matchmaking while your character is away. Use /expedition status.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  if (findBattleForUser(interaction.user.id)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "PvP Busy", description: "You are already in a pending or active duel.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  if (await findQueuedPvpForUser(interaction.user.id)) {
+    return showPvpQueueStatus(interaction);
+  }
+
+  const opponent = await findOpenPvpQueueEntry(interaction.user.id);
+  if (opponent && !findBattleForUser(opponent.userId)) {
+    return startMatchedPvp(interaction, opponent, interaction.user);
+  }
+
+  await PvpMatchmakingQueue.findOneAndUpdate(
+    { userId: interaction.user.id },
+    {
+      $set: {
+        userId: interaction.user.id,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        displayName: interaction.user.username,
+        joinedAt: new Date(),
+        expiresAt: new Date(Date.now() + PVP_MATCHMAKING_TIMEOUT_MS),
+      },
+    },
+    { upsert: true }
+  );
+
+  return interaction.reply({
+    ...buildEmbedPayload({
+      title: "Global PvP Matchmaking",
+      description: `${interaction.user.username} entered the global PvP queue. I will match you with the next available fighter across servers.\n\nQueue expires in ${humanizeMs(PVP_MATCHMAKING_TIMEOUT_MS)}. Use \`/pvp mode:leave\` to cancel.`,
+      visual: "pvp-challenge.svg",
+    }),
+  });
+}
+
 async function handlePvp(interaction) {
-  const opponent = interaction.options.getUser("user", true);
+  const mode = interaction.options.getString("mode");
+  if (mode === "leave") {
+    return leavePvpQueue(interaction);
+  }
+  if (mode === "status") {
+    return showPvpQueueStatus(interaction);
+  }
+
+  const opponent = interaction.options.getUser("user");
+  if (!opponent) {
+    return joinPvpQueue(interaction);
+  }
   if (opponent.id === interaction.user.id || opponent.bot) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Invalid Opponent", description: "Choose another human player for PvP.", visual: "emblem-pvp.svg" }), ephemeral: true });
   }
+  await PvpMatchmakingQueue.deleteMany({ userId: { $in: [interaction.user.id, opponent.id] } }).catch(() => null);
   const challenger = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const rival = await getOrCreatePlayer(interaction.guildId, opponent.id);
   if (isOnActiveExpedition(challenger) || isOnActiveExpedition(rival)) {
@@ -5160,6 +5370,11 @@ async function handlePvp(interaction) {
     challengerName: interaction.user.username,
     opponentId: opponent.id,
     opponentName: opponent.username,
+    guildId: interaction.guildId,
+    playerGuildIds: {
+      [interaction.user.id]: interaction.guildId,
+      [opponent.id]: interaction.guildId,
+    },
     arena: pickPvpArena(),
     createdAt: Date.now(),
     lastActionAt: Date.now(),
@@ -5180,6 +5395,7 @@ async function handlePvp(interaction) {
 
   state.channelId = message.channelId;
   state.messageId = message.id;
+  state.messages = [{ guildId: interaction.guildId, channelId: message.channelId, messageId: message.id }];
   await PvpInvite.findOneAndUpdate(
     { battleId },
     {
@@ -5995,7 +6211,9 @@ function buildCommands() {
     new SlashCommandBuilder().setName("quests").setDescription("View your daily quests."),
     new SlashCommandBuilder().setName("crate").setDescription("Open a crate.").addStringOption((option) => option.setName("type").setDescription("Crate type").setRequired(true).addChoices({ name: "common", value: "common" }, { name: "rare", value: "rare" }, { name: "epic", value: "epic" }, { name: "legendary", value: "legendary" })),
     new SlashCommandBuilder().setName("skills").setDescription("View unlocked combat skills and attack styles."),
-    new SlashCommandBuilder().setName("pvp").setDescription("Invite another player into a loadout-based interactive battle.").addUserOption((option) => option.setName("user").setDescription("Opponent").setRequired(true)),
+    new SlashCommandBuilder().setName("pvp").setDescription("Challenge a player or join global PvP matchmaking.")
+      .addUserOption((option) => option.setName("user").setDescription("Optional direct opponent"))
+      .addStringOption((option) => option.setName("mode").setDescription("Global matchmaking control").addChoices({ name: "join", value: "join" }, { name: "leave", value: "leave" }, { name: "status", value: "status" })),
     new SlashCommandBuilder().setName("boss").setDescription("Fight a boss.").addStringOption((option) => option.setName("boss").setDescription("Boss id").addChoices({ name: "ember", value: "ember" }, { name: "oracle", value: "oracle" }, { name: "warden", value: "warden" }, { name: "codex", value: "codex" })),
     new SlashCommandBuilder().setName("leaderboard").setDescription("View top players and clans.").addStringOption((option) => option.setName("category").setDescription("Leaderboard type").setRequired(true).addChoices({ name: "aura", value: "aura" }, { name: "vault", value: "vault" }, { name: "xp", value: "xp" }, { name: "prestige", value: "prestige" }, { name: "clans", value: "clans" })).addStringOption((option) => option.setName("scope").setDescription("Global or this server only").addChoices({ name: "global", value: "global" }, { name: "server", value: "server" })),
     new SlashCommandBuilder().setName("premium").setDescription("View your premium status."),
