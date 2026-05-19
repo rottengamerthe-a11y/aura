@@ -102,8 +102,8 @@ const PROPERTY_TYPES = Object.freeze({
   aura_mine: {
     id: "aura_mine",
     name: "Aura Mine",
-    cost: 18000,
-    upgradeBaseCost: 9000,
+    cost: 24000,
+    upgradeBaseCost: 13000,
     hourlyAura: 240,
     maxLevel: 5,
     description: "Generates claimable aura while you are away.",
@@ -111,8 +111,8 @@ const PROPERTY_TYPES = Object.freeze({
   tavern: {
     id: "tavern",
     name: "Moonlit Tavern",
-    cost: 26000,
-    upgradeBaseCost: 13000,
+    cost: 34000,
+    upgradeBaseCost: 18000,
     hourlyAura: 170,
     hourlyXp: 55,
     maxLevel: 5,
@@ -121,8 +121,8 @@ const PROPERTY_TYPES = Object.freeze({
   crystal_lab: {
     id: "crystal_lab",
     name: "Crystal Lab",
-    cost: 42000,
-    upgradeBaseCost: 21000,
+    cost: 56000,
+    upgradeBaseCost: 29000,
     hourlyAura: 120,
     materialChance: 0.35,
     maxLevel: 4,
@@ -1021,7 +1021,7 @@ function setGearDurability(user, gearId, value) {
 }
 
 function getForgeUpgradeCost(level) {
-  return 2500 + level * 2200;
+  return 4000 + level * 3200;
 }
 
 function getForgeRepairCost(user, gearId) {
@@ -2804,7 +2804,7 @@ function getProperty(type) {
 }
 
 function getPropertyUpgradeCost(config, level) {
-  return config.upgradeBaseCost * level;
+  return Math.floor(config.upgradeBaseCost * level * (1 + (level - 1) * 0.35));
 }
 
 function calculatePropertyClaim(user, type) {
@@ -3434,7 +3434,7 @@ async function handleRank(interaction) {
 async function handlePrestige(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const atCap = user.rankIndex === RANKS.length - 1;
-  const auraCost = 10000 + user.prestige * 2500;
+  const auraCost = 18000 + user.prestige * 5000;
   if (!atCap || user.aura < auraCost) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Prestige Locked", description: `Reach **${getRankLabel(RANKS[RANKS.length - 1])}** and hold **${formatNumber(auraCost)} aura** to prestige.`, visual: "emblem-help.svg" }), ephemeral: true });
   }

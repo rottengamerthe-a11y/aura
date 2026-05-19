@@ -34,11 +34,11 @@ const EFFECT_CAPS = {
 
 const RANKS = [
   { name: "Sprout", xpRequired: 0, rewardAura: 250, rewardCrates: { common: 1 } },
-  { name: "Harvester", xpRequired: 400, rewardAura: 650, rewardCrates: { common: 1 } },
-  { name: "Riftkeeper", xpRequired: 1200, rewardAura: 1100, rewardCrates: { rare: 1 } },
-  { name: "Astral Sage", xpRequired: 2800, rewardAura: 1800, rewardCrates: { rare: 1 } },
-  { name: "Mythic", xpRequired: 5600, rewardAura: 3100, rewardCrates: { epic: 1 } },
-  { name: "Ascendant", xpRequired: 9500, rewardAura: 5200, rewardCrates: { epic: 1, legendary: 1 } },
+  { name: "Harvester", xpRequired: 900, rewardAura: 650, rewardCrates: { common: 1 } },
+  { name: "Riftkeeper", xpRequired: 2600, rewardAura: 1100, rewardCrates: { rare: 1 } },
+  { name: "Astral Sage", xpRequired: 6200, rewardAura: 1800, rewardCrates: { rare: 1 } },
+  { name: "Mythic", xpRequired: 12500, rewardAura: 3100, rewardCrates: { epic: 1 } },
+  { name: "Ascendant", xpRequired: 22000, rewardAura: 5200, rewardCrates: { epic: 1, legendary: 1 } },
 ];
 
 const SHOP_ITEMS = [
@@ -464,13 +464,13 @@ const QUEST_TEMPLATES = [
 ];
 
 const COOLDOWNS = {
-  spinMs: 4 * 60 * 1000,
-  coinflipMs: 2 * 60 * 1000,
-  workMs: 12 * 60 * 1000,
+  spinMs: 6 * 60 * 1000,
+  coinflipMs: 3 * 60 * 1000,
+  workMs: 15 * 60 * 1000,
   robMs: 20 * 60 * 1000,
-  mineMs: 10 * 60 * 1000,
-  bossMs: 15 * 60 * 1000,
-  authorityMs: 10 * 60 * 1000,
+  mineMs: 12 * 60 * 1000,
+  bossMs: 20 * 60 * 1000,
+  authorityMs: 15 * 60 * 1000,
   dailyMs: 24 * 60 * 60 * 1000,
 };
 
