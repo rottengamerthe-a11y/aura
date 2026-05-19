@@ -405,6 +405,19 @@ const BOSSES = [
     rewardAura: 1200,
     rewardXp: 320,
     visual: "boss-ember.svg",
+    dialogue: {
+      intro: ["Kneel, little spark. I will teach you what fire remembers."],
+      wounded: ["Good. Make this worth the heat."],
+      enrage: ["Ash or glory. There is no third ending."],
+      victory: ["Your courage burns bright. Briefly."],
+      defeat: ["The flame bows... but it does not die."],
+      intent: {
+        crush: ["I will hammer you into cinders."],
+        shatter: ["Hide behind guard. I love the sound it makes breaking."],
+        mark: ["There. I see where you crack."],
+        surge: ["The furnace opens. Try to survive the next breath."],
+      },
+    },
     loot: {
       crateChance: { common: 0.35, rare: 0.08 },
       materials: [
@@ -421,6 +434,19 @@ const BOSSES = [
     rewardAura: 1850,
     rewardXp: 470,
     visual: "boss-oracle.svg",
+    dialogue: {
+      intro: ["Your defeat has already happened. We are only reaching it."],
+      wounded: ["A strange branch. You were meant to fall sooner."],
+      enrage: ["Static becomes storm. Prediction becomes sentence."],
+      victory: ["The future corrected itself."],
+      defeat: ["Impossible data... beautiful error."],
+      intent: {
+        crush: ["The pattern ends with impact."],
+        shatter: ["Your defense is a solved equation."],
+        mark: ["Signal found. Weakness marked."],
+        surge: ["I gather the storm between seconds."],
+      },
+    },
     loot: {
       crateChance: { common: 0.3, rare: 0.14 },
       materials: [
@@ -437,6 +463,19 @@ const BOSSES = [
     rewardAura: 2850,
     rewardXp: 680,
     visual: "boss-warden.svg",
+    dialogue: {
+      intro: ["Unauthorized soul detected. The vault will close around you."],
+      wounded: ["You dent the door. You do not own what lies behind it."],
+      enrage: ["Lockdown absolute. Mercy permission revoked."],
+      victory: ["Access denied."],
+      defeat: ["Vault seal broken... claim what you can carry."],
+      intent: {
+        crush: ["Security weight descending."],
+        shatter: ["Defensive posture logged. Countermeasure deployed."],
+        mark: ["Marking breach point."],
+        surge: ["Core locks overcharging."],
+      },
+    },
     loot: {
       crateChance: { common: 0.2, rare: 0.22 },
       materials: [
@@ -453,6 +492,19 @@ const BOSSES = [
     rewardAura: 4200,
     rewardXp: 980,
     visual: "boss-codex.svg",
+    dialogue: {
+      intro: ["I have archived a thousand heroes. State your final version."],
+      wounded: ["Revision noted. You are becoming interesting."],
+      enrage: ["Protocol PRIME: erase the anomaly."],
+      victory: ["Entry complete. Outcome: erased."],
+      defeat: ["Record corrupted... write your name over mine."],
+      intent: {
+        crush: ["Executing terminal force."],
+        shatter: ["Your guard is deprecated."],
+        mark: ["Weakness indexed."],
+        surge: ["Compiling power. Do not interrupt."],
+      },
+    },
     loot: {
       crateChance: { rare: 0.32, epic: 0.1 },
       materials: [

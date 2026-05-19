@@ -3869,6 +3869,73 @@ function formatCombatLog(description) {
     .join("\n");
 }
 
+function describeActionMotion(attacker, defender, action, state) {
+  const actionLabel = action === "skill"
+    ? (attacker.skill?.name || "a skill")
+    : (getBattleAction(action)?.label || BATTLE_SPECIAL_ACTIONS[action]?.label || "Attack");
+  const arenaText = state?.arena && !state.isBoss ? ` across ${state.arena.name}` : "";
+  const motions = {
+    strike: `${attacker.name} steps in${arenaText}, forcing ${defender.name} to answer a direct strike.`,
+    attack: `${attacker.name} closes distance${arenaText}, turning the exchange into a head-on clash.`,
+    skill: `${attacker.name} commits to ${actionLabel}, trying to take control before ${defender.name} can reset.`,
+    finish: `${attacker.name} hunts for the finish, pressing ${defender.name} with everything built up so far.`,
+    heavy: `${attacker.name} throws their weight forward, a heavy swing crashing toward ${defender.name}.`,
+    hook: `${attacker.name} cuts inside with a hook, trying to break ${defender.name}'s rhythm.`,
+    feint: `${attacker.name} darts in with a feint, baiting ${defender.name} into the wrong guard.`,
+    pierce: `${attacker.name} drives straight through the center line, testing ${defender.name}'s defense.`,
+    charge: `${attacker.name} plants their feet and gathers power while ${defender.name} feels the next hit coming.`,
+    disorient: `${attacker.name} surges in at an awkward angle, trying to scramble ${defender.name}'s footing.`,
+    blitz: `${attacker.name} bursts forward, chaining quick hits before ${defender.name} can breathe.`,
+    guard: `${attacker.name} braces behind their guard, inviting ${defender.name} to overcommit.`,
+    sidestep: `${attacker.name} slips off-line, making ${defender.name} swing at empty space.`,
+  };
+  return motions[action] || `${attacker.name} attacks ${defender.name}.`;
+}
+
+function describeDamagePressure(attacker, defender, result = {}) {
+  if (result.damage > 0 && defender.hp > 0) {
+    return `${defender.name} is still standing at ${defender.hp}/${defender.maxHp} HP, but ${attacker.name} has momentum.`;
+  }
+  if (result.damage > 0 && defender.hp <= 0) {
+    return `${defender.name} drops under the pressure.`;
+  }
+  if (result.counterDamage > 0) {
+    return `${attacker.name} felt that counter and is now at ${attacker.hp}/${attacker.maxHp} HP.`;
+  }
+  if (["guard", "sidestep", "charge"].includes(result.action)) {
+    return `${defender.name} has to respect the setup before the next swing.`;
+  }
+  return `${defender.name} survives the exchange and looks for a reply.`;
+}
+
+function narrateBattleAction(attacker, defender, action, result, state) {
+  const lines = [describeActionMotion(attacker, defender, action, state), result.text];
+  const pressure = describeDamagePressure(attacker, defender, { ...result, action });
+  if (pressure) {
+    lines.push(pressure);
+  }
+  return lines.filter(Boolean).join("\n");
+}
+
+function describeIncomingPvpPressure(state) {
+  if (state.isBoss) {
+    return "";
+  }
+  const attacker = state.turnId === state.playerOne.id ? state.playerOne : state.playerTwo;
+  const defender = attacker.id === state.playerOne.id ? state.playerTwo : state.playerOne;
+  const statuses = compactBattleStatuses(attacker);
+  const threat = attacker.chargeStacks > 0
+    ? `${attacker.name} is charged and looking for a punishing hit.`
+    : attacker.combo > 0
+      ? `${attacker.name} has combo ${attacker.combo} and is pressing the advantage.`
+      : `${attacker.name} is in range and ready to attack.`;
+  return [
+    `${threat}`,
+    `${defender.name} is under pressure now. Pick a response before the next hit lands.`,
+    `Attacker state: ${statuses}`,
+  ].join("\n");
+}
+
 function chooseBossIntent(state) {
   const player = state.playerOne;
   const boss = state.playerTwo;
@@ -3917,6 +3984,54 @@ function getBossThemeColor(bossId) {
   return colors[bossId] || 0x2f3136;
 }
 
+function getBossConfigFromFighter(boss) {
+  const bossId = String(boss?.id || "").replace(/^boss:/, "");
+  return BOSSES.find((entry) => entry.id === bossId) || null;
+}
+
+function pickDialogueLine(lines, seed = 0) {
+  if (!Array.isArray(lines) || !lines.length) {
+    return "";
+  }
+  return lines[Math.abs(seed) % lines.length];
+}
+
+function getBossDialogueLine(state, bucket, detail) {
+  const boss = state.playerTwo;
+  const config = getBossConfigFromFighter(boss);
+  const dialogue = config?.dialogue;
+  if (!dialogue) {
+    return "";
+  }
+  const source = bucket === "intent" ? dialogue.intent?.[detail] : dialogue[bucket];
+  const seedText = `${boss.id}:${bucket}:${detail || ""}`;
+  const seed = [...seedText].reduce((total, char) => total + char.charCodeAt(0), 0)
+    + (state.exchangeCount || 0)
+    + (boss.hp || 0)
+    + (state.playerOne?.hp || 0);
+  return pickDialogueLine(source, seed);
+}
+
+function getCurrentBossDialogue(state) {
+  const boss = state.playerTwo;
+  const bossHpRatio = boss.maxHp <= 0 ? 1 : boss.hp / boss.maxHp;
+  if ((state.exchangeCount || 0) === 0) {
+    return getBossDialogueLine(state, "intro");
+  }
+  if (bossHpRatio <= 0.25) {
+    return getBossDialogueLine(state, "enrage") || getBossDialogueLine(state, "wounded");
+  }
+  if (bossHpRatio <= 0.55) {
+    return getBossDialogueLine(state, "wounded");
+  }
+  const intent = getBossIntent(state);
+  return getBossDialogueLine(state, "intent", intent.id);
+}
+
+function formatBossDialogue(state, line = getCurrentBossDialogue(state)) {
+  return line ? `**${state.playerTwo.name}:** "${line}"` : "The boss says nothing. That might be worse.";
+}
+
 function createBossBattlePayload(description, visual, state) {
   const player = state.playerOne;
   const boss = state.playerTwo;
@@ -3962,6 +4077,11 @@ function createBossBattlePayload(description, visual, state) {
         inline: false,
       },
       {
+        name: "\u{1F5E3}\uFE0F Boss Dialogue",
+        value: formatBossDialogue(state),
+        inline: false,
+      },
+      {
         name: "\u{1F4DC} Combat Log",
         value: formatCombatLog(description),
         inline: false,
@@ -3996,7 +4116,9 @@ function formatBattleSnapshot(fighter) {
 function createBattleResolvingPayload(state, summary) {
   const playerOne = state.playerOne;
   const playerTwo = state.playerTwo;
-  const nextName = state.turnId === playerOne.id ? playerOne.name : playerTwo.name;
+  const nextActor = state.turnId === playerOne.id ? playerOne : playerTwo;
+  const nextDefender = nextActor.id === playerOne.id ? playerTwo : playerOne;
+  const nextName = nextActor.name;
   const title = state.isBoss ? "Boss Turn Resolving" : "PvP Turn Resolving";
   const description = [
     "\u25B6 Action locked in",
@@ -4011,7 +4133,13 @@ function createBattleResolvingPayload(state, summary) {
       { name: playerOne.name, value: formatBattleSnapshot(playerOne), inline: true },
       { name: playerTwo.name, value: formatBattleSnapshot(playerTwo), inline: true },
       { name: "Last Exchange", value: formatCombatLog(summary), inline: false },
-      { name: "Next Turn", value: `\`${nextName}\` is preparing their move.`, inline: false }
+      {
+        name: "Next Turn",
+        value: state.isBoss
+          ? `\`${nextName}\` is preparing their move.`
+          : `\`${nextName}\` is moving in on \`${nextDefender.name}\`. The next action is an incoming attack, guard, or setup.`,
+        inline: false,
+      }
     )
     .setFooter({ text: "Aurix combat replay \u2022 resolving turn" })
     .setTimestamp();
@@ -4411,7 +4539,12 @@ function resolveBossIntent(state) {
   }
 
   return {
-    text: `${boss.name} used **${intent.label}**. ${result.text}${reaction.length ? `\n${reaction.join(" ")}` : ""}`,
+    text: [
+      formatBossDialogue(state, getBossDialogueLine(state, "intent", intent.id)),
+      `${boss.name} used **${intent.label}**.`,
+      narrateBattleAction(boss, player, intent.action, result, state),
+      reaction.join(" "),
+    ].filter(Boolean).join("\n"),
     damage: result.damage,
   };
 }
@@ -4484,6 +4617,14 @@ function createBattleEmbed(title, description, visual, state) {
     extraFields.push({
       name: "Arena",
       value: `${state.arena.name}\n${state.arena.description}`,
+      inline: false,
+    });
+  }
+  const incomingPressure = describeIncomingPvpPressure(state);
+  if (incomingPressure) {
+    extraFields.push({
+      name: "Incoming Pressure",
+      value: incomingPressure,
       inline: false,
     });
   }
@@ -4617,7 +4758,7 @@ async function finishBattle(interaction, state, winnerId) {
       return interaction.update({
         ...buildEmbedPayload({
           title: "Boss Defeated",
-          description: `You beat **${state.playerTwo.name}** and earned boss rewards plus ${formatNumber(state.rewardXp)} XP.`,
+          description: `${formatBossDialogue(state, getBossDialogueLine(state, "defeat"))}\n\nYou beat **${state.playerTwo.name}** and earned boss rewards plus ${formatNumber(state.rewardXp)} XP.`,
           visual: state.visual,
           fields: [
             { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
@@ -4634,7 +4775,7 @@ async function finishBattle(interaction, state, winnerId) {
       return interaction.update({
         ...buildEmbedPayload({
           title: "Boss Fight Lost",
-          description: "The boss held its ground. You lost XP and can challenge again any time.",
+          description: `${formatBossDialogue(state, getBossDialogueLine(state, "victory"))}\n\nThe boss held its ground. You lost XP and can challenge again any time.`,
           visual: state.visual,
         }),
         components: [],
@@ -4914,7 +5055,8 @@ async function handleBattleButton(interaction, state, action) {
   const playerResult = runTurn(acting, defending, action, state);
   applyBattleActionCooldown(state, acting, action);
   trackBattleTurn(acting);
-  summary = summary ? `${summary}\n${playerResult.text}` : playerResult.text;
+  const actionText = narrateBattleAction(acting, defending, action, playerResult, state);
+  summary = summary ? `${summary}\n${actionText}` : actionText;
   return advanceBattle(interaction, state, acting, defending, summary);
 }
 
@@ -4936,7 +5078,12 @@ async function handleBattleItemSelect(interaction, state) {
     return interaction.reply({ content: itemResult.error, ephemeral: true });
   }
 
-  summary = summary ? `${summary}\n${itemResult.text}` : itemResult.text;
+  const itemText = [
+    `${acting.name} reaches into their battle kit while ${defending.name} tries to close the gap.`,
+    itemResult.text,
+    defending.hp > 0 ? `${defending.name} stays in the fight at ${defending.hp}/${defending.maxHp} HP.` : `${defending.name} is knocked out by the item play.`,
+  ].join("\n");
+  summary = summary ? `${summary}\n${itemText}` : itemText;
   return advanceBattle(interaction, state, acting, defending, summary);
 }
 
