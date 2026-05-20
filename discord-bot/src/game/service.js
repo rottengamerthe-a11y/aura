@@ -1710,8 +1710,8 @@ function getCombinedEffects(user) {
 function ensureInventoryEntry(user, id) {
   let entry = user.inventory.find((item) => item.id === id);
   if (!entry) {
-    entry = { id, quantity: 0 };
-    user.inventory.push(entry);
+    user.inventory.push({ id, quantity: 0 });
+    entry = user.inventory[user.inventory.length - 1];
   }
   return entry;
 }
@@ -1719,6 +1719,21 @@ function ensureInventoryEntry(user, id) {
 function addInventoryItem(user, id, quantity = 1) {
   const entry = ensureInventoryEntry(user, id);
   entry.quantity += quantity;
+}
+
+function normalizeInventoryState(user) {
+  let changed = false;
+
+  user.inventory.forEach((entry) => {
+    if (getGearItem(entry.id) && entry.quantity <= 0) {
+      entry.quantity = 1;
+      changed = true;
+    }
+  });
+
+  if (changed) {
+    user.markModified("inventory");
+  }
 }
 
 function grantMicrotransactionProduct(user, product, quantity = 1) {
@@ -1866,6 +1881,7 @@ async function getOrCreatePlayer(guildId, userId) {
     user.clanMemberships.set(guildId, user.clanId);
   }
   user.equippedGear = user.equippedGear || { tool: null, charm: null, relic: null };
+  normalizeInventoryState(user);
   normalizeProgressionSystems(user);
   if (!user.lastVaultInterestAt) {
     user.lastVaultInterestAt = new Date();
