@@ -516,6 +516,13 @@ function getPaddleFirstPriceId(data) {
   return item?.price?.id || item?.price_id || item?.priceId || null;
 }
 
+function getPaddleLineItems(data) {
+  return [
+    ...(Array.isArray(data?.items) ? data.items : []),
+    ...(Array.isArray(data?.details?.line_items) ? data.details.line_items : []),
+  ];
+}
+
 function getPaddlePlan(data, existingUser = null) {
   const pricePlan = getPaddlePlanByPriceId(getPaddleFirstPriceId(data));
   if (pricePlan) {
@@ -525,8 +532,20 @@ function getPaddlePlan(data, existingUser = null) {
   return getPremiumPlan(existingUser?.billing?.paddlePlanId) || getPremiumPlan(existingUser?.premium?.source);
 }
 
-function getPaddleMicrotransactionProduct(data) {
-  return getMicrotransactionProductByPriceId(getPaddleFirstPriceId(data));
+function getPaddleItemPriceId(item) {
+  return item?.price?.id || item?.price_id || item?.priceId || null;
+}
+
+function getPaddleItemQuantity(item) {
+  const rawQuantity = item?.quantity || item?.qty || item?.quantity_ordered;
+  const quantity = Number(rawQuantity);
+  return Number.isFinite(quantity) && quantity > 0 ? Math.floor(quantity) : 1;
+}
+
+function getPaddleMicrotransactionPurchase(data) {
+  const lineItem = getPaddleLineItems(data).find((item) => getMicrotransactionProductByPriceId(getPaddleItemPriceId(item)));
+  const product = getMicrotransactionProductByPriceId(getPaddleItemPriceId(lineItem) || getPaddleFirstPriceId(data));
+  return product ? { product, quantity: getPaddleItemQuantity(lineItem) } : null;
 }
 
 function getPaddleBillingPeriodEnd(data) {
@@ -599,7 +618,9 @@ async function applyPaddleWebhookEvent(event, eventId = null) {
   const previousPlanId = user.premium?.source || null;
   const wasPremiumActive = isPremiumActive(user);
   const plan = getPaddlePlan(data, user);
-  const microtransactionProduct = getPaddleMicrotransactionProduct(data);
+  const microtransactionPurchase = getPaddleMicrotransactionPurchase(data);
+  const microtransactionProduct = microtransactionPurchase?.product || null;
+  const microtransactionQuantity = microtransactionPurchase?.quantity || 1;
   const resolvedEventId = eventId || event?.event_id || event?.eventId || null;
   mergePaddleBilling(user, data, resolvedEventId, plan);
 
@@ -617,7 +638,7 @@ async function applyPaddleWebhookEvent(event, eventId = null) {
       };
     }
 
-    const grantSummary = grantMicrotransactionProduct(user, microtransactionProduct);
+    const grantSummary = grantMicrotransactionProduct(user, microtransactionProduct, microtransactionQuantity);
     if (purchaseGrantId) {
       user.billing.paddleGrantedTransactionIds.push(purchaseGrantId);
       user.billing.paddleGrantedTransactionIds = user.billing.paddleGrantedTransactionIds.slice(-50);
@@ -629,6 +650,7 @@ async function applyPaddleWebhookEvent(event, eventId = null) {
       userId: user.userId,
       productId: microtransactionProduct.id,
       productLabel: microtransactionProduct.label,
+      quantity: microtransactionQuantity,
       eventType,
       grantSummary,
       announcementGuildId: customData.guildId || customData.guild_id || user.botContext?.lastGuildId || user.reminders?.guildId || user.guildId || null,
@@ -1673,38 +1695,43 @@ function addInventoryItem(user, id, quantity = 1) {
   entry.quantity += quantity;
 }
 
-function grantMicrotransactionProduct(user, product) {
+function grantMicrotransactionProduct(user, product, quantity = 1) {
   const grants = product?.grants || {};
+  const purchaseQuantity = Math.max(1, Math.floor(Number(quantity) || 1));
   const summary = [];
 
   if (grants.aura) {
-    user.aura += grants.aura;
-    summary.push(`${formatNumber(grants.aura)} aura`);
+    const auraAmount = grants.aura * purchaseQuantity;
+    user.aura += auraAmount;
+    summary.push(`${formatNumber(auraAmount)} aura`);
   }
 
   if (grants.xp) {
-    user.xp += grants.xp;
-    summary.push(`${formatNumber(grants.xp)} XP`);
+    const xpAmount = grants.xp * purchaseQuantity;
+    user.xp += xpAmount;
+    summary.push(`${formatNumber(xpAmount)} XP`);
   }
 
-  Object.entries(grants.crates || {}).forEach(([crateId, quantity]) => {
-    if (!CRATES[crateId] || quantity <= 0) {
+  Object.entries(grants.crates || {}).forEach(([crateId, grantQuantity]) => {
+    const totalQuantity = grantQuantity * purchaseQuantity;
+    if (!CRATES[crateId] || totalQuantity <= 0) {
       return;
     }
-    user.crates.set(crateId, (user.crates.get(crateId) || 0) + quantity);
-    summary.push(`${quantity} ${getCrateLabel(crateId)}${quantity === 1 ? "" : "s"}`);
+    user.crates.set(crateId, (user.crates.get(crateId) || 0) + totalQuantity);
+    summary.push(`${totalQuantity} ${getCrateLabel(crateId)}${totalQuantity === 1 ? "" : "s"}`);
   });
 
-  Object.entries(grants.inventory || {}).forEach(([itemId, quantity]) => {
-    if (!getItem(itemId) || quantity <= 0) {
+  Object.entries(grants.inventory || {}).forEach(([itemId, grantQuantity]) => {
+    const totalQuantity = grantQuantity * purchaseQuantity;
+    if (!getItem(itemId) || totalQuantity <= 0) {
       return;
     }
-    addInventoryItem(user, itemId, quantity);
+    addInventoryItem(user, itemId, totalQuantity);
     const item = getItem(itemId);
     if (item.type === "perk" && !user.ownedPerks.includes(itemId)) {
       user.ownedPerks.push(itemId);
     }
-    summary.push(`${quantity} ${getInventoryLabel(itemId)}`);
+    summary.push(`${totalQuantity} ${getInventoryLabel(itemId)}`);
   });
 
   return summary;

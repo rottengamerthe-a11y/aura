@@ -7,10 +7,10 @@ const { User } = require("../data/models");
 const { applyPaddleWebhookEvent } = require("../game/service");
 
 async function main() {
-  const [, , userId, purchaseId = "monthly"] = process.argv;
+  const [, , userId, purchaseId = "monthly", quantityArg = "1"] = process.argv;
 
   if (!userId) {
-    throw new Error("Usage: node src/billing/testPremiumWebhook.js <discordUserId> [monthly|yearly|lifetime|starter_crate_bundle|rare_crate_stack|legendary_vault_drop|boost_supply_pack]");
+    throw new Error("Usage: node src/billing/testPremiumWebhook.js <discordUserId> [monthly|yearly|lifetime|starter_crate_bundle|rare_crate_stack|legendary_vault_drop|boost_supply_pack] [quantity]");
   }
 
   if (!process.env.MONGODB_URI) {
@@ -18,6 +18,7 @@ async function main() {
   }
 
   const priceEnvKey = `PADDLE_${purchaseId.toUpperCase()}_PRICE_ID`;
+  const quantity = Math.max(1, Math.floor(Number(quantityArg) || 1));
   process.env[priceEnvKey] ||= `price_test_${purchaseId}`;
 
   await mongoose.connect(process.env.MONGODB_URI, {
@@ -37,6 +38,7 @@ async function main() {
       },
       items: [
         {
+          quantity,
           price: {
             id: process.env[priceEnvKey],
           },
