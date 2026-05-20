@@ -1,7 +1,7 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
 const crypto = require("crypto");
 const { BOSSES, COLORS, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
-const { BattleSession, Clan, GuildSettings, PvpInvite, PvpMatchmakingQueue, User } = require("../data/models");
+const { BattleSession, Clan, GuildSettings, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, User } = require("../data/models");
 const { buildClanCreateData, buildClanLeaderboardFilter, buildClanLookup, buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
 const { buildProfileCosmeticAttachment, FILE_NAME: PROFILE_COSMETIC_FILE } = require("../utils/cosmeticArt");
 const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
@@ -2216,6 +2216,7 @@ const HELP_SECTIONS = [
       { name: "/vault interest", description: "Collect the vault's accumulated interest." },
       { name: "/shop", description: "Browse perks, crates, and unlocks." },
       { name: "/buy item:<id>", description: "Purchase a shop item by id." },
+      { name: "/roleshop", description: "Buy server roles listed by admins on the website dashboard." },
       { name: "/gift user:<player> amount:<amount>", description: "Send aura to another player." },
       { name: "/inventory", description: "Review owned items, battle consumables, skills, and crates." },
       { name: "/craft recipe:<id>", description: "Turn mined materials into useful rewards." },
@@ -3681,6 +3682,112 @@ async function handleInventory(interaction) {
       { name: "Membership", value: formatPremiumStatus(user) },
       { name: "Active Cosmetics", value: formatProfileCosmetics(user) },
       { name: "Effect Caps", value: buildEffectCapLines(user) },
+    ],
+  }));
+}
+
+function formatRoleListingLine(listing) {
+  const description = listing.description ? ` - ${listing.description}` : "";
+  return `\`${listing._id}\` | <@&${listing.roleId}> | ${formatNumber(listing.price)} aura${description}`;
+}
+
+async function getManageableGuildRole(interaction, roleId) {
+  const guild = interaction.guild;
+  if (!guild) {
+    return { error: "Role purchases can only be used inside a server." };
+  }
+
+  const botMember = guild.members.me || await guild.members.fetchMe().catch(() => null);
+  if (!botMember?.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
+    return { error: "Aurix needs the Manage Roles permission before it can sell server roles." };
+  }
+
+  const role = await guild.roles.fetch(roleId).catch(() => null);
+  if (!role || role.managed || role.id === guild.id) {
+    return { error: "That server role no longer exists or cannot be assigned." };
+  }
+
+  if (role.position >= botMember.roles.highest.position) {
+    return { error: `Move the Aurix bot role above **${role.name}** in Server Settings before selling it.` };
+  }
+
+  return { role };
+}
+
+async function handleRoleShop(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+
+  if (!interaction.guildId) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Server Only", description: "Role shop purchases only work inside a Discord server.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  if (subcommand === "list") {
+    const listings = await RoleListing.find({ guildId: interaction.guildId, enabled: true }).sort({ price: 1, name: 1 }).limit(15).lean();
+    return interaction.reply(buildEmbedPayload({
+      title: "Role Shop",
+      description: listings.length ? listings.map(formatRoleListingLine).join("\n") : "No server roles are listed yet. Ask an admin to add roles from the Aurix website dashboard.",
+      visual: "emblem-success.svg",
+      footer: listings.length ? "Use /roleshop buy listing:<listing id> to purchase a role." : "Admins can configure listings from the website dashboard.",
+    }));
+  }
+
+  const listingId = interaction.options.getString("listing", true).trim();
+  if (!/^[a-f\d]{24}$/i.test(listingId)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Invalid Listing", description: "Use a listing id from `/roleshop list`.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  const listing = await RoleListing.findOne({ _id: listingId, guildId: interaction.guildId, enabled: true });
+  if (!listing) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Role Not Listed", description: "That role listing is not active in this server.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  const roleResult = await getManageableGuildRole(interaction, listing.roleId);
+  if (roleResult.error) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Role Purchase Blocked", description: roleResult.error, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+  if (!member) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Member Missing", description: "Aurix could not load your server member record. Try again in a moment.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  if (member.roles.cache.has(listing.roleId)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Already Owned", description: `You already have <@&${listing.roleId}>.`, visual: "emblem-help.svg" }), ephemeral: true });
+  }
+
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  if (user.aura < listing.price) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: `<@&${listing.roleId}> costs ${formatNumber(listing.price)} aura. You have ${formatNumber(user.aura)} aura.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  user.aura -= listing.price;
+  await user.save();
+
+  try {
+    await member.roles.add(roleResult.role, "Aurix role shop purchase");
+  } catch (error) {
+    user.aura += listing.price;
+    await user.save().catch(() => null);
+    return interaction.reply({ ...buildEmbedPayload({ title: "Role Purchase Failed", description: `Aurix could not assign **${roleResult.role.name}**. Check the bot role position and Manage Roles permission.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  listing.purchaseCount += 1;
+  await listing.save();
+  await RolePurchase.create({
+    guildId: interaction.guildId,
+    userId: interaction.user.id,
+    listingId: listing._id,
+    roleId: listing.roleId,
+    price: listing.price,
+  });
+
+  return interaction.reply(buildEmbedPayload({
+    title: "Role Purchased",
+    description: `You bought <@&${listing.roleId}> for ${formatNumber(listing.price)} aura.`,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+      { name: "Role", value: roleResult.role.name, inline: true },
     ],
   }));
 }
@@ -6349,6 +6456,9 @@ function buildCommands() {
     new SlashCommandBuilder().setName("vault").setDescription("Manage your aura vault.").addSubcommand((sub) => sub.setName("deposit").setDescription("Deposit aura.").addIntegerOption((option) => option.setName("amount").setDescription("Amount").setRequired(true).setMinValue(1))).addSubcommand((sub) => sub.setName("withdraw").setDescription("Withdraw aura.").addIntegerOption((option) => option.setName("amount").setDescription("Amount").setRequired(true).setMinValue(1))).addSubcommand((sub) => sub.setName("interest").setDescription("Claim accumulated vault interest.")),
     new SlashCommandBuilder().setName("shop").setDescription("Browse shop items and perks."),
     new SlashCommandBuilder().setName("buy").setDescription("Buy an item from the shop.").addStringOption((option) => option.setName("item").setDescription("Item id").setRequired(true)),
+    new SlashCommandBuilder().setName("roleshop").setDescription("Buy server roles listed by admins.")
+      .addSubcommand((sub) => sub.setName("list").setDescription("View purchasable server roles."))
+      .addSubcommand((sub) => sub.setName("buy").setDescription("Buy a listed server role with aura.").addStringOption((option) => option.setName("listing").setDescription("Listing id from /roleshop list").setRequired(true))),
     new SlashCommandBuilder().setName("gift").setDescription("Send aura to another player.").addUserOption((option) => option.setName("user").setDescription("Receiving player").setRequired(true)).addIntegerOption((option) => option.setName("amount").setDescription("Aura to send").setRequired(true).setMinValue(1)),
     new SlashCommandBuilder().setName("inventory").setDescription("View your items, perks, skills, and crates."),
     new SlashCommandBuilder().setName("craft").setDescription("Craft something from mined materials.").addStringOption((option) => option.setName("recipe").setDescription("Recipe id").setRequired(true).addChoices(...CRAFTING_RECIPES.map((recipe) => ({ name: recipe.name, value: recipe.id })))),
@@ -6417,7 +6527,7 @@ async function routeInteraction(interaction) {
     return null;
   }
 
-  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, gift: handleGift, inventory: handleInventory, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, premium: handlePremium, clan: handleClan, authority: handleAuthority };
+  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, inventory: handleInventory, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, premium: handlePremium, clan: handleClan, authority: handleAuthority };
   const handler = handlers[interaction.commandName];
   if (!handler) {
     return interaction.reply({ content: "Unknown command.", ephemeral: true });

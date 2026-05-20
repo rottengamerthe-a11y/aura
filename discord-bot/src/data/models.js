@@ -257,6 +257,37 @@ const guildSettingsSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+const roleListingSchema = new mongoose.Schema(
+  {
+    guildId: { type: String, required: true, index: true },
+    roleId: { type: String, required: true },
+    name: { type: String, required: true },
+    description: { type: String, default: "" },
+    price: { type: Number, required: true, min: 1 },
+    enabled: { type: Boolean, default: true, index: true },
+    createdBy: { type: String, default: null },
+    updatedBy: { type: String, default: null },
+    purchaseCount: { type: Number, default: 0 },
+  },
+  { timestamps: true }
+);
+
+roleListingSchema.index({ guildId: 1, roleId: 1 }, { unique: true });
+
+const rolePurchaseSchema = new mongoose.Schema(
+  {
+    guildId: { type: String, required: true, index: true },
+    userId: { type: String, required: true, index: true },
+    listingId: { type: mongoose.Schema.Types.ObjectId, ref: "RoleListing", required: true },
+    roleId: { type: String, required: true },
+    price: { type: Number, required: true },
+    purchasedAt: { type: Date, default: Date.now },
+  },
+  { versionKey: false }
+);
+
+rolePurchaseSchema.index({ guildId: 1, userId: 1, roleId: 1 });
+
 const User = mongoose.models.User || mongoose.model("User", userSchema);
 const BattleSession = mongoose.models.BattleSession || mongoose.model("BattleSession", battleSessionSchema);
 const Clan = mongoose.models.Clan || mongoose.model("Clan", clanSchema);
@@ -264,5 +295,7 @@ const GuildSettings = mongoose.models.GuildSettings || mongoose.model("GuildSett
 const PaddleWebhookLog = mongoose.models.PaddleWebhookLog || mongoose.model("PaddleWebhookLog", paddleWebhookLogSchema);
 const PvpInvite = mongoose.models.PvpInvite || mongoose.model("PvpInvite", pvpInviteSchema);
 const PvpMatchmakingQueue = mongoose.models.PvpMatchmakingQueue || mongoose.model("PvpMatchmakingQueue", pvpMatchmakingQueueSchema);
+const RoleListing = mongoose.models.RoleListing || mongoose.model("RoleListing", roleListingSchema);
+const RolePurchase = mongoose.models.RolePurchase || mongoose.model("RolePurchase", rolePurchaseSchema);
 
-module.exports = { BattleSession, Clan, GuildSettings, PaddleWebhookLog, PvpInvite, PvpMatchmakingQueue, User };
+module.exports = { BattleSession, Clan, GuildSettings, PaddleWebhookLog, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, User };
