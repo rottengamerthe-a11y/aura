@@ -3672,48 +3672,66 @@ async function handleQuests(interaction) {
 
 async function handleCrate(interaction) {
   const type = interaction.options.getString("type", true);
+  const requestedAmount = interaction.options.getInteger("amount") || 1;
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const crate = CRATES[type];
   if (!crate) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Unknown Crate", description: "That crate type is not available.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
-  if ((user.crates.get(type) || 0) <= 0) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "No Crates Available", description: `You do not own ${getCrateLabel(type)}.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  if (requestedAmount <= 0) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Invalid Amount", description: "Choose at least 1 crate to open.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
-  user.crates.set(type, (user.crates.get(type) || 0) - 1);
+  const ownedCrates = user.crates.get(type) || 0;
+  if (ownedCrates <= 0) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "No Crates Available", description: `You do not own ${getCrateLabel(type)}.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  if (requestedAmount > ownedCrates) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Crates", description: `You only have ${formatNumber(ownedCrates)} ${getCrateLabel(type)}${ownedCrates === 1 ? "" : "s"}.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  user.crates.set(type, ownedCrates - requestedAmount);
   const effects = getCombinedEffects(user);
-  const auraReward = Math.floor(randInt(crate.aura[0], crate.aura[1]) * (1 + (effects.crateAuraBoost || 0)));
-  const xpReward = randInt(crate.xp[0], crate.xp[1]);
+  let auraReward = 0;
+  let xpReward = 0;
+  const bonusCounts = new Map();
+
+  for (let crateIndex = 0; crateIndex < requestedAmount; crateIndex += 1) {
+    auraReward += Math.floor(randInt(crate.aura[0], crate.aura[1]) * (1 + (effects.crateAuraBoost || 0)));
+    xpReward += randInt(crate.xp[0], crate.xp[1]);
+
+    crate.drops.forEach((drop) => {
+      if (Math.random() <= drop.chance) {
+        if (drop.type === "item") {
+          addInventoryItem(user, drop.id);
+          const item = getItem(drop.id);
+          if (item?.type === "perk" && !user.ownedPerks.includes(drop.id)) {
+            user.ownedPerks.push(drop.id);
+          }
+          if (item?.type === "skill_unlock" && item.grantsSkill && !user.skills.includes(item.grantsSkill)) {
+            user.skills.push(item.grantsSkill);
+          }
+          bonusCounts.set(item?.name || drop.id, (bonusCounts.get(item?.name || drop.id) || 0) + 1);
+        } else if (drop.type === "crate") {
+          user.crates.set(drop.id, (user.crates.get(drop.id) || 0) + 1);
+          const crateLabel = getCrateLabel(drop.id);
+          bonusCounts.set(crateLabel, (bonusCounts.get(crateLabel) || 0) + 1);
+        }
+      }
+    });
+  }
+
   user.aura += auraReward;
   user.xp += xpReward;
-
-  const bonusLines = [];
-  crate.drops.forEach((drop) => {
-    if (Math.random() <= drop.chance) {
-      if (drop.type === "item") {
-        addInventoryItem(user, drop.id);
-        const item = getItem(drop.id);
-        if (item?.type === "perk" && !user.ownedPerks.includes(drop.id)) {
-          user.ownedPerks.push(drop.id);
-        }
-        if (item?.type === "skill_unlock" && item.grantsSkill && !user.skills.includes(item.grantsSkill)) {
-          user.skills.push(item.grantsSkill);
-        }
-        bonusLines.push(item?.name || drop.id);
-      } else if (drop.type === "crate") {
-        user.crates.set(drop.id, (user.crates.get(drop.id) || 0) + 1);
-        bonusLines.push(getCrateLabel(drop.id));
-      }
-    }
-  });
 
   await syncRank(user);
   await user.save();
 
+  const bonusLines = [...bonusCounts.entries()].map(([label, count]) => `${label} x${count}`);
+
   return interaction.reply(buildEmbedPayload({
-    title: `${getCrateLabel(type)} Opened`,
-    description: "The crate burst open with progression loot.",
+    title: `${formatNumber(requestedAmount)} ${getCrateLabel(type)}${requestedAmount === 1 ? "" : "s"} Opened`,
+    description: requestedAmount === 1 ? "The crate burst open with progression loot." : "The crates burst open with progression loot.",
     visual: "emblem-success.svg",
     fields: [
       { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
@@ -6245,7 +6263,7 @@ function buildCommands() {
     new SlashCommandBuilder().setName("prestige").setDescription("Reset rank progression to gain prestige."),
     new SlashCommandBuilder().setName("achievements").setDescription("Claim any achievement rewards you have unlocked."),
     new SlashCommandBuilder().setName("quests").setDescription("View your daily quests."),
-    new SlashCommandBuilder().setName("crate").setDescription("Open a crate.").addStringOption((option) => option.setName("type").setDescription("Crate type").setRequired(true).addChoices({ name: "common", value: "common" }, { name: "rare", value: "rare" }, { name: "epic", value: "epic" }, { name: "legendary", value: "legendary" })),
+    new SlashCommandBuilder().setName("crate").setDescription("Open crates.").addStringOption((option) => option.setName("type").setDescription("Crate type").setRequired(true).addChoices({ name: "common", value: "common" }, { name: "rare", value: "rare" }, { name: "epic", value: "epic" }, { name: "legendary", value: "legendary" })).addIntegerOption((option) => option.setName("amount").setDescription("How many crates to open").setMinValue(1)),
     new SlashCommandBuilder().setName("skills").setDescription("View unlocked combat skills and attack styles."),
     new SlashCommandBuilder().setName("pvp").setDescription("Challenge a player or join global PvP matchmaking.")
       .addUserOption((option) => option.setName("user").setDescription("Optional direct opponent"))
