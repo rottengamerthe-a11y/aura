@@ -406,6 +406,8 @@ function formatNumber(value) {
   return Intl.NumberFormat("en-US").format(Math.floor(value));
 }
 
+const PROGRESS_PARTIAL_BLOCKS = Object.freeze(["", "\u258F", "\u258E", "\u258D", "\u258C", "\u258B", "\u258A", "\u2589"]);
+
 async function isUserInGuild(guild, userId) {
   if (!guild || !userId) {
     return false;
@@ -428,8 +430,13 @@ function mapEntries(mapLike) {
 
 function progressBar(current, total, size = 12) {
   const ratio = total <= 0 ? 1 : clamp(current / total, 0, 1);
-  const filled = Math.round(ratio * size);
-  return `${"#".repeat(filled)}${"-".repeat(size - filled)} ${Math.round(ratio * 100)}%`;
+  const percent = Math.round(ratio * 100);
+  const exactFilled = ratio * size;
+  const filled = percent >= 100 ? size : Math.floor(exactFilled);
+  const partialIndex = filled >= size ? 0 : Math.floor((exactFilled - filled) * (PROGRESS_PARTIAL_BLOCKS.length - 1));
+  const partial = partialIndex > 0 ? PROGRESS_PARTIAL_BLOCKS[partialIndex] : "";
+  const empty = Math.max(0, size - filled - (partial ? 1 : 0));
+  return `\`${"\u2588".repeat(filled)}${partial}${"\u2591".repeat(empty)}\` ${percent}%`;
 }
 
 function pickPvpArena() {
@@ -1306,13 +1313,32 @@ function getBattleMirrorMessages(state) {
   return Array.isArray(state?.messages) ? state.messages.filter((entry) => entry?.channelId && entry?.messageId) : [];
 }
 
+function getBattleMessageOwnerId(state, messageId) {
+  return getBattleMirrorMessages(state).find((entry) => entry.messageId === messageId)?.ownerId || null;
+}
+
+function shouldShowBattleControlsForOwner(state, ownerId) {
+  if (state?.phase !== "battle" || state?.isBoss) {
+    return true;
+  }
+  return !ownerId || ownerId === state.turnId;
+}
+
+function withBattleControlsForOwner(payload, state, ownerId) {
+  if (shouldShowBattleControlsForOwner(state, ownerId)) {
+    return payload;
+  }
+  return { ...payload, components: [] };
+}
+
 async function editBattleMirrorMessages(client, state, payload, skipMessageId = null) {
   const messages = getBattleMirrorMessages(state).filter((entry) => entry.messageId !== skipMessageId);
   await Promise.all(messages.map(async (entry) => {
     const channel = await client.channels.fetch(entry.channelId).catch(() => null);
     const message = await channel?.messages?.fetch?.(entry.messageId).catch(() => null);
     if (message?.editable) {
-      await message.edit(payload).catch(() => null);
+      const messagePayload = typeof payload === "function" ? payload(entry) : payload;
+      await message.edit(messagePayload).catch(() => null);
     }
   }));
 }
@@ -4009,6 +4035,25 @@ function describeIncomingPvpPressure(state) {
   ].join("\n");
 }
 
+function getBattleTurnActor(state) {
+  return state.turnId === state.playerOne.id ? state.playerOne : state.playerTwo;
+}
+
+function getBattleTurnDefender(state) {
+  const actor = getBattleTurnActor(state);
+  return actor.id === state.playerOne.id ? state.playerTwo : state.playerOne;
+}
+
+function formatPvpTurnStatus(state) {
+  const actor = getBattleTurnActor(state);
+  const defender = getBattleTurnDefender(state);
+  return [
+    `Now acting: **${actor.name}**`,
+    `Waiting: ${defender.name}`,
+    `Only ${actor.name}'s action will resolve this turn.`,
+  ].join("\n");
+}
+
 function chooseBossIntent(state) {
   const player = state.playerOne;
   const boss = state.playerTwo;
@@ -4678,9 +4723,9 @@ function buildBattleComponents(state, fighter) {
 }
 
 function createBattleEmbed(title, description, visual, state) {
-  const turnLabel = state.turnId === state.playerOne.id
-    ? `${state.playerOne.name} (${state.playerOne.skill?.name || "Focus"})`
-    : `${state.playerTwo.name} (${state.playerTwo.skill?.name || "Focus"})`;
+  const turnActor = getBattleTurnActor(state);
+  const turnDefender = getBattleTurnDefender(state);
+  const turnLabel = `${turnActor.name} (${turnActor.skill?.name || "Focus"})`;
   if (state.isBoss) {
     return createBossBattlePayload(description, visual, state);
   }
@@ -4703,18 +4748,22 @@ function createBattleEmbed(title, description, visual, state) {
   }
   const payload = buildEmbedPayload({
     title,
-    description,
+    description: [
+      `**${turnActor.name}'s turn.** ${turnDefender.name} is waiting for the handoff.`,
+      "",
+      description,
+    ].filter(Boolean).join("\n"),
     visual,
     fields: [
       { name: state.playerOne.name, value: fighterField(state.playerOne), inline: true },
       { name: state.playerTwo.name, value: fighterField(state.playerTwo), inline: true },
-      { name: "Turn", value: `${turnLabel}\nExchange ${(state.exchangeCount || 0) + 1}`, inline: false },
+      { name: "Turn Order", value: `${formatPvpTurnStatus(state)}\nExchange ${(state.exchangeCount || 0) + 1}`, inline: false },
       ...extraFields,
     ],
-    footer: `Turn ${((state.exchangeCount || 0) + 1)} \u2022 ${turnLabel} to act`,
+    footer: `Turn ${((state.exchangeCount || 0) + 1)} \u2022 buttons below are for ${turnActor.name}`,
   });
   return {
-    content: `\u{1F3AE} **Turn ${((state.exchangeCount || 0) + 1)}** | ${turnLabel}`,
+    content: `\u{1F3AE} **PvP Turn ${((state.exchangeCount || 0) + 1)}** | Waiting on ${turnLabel}`,
     ...payload,
   };
 }
@@ -4803,7 +4852,7 @@ function initializePvpBattleFromLoadout(state, challenger, rival) {
     unlockedActions: getUnlockedBattleActions(rival),
     premiumBattleBonus: getPremiumBattleBonus(rival),
   });
-  state.turnId = challenger.userId;
+  state.turnId = Math.random() < 0.5 ? challenger.userId : rival.userId;
   state.rewardAura = randInt(750, 1250);
   state.rewardXp = randInt(220, 340);
   state.exchangeCount = 0;
@@ -4985,8 +5034,13 @@ async function advanceBattle(interaction, state, acting, defending, actionSummar
     ...createBattleEmbed(state.title, summary, state.visual, state),
     components: buildBattleComponents(state, nextActor),
   };
-  await interaction.editReply(nextPayload);
-  await editBattleMirrorMessages(interaction.client, state, nextPayload, interaction.message?.id);
+  await interaction.editReply(withBattleControlsForOwner(nextPayload, state, getBattleMessageOwnerId(state, interaction.message?.id)));
+  await editBattleMirrorMessages(
+    interaction.client,
+    state,
+    (entry) => withBattleControlsForOwner(nextPayload, state, entry.ownerId || null),
+    interaction.message?.id
+  );
   return null;
 }
 
@@ -5096,10 +5150,15 @@ async function handleLoadoutButton(interaction, state, action) {
 
   const payload = {
     ...createBattleEmbed("PvP Duel Started", `${state.playerOne.name} and ${state.playerTwo.name} locked in their loadouts.\nArena: **${state.arena.name}**\n${state.arena.description}`, "pvp-battle.svg", state),
-    components: buildBattleComponents(state, state.playerOne),
+    components: buildBattleComponents(state, getBattleTurnActor(state)),
   };
-  await interaction.update(payload);
-  await editBattleMirrorMessages(interaction.client, state, payload, interaction.message?.id);
+  await interaction.update(withBattleControlsForOwner(payload, state, getBattleMessageOwnerId(state, interaction.message?.id)));
+  await editBattleMirrorMessages(
+    interaction.client,
+    state,
+    (entry) => withBattleControlsForOwner(payload, state, entry.ownerId || null),
+    interaction.message?.id
+  );
   return null;
 }
 
@@ -5129,7 +5188,8 @@ async function handleLoadoutSelect(interaction, state, slotId) {
 
 async function handleBattleButton(interaction, state, action) {
   if (interaction.user.id !== state.turnId) {
-    return interaction.reply({ content: "It is not your turn yet.", ephemeral: true });
+    const actor = getBattleTurnActor(state);
+    return interaction.reply({ content: `It is ${actor.name}'s turn. Wait for the handoff before choosing an action.`, ephemeral: true });
   }
 
   const acting = state.playerOne.id === interaction.user.id ? state.playerOne : state.playerTwo;
@@ -5160,7 +5220,8 @@ async function handleBattleButton(interaction, state, action) {
 
 async function handleBattleItemSelect(interaction, state) {
   if (interaction.user.id !== state.turnId) {
-    return interaction.reply({ content: "It is not your turn yet.", ephemeral: true });
+    const actor = getBattleTurnActor(state);
+    return interaction.reply({ content: `It is ${actor.name}'s turn. Wait for the handoff before using an item.`, ephemeral: true });
   }
 
   const acting = state.playerOne.id === interaction.user.id ? state.playerOne : state.playerTwo;
@@ -5360,11 +5421,16 @@ async function startMatchedPvp(interaction, queuedEntry, currentUser) {
       await PvpMatchmakingQueue.deleteOne({ userId: queuedEntry.userId }).catch(() => null);
       return interaction.editReply(buildEmbedPayload({ title: "PvP Matchmaking", description: "The oldest queued fighter could not be reached, so they were removed from the queue. Use `/pvp` again to search for the next opponent.", visual: "emblem-alert.svg" }));
     }
-    state.messages.push({ guildId: queuedEntry.guildId, channelId: firstMessage.channelId, messageId: firstMessage.id });
+    state.messages.push({ guildId: queuedEntry.guildId, channelId: firstMessage.channelId, messageId: firstMessage.id, ownerId: queuedEntry.userId });
   }
 
   const secondMessage = await interaction.editReply(payload);
-  state.messages.push({ guildId: interaction.guildId, channelId: secondMessage.channelId, messageId: secondMessage.id });
+  state.messages.push({
+    guildId: interaction.guildId,
+    channelId: secondMessage.channelId,
+    messageId: secondMessage.id,
+    ownerId: firstMessage ? currentUser.id : null,
+  });
 
   await PvpMatchmakingQueue.deleteMany({ userId: { $in: [queuedEntry.userId, currentUser.id] } }).catch(() => null);
   activeBattles.set(battleId, state);
