@@ -2216,8 +2216,7 @@ const HELP_SECTIONS = [
       { name: "/vault interest", description: "Collect the vault's accumulated interest." },
       { name: "/shop", description: "Browse perks, crates, and unlocks." },
       { name: "/buy item:<id>", description: "Purchase a shop item by id." },
-      { name: "/roleshop", description: "Buy server roles listed by admins on the website dashboard." },
-      { name: "/roles", description: "Alias for the server role shop." },
+      { name: "/roleshop", description: "Browse and buy server roles listed by admins." },
       { name: "/gift user:<player> amount:<amount>", description: "Send aura to another player." },
       { name: "/inventory", description: "Review owned items, battle consumables, skills, and crates." },
       { name: "/craft recipe:<id>", description: "Turn mined materials into useful rewards." },
@@ -3594,19 +3593,32 @@ async function handleShop(interaction) {
     }
     return `**${getInventoryLabel(item.id)}** - ${formatNumber(item.price)} aura\n\`${item.id}\` • ${badges.join(" • ")}\n${item.description}`;
   }).join("\n\n");
+  const roleListings = interaction.guildId
+    ? await RoleListing.find({ guildId: interaction.guildId, enabled: true }).sort({ price: 1, name: 1 }).limit(8).lean()
+    : [];
+  const roleLines = roleListings.map(formatRoleListingLine).join("\n");
   return interaction.reply(buildEmbedPayload({
     title: "Aura Shop",
     description: lines || "No shop items available.",
     visual: "emblem-economy.svg",
     fields: [
       { name: "Membership", value: formatPremiumStatus(user), inline: true },
+      { name: "Server Roles", value: roleLines || "No server roles are listed yet.", inline: false },
     ],
-    footer: "Use /buy item:<id> to purchase. Premium items unlock while premium is active.",
+    footer: "Use /buy item:<id> for items or /buy role:<listing id> for server roles.",
   }));
 }
 
 async function handleBuy(interaction) {
-  const itemId = interaction.options.getString("item", true);
+  const roleListingId = interaction.options.getString("role", false);
+  if (roleListingId) {
+    return buyRoleListing(interaction, roleListingId);
+  }
+
+  const itemId = interaction.options.getString("item", false);
+  if (!itemId) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Choose Purchase", description: "Use `/buy item:<id>` for shop items or `/buy role:<listing id>` for server roles.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const item = getItem(itemId);
   if (!item) {
@@ -3715,29 +3727,16 @@ async function getManageableGuildRole(interaction, roleId) {
   return { role };
 }
 
-async function handleRoleShop(interaction) {
-  const subcommand = interaction.options.getSubcommand();
-
+async function buyRoleListing(interaction, listingId) {
+  const normalizedListingId = String(listingId || "").trim();
   if (!interaction.guildId) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Server Only", description: "Role shop purchases only work inside a Discord server.", visual: "emblem-alert.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "Server Only", description: "Role purchases only work inside a Discord server.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  if (!/^[a-f\d]{24}$/i.test(normalizedListingId)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Invalid Listing", description: "Use a listing id from `/shop`.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
-  if (subcommand === "list") {
-    const listings = await RoleListing.find({ guildId: interaction.guildId, enabled: true }).sort({ price: 1, name: 1 }).limit(15).lean();
-    return interaction.reply(buildEmbedPayload({
-      title: "Role Shop",
-      description: listings.length ? listings.map(formatRoleListingLine).join("\n") : "No server roles are listed yet. Ask an admin to add roles from the Aurix website dashboard.",
-      visual: "emblem-success.svg",
-      footer: listings.length ? "Use /roleshop buy listing:<listing id> to purchase a role." : "Admins can configure listings from the website dashboard.",
-    }));
-  }
-
-  const listingId = interaction.options.getString("listing", true).trim();
-  if (!/^[a-f\d]{24}$/i.test(listingId)) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Invalid Listing", description: "Use a listing id from `/roleshop list`.", visual: "emblem-alert.svg" }), ephemeral: true });
-  }
-
-  const listing = await RoleListing.findOne({ _id: listingId, guildId: interaction.guildId, enabled: true });
+  const listing = await RoleListing.findOne({ _id: normalizedListingId, guildId: interaction.guildId, enabled: true });
   if (!listing) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Role Not Listed", description: "That role listing is not active in this server.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
@@ -3791,6 +3790,27 @@ async function handleRoleShop(interaction) {
       { name: "Role", value: roleResult.role.name, inline: true },
     ],
   }));
+}
+
+async function handleRoleShop(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+
+  if (!interaction.guildId) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Server Only", description: "Role shop purchases only work inside a Discord server.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  if (subcommand === "list") {
+    const listings = await RoleListing.find({ guildId: interaction.guildId, enabled: true }).sort({ price: 1, name: 1 }).limit(15).lean();
+    return interaction.reply(buildEmbedPayload({
+      title: "Role Shop",
+      description: listings.length ? listings.map(formatRoleListingLine).join("\n") : "No server roles are listed yet. Ask an admin to add roles from the Aurix website dashboard.",
+      visual: "emblem-success.svg",
+      footer: listings.length ? "Use /roleshop buy listing:<listing id> to purchase a role." : "Admins can configure listings from the website dashboard.",
+    }));
+  }
+
+  const listingId = interaction.options.getString("listing", true).trim();
+  return buyRoleListing(interaction, listingId);
 }
 
 async function handleRank(interaction) {
@@ -6455,14 +6475,13 @@ function buildCommands() {
       .addSubcommand((sub) => sub.setName("enable").setDescription("Tag me when an action is ready.").addStringOption((option) => option.setName("action").setDescription("Action to track").setRequired(true).addChoices(...REMINDER_ACTION_CHOICES)))
       .addSubcommand((sub) => sub.setName("disable").setDescription("Stop tagging me for an action.").addStringOption((option) => option.setName("action").setDescription("Action to stop tracking").setRequired(true).addChoices(...REMINDER_ACTION_CHOICES))),
     new SlashCommandBuilder().setName("vault").setDescription("Manage your aura vault.").addSubcommand((sub) => sub.setName("deposit").setDescription("Deposit aura.").addIntegerOption((option) => option.setName("amount").setDescription("Amount").setRequired(true).setMinValue(1))).addSubcommand((sub) => sub.setName("withdraw").setDescription("Withdraw aura.").addIntegerOption((option) => option.setName("amount").setDescription("Amount").setRequired(true).setMinValue(1))).addSubcommand((sub) => sub.setName("interest").setDescription("Claim accumulated vault interest.")),
-    new SlashCommandBuilder().setName("shop").setDescription("Browse shop items and perks."),
-    new SlashCommandBuilder().setName("buy").setDescription("Buy an item from the shop.").addStringOption((option) => option.setName("item").setDescription("Item id").setRequired(true)),
-    new SlashCommandBuilder().setName("roleshop").setDescription("Buy server roles listed by admins.")
+    new SlashCommandBuilder().setName("shop").setDescription("Browse shop items, perks, and server roles."),
+    new SlashCommandBuilder().setName("buy").setDescription("Buy an item or server role from the shop.")
+      .addStringOption((option) => option.setName("item").setDescription("Item id from /shop"))
+      .addStringOption((option) => option.setName("role").setDescription("Server role listing id from /shop")),
+    new SlashCommandBuilder().setName("roleshop").setDescription("Browse and buy server roles listed by admins.")
       .addSubcommand((sub) => sub.setName("list").setDescription("View purchasable server roles."))
       .addSubcommand((sub) => sub.setName("buy").setDescription("Buy a listed server role with aura.").addStringOption((option) => option.setName("listing").setDescription("Listing id from /roleshop list").setRequired(true))),
-    new SlashCommandBuilder().setName("roles").setDescription("Buy server roles listed by admins.")
-      .addSubcommand((sub) => sub.setName("list").setDescription("View purchasable server roles."))
-      .addSubcommand((sub) => sub.setName("buy").setDescription("Buy a listed server role with aura.").addStringOption((option) => option.setName("listing").setDescription("Listing id from /roles list").setRequired(true))),
     new SlashCommandBuilder().setName("gift").setDescription("Send aura to another player.").addUserOption((option) => option.setName("user").setDescription("Receiving player").setRequired(true)).addIntegerOption((option) => option.setName("amount").setDescription("Aura to send").setRequired(true).setMinValue(1)),
     new SlashCommandBuilder().setName("inventory").setDescription("View your items, perks, skills, and crates."),
     new SlashCommandBuilder().setName("craft").setDescription("Craft something from mined materials.").addStringOption((option) => option.setName("recipe").setDescription("Recipe id").setRequired(true).addChoices(...CRAFTING_RECIPES.map((recipe) => ({ name: recipe.name, value: recipe.id })))),
@@ -6531,7 +6550,7 @@ async function routeInteraction(interaction) {
     return null;
   }
 
-  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, roles: handleRoleShop, gift: handleGift, inventory: handleInventory, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, premium: handlePremium, clan: handleClan, authority: handleAuthority };
+  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, inventory: handleInventory, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, premium: handlePremium, clan: handleClan, authority: handleAuthority };
   const handler = handlers[interaction.commandName];
   if (!handler) {
     return interaction.reply({ content: "Unknown command.", ephemeral: true });
