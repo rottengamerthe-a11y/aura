@@ -2217,6 +2217,7 @@ const HELP_SECTIONS = [
       { name: "/shop", description: "Browse perks, crates, and unlocks." },
       { name: "/buy item:<id>", description: "Purchase a shop item by id." },
       { name: "/roleshop", description: "Buy server roles listed by admins on the website dashboard." },
+      { name: "/roles", description: "Alias for the server role shop." },
       { name: "/gift user:<player> amount:<amount>", description: "Send aura to another player." },
       { name: "/inventory", description: "Review owned items, battle consumables, skills, and crates." },
       { name: "/craft recipe:<id>", description: "Turn mined materials into useful rewards." },
@@ -6459,6 +6460,9 @@ function buildCommands() {
     new SlashCommandBuilder().setName("roleshop").setDescription("Buy server roles listed by admins.")
       .addSubcommand((sub) => sub.setName("list").setDescription("View purchasable server roles."))
       .addSubcommand((sub) => sub.setName("buy").setDescription("Buy a listed server role with aura.").addStringOption((option) => option.setName("listing").setDescription("Listing id from /roleshop list").setRequired(true))),
+    new SlashCommandBuilder().setName("roles").setDescription("Buy server roles listed by admins.")
+      .addSubcommand((sub) => sub.setName("list").setDescription("View purchasable server roles."))
+      .addSubcommand((sub) => sub.setName("buy").setDescription("Buy a listed server role with aura.").addStringOption((option) => option.setName("listing").setDescription("Listing id from /roles list").setRequired(true))),
     new SlashCommandBuilder().setName("gift").setDescription("Send aura to another player.").addUserOption((option) => option.setName("user").setDescription("Receiving player").setRequired(true)).addIntegerOption((option) => option.setName("amount").setDescription("Aura to send").setRequired(true).setMinValue(1)),
     new SlashCommandBuilder().setName("inventory").setDescription("View your items, perks, skills, and crates."),
     new SlashCommandBuilder().setName("craft").setDescription("Craft something from mined materials.").addStringOption((option) => option.setName("recipe").setDescription("Recipe id").setRequired(true).addChoices(...CRAFTING_RECIPES.map((recipe) => ({ name: recipe.name, value: recipe.id })))),
@@ -6527,7 +6531,7 @@ async function routeInteraction(interaction) {
     return null;
   }
 
-  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, inventory: handleInventory, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, premium: handlePremium, clan: handleClan, authority: handleAuthority };
+  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, roles: handleRoleShop, gift: handleGift, inventory: handleInventory, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, premium: handlePremium, clan: handleClan, authority: handleAuthority };
   const handler = handlers[interaction.commandName];
   if (!handler) {
     return interaction.reply({ content: "Unknown command.", ephemeral: true });
