@@ -1,7 +1,7 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
 const crypto = require("crypto");
 const { BOSSES, COLORS, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
-const { BattleSession, Clan, GuildSettings, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, User } = require("../data/models");
+const { BattleSession, Clan, GuildSettings, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TradeOffer, User } = require("../data/models");
 const { buildClanCreateData, buildClanLeaderboardFilter, buildClanLookup, buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
 const { buildProfileCosmeticAttachment, FILE_NAME: PROFILE_COSMETIC_FILE } = require("../utils/cosmeticArt");
 const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
@@ -15,6 +15,54 @@ const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const BATTLE_ANIMATION_DELAY_MS = 900;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
 const PVP_MATCHMAKING_TIMEOUT_MS = 10 * 60 * 1000;
+const SERVER_EVENT_DURATION_MS = 20 * 60 * 1000;
+const SERVER_EVENT_SPAWN_COOLDOWN_MS = 35 * 60 * 1000;
+const TRADE_OFFER_TIMEOUT_MS = 15 * 60 * 1000;
+const TUTORIAL_STEPS = Object.freeze([
+  { id: "daily", command: "daily", label: "Claim /daily", rewardAura: 250, rewardXp: 80 },
+  { id: "work", command: "work", label: "Complete /work", rewardAura: 300, rewardXp: 90 },
+  { id: "spin", command: "spin", label: "Use /spin", rewardAura: 300, rewardXp: 90 },
+  { id: "vault", command: "vault", label: "Deposit aura with /vault deposit", rewardAura: 450, rewardXp: 120 },
+  { id: "profile", command: "profile", label: "Open /profile", rewardAura: 250, rewardXp: 100 },
+]);
+const SERVER_EVENT_TEMPLATES = Object.freeze([
+  {
+    id: "rift_cache",
+    name: "Rift Cache",
+    description: "A small cache breaks through the channel static. Claim it before the signal collapses.",
+    rewardAura: 700,
+    rewardXp: 120,
+  },
+  {
+    id: "vault_surge",
+    name: "Vault Surge",
+    description: "The vault network flashes gold. A quick claim banks the overflow safely.",
+    rewardAura: 950,
+    rewardXp: 90,
+  },
+  {
+    id: "battle_omen",
+    name: "Battle Omen",
+    description: "A combat omen rolls through the server and rewards anyone alert enough to catch it.",
+    rewardAura: 550,
+    rewardXp: 180,
+  },
+]);
+const ENGAGEMENT_COMMANDS = new Set(["start", "tutorial", "profile", "stats", "balance", "work", "mine", "spin", "coinflip", "rob", "daily", "vault", "shop", "buy", "gift", "trade", "inventory", "collection", "craft", "forge", "garden", "property", "expedition", "gear", "rank", "prestige", "achievements", "quests", "crate", "skills", "pvp", "boss", "leaderboard", "season", "serverquest", "premium-chest", "clan", "authority", "event"]);
+const QUICK_ACTIONS = Object.freeze({
+  achievements: { label: "Achievements", style: ButtonStyle.Secondary },
+  balance: { label: "Balance", style: ButtonStyle.Secondary },
+  collection: { label: "Collection", style: ButtonStyle.Secondary },
+  daily: { label: "Daily", style: ButtonStyle.Success },
+  inventory: { label: "Inventory", style: ButtonStyle.Secondary },
+  mine: { label: "Mine", style: ButtonStyle.Primary },
+  profile: { label: "Profile", style: ButtonStyle.Secondary },
+  quests: { label: "Quests", style: ButtonStyle.Secondary },
+  rank: { label: "Rank", style: ButtonStyle.Secondary },
+  spin: { label: "Spin", style: ButtonStyle.Primary },
+  tutorial: { label: "Tutorial", style: ButtonStyle.Success },
+  work: { label: "Work", style: ButtonStyle.Primary },
+});
 const BATTLE_GEAR_SLOTS = Object.freeze([
   { id: "tool", label: "Tool" },
   { id: "charm", label: "Charm" },
@@ -404,6 +452,198 @@ function clamp(value, min, max) {
 
 function formatNumber(value) {
   return Intl.NumberFormat("en-US").format(Math.floor(value));
+}
+
+function pickFlavor(lines) {
+  if (!Array.isArray(lines) || lines.length === 0) {
+    return "";
+  }
+  return lines[randInt(0, lines.length - 1)];
+}
+
+function withFlavor(flavor, result) {
+  return [flavor, result].filter(Boolean).join("\n");
+}
+
+function formatOtherPlayers(count) {
+  return `${formatNumber(count)} other player${count === 1 ? "" : "s"} ${count === 1 ? "has" : "have"}`;
+}
+
+async function buildSocialProofFooter(guildId, filter, messageBuilder) {
+  const count = await User.countDocuments({ ...buildPlayerLeaderboardFilter(guildId), ...filter });
+  return count > 1 ? messageBuilder(count - 1) : null;
+}
+
+function buildQuickActionRows(userId, actions = []) {
+  const buttons = actions
+    .filter((action) => QUICK_ACTIONS[action])
+    .slice(0, 5)
+    .map((action) => {
+      const config = QUICK_ACTIONS[action];
+      return new ButtonBuilder()
+        .setCustomId(`quick:${action}:${userId}`)
+        .setLabel(config.label)
+        .setStyle(config.style);
+    });
+  return buttons.length ? [new ActionRowBuilder().addComponents(...buttons)] : [];
+}
+
+function addQuickActions(payload, userId, actions = []) {
+  const rows = buildQuickActionRows(userId, actions);
+  return rows.length ? { ...payload, components: rows } : payload;
+}
+
+function withExtraComponents(payload, rows = []) {
+  const components = [...(payload.components || []), ...rows].slice(0, 5);
+  return components.length ? { ...payload, components } : payload;
+}
+
+function normalizeTutorialState(user) {
+  user.tutorial ||= {};
+  user.tutorial.step = Number(user.tutorial.step) || 0;
+  user.tutorial.completed = Boolean(user.tutorial.completed);
+  user.tutorial.claimedSteps ||= [];
+}
+
+function getTutorialStatusLines(user) {
+  normalizeTutorialState(user);
+  return TUTORIAL_STEPS.map((step, index) => {
+    const complete = user.tutorial.claimedSteps.includes(step.id);
+    const active = !user.tutorial.completed && index === user.tutorial.step;
+    const status = complete ? "Done" : active ? "Next" : "Locked";
+    return `${index + 1}. ${step.label} - ${status}`;
+  }).join("\n");
+}
+
+async function advanceTutorial(user, commandName, subcommand = null) {
+  normalizeTutorialState(user);
+  if (user.tutorial.completed) {
+    return null;
+  }
+  const step = TUTORIAL_STEPS[user.tutorial.step];
+  if (!step || step.command !== commandName || (step.id === "vault" && subcommand !== "deposit")) {
+    return null;
+  }
+  if (!user.tutorial.claimedSteps.includes(step.id)) {
+    user.tutorial.claimedSteps.push(step.id);
+  }
+  user.tutorial.step += 1;
+  user.aura += step.rewardAura;
+  user.xp += step.rewardXp;
+  const completed = user.tutorial.step >= TUTORIAL_STEPS.length;
+  user.tutorial.completed = completed;
+  await syncRank(user);
+  return {
+    step,
+    completed,
+    message: completed
+      ? `Tutorial complete. Bonus paid: ${formatNumber(step.rewardAura)} aura and ${formatNumber(step.rewardXp)} XP.`
+      : `Tutorial step complete: ${step.label}. Bonus paid: ${formatNumber(step.rewardAura)} aura and ${formatNumber(step.rewardXp)} XP.`,
+  };
+}
+
+function getActiveServerEvent(settings) {
+  const event = settings?.activeEvent;
+  if (!event?.id || !event.expiresAt) {
+    return null;
+  }
+  return new Date(event.expiresAt).getTime() > Date.now() ? event : null;
+}
+
+function formatServerEvent(event) {
+  return `**${event.name}**\n${event.description}\nReward: ${formatNumber(event.rewardAura)} aura, ${formatNumber(event.rewardXp)} XP\nExpires in ${humanizeMs(new Date(event.expiresAt).getTime() - Date.now())}`;
+}
+
+async function claimServerEvent(interaction) {
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const activeServerEvent = getActiveServerEvent(settings);
+  if (!activeServerEvent) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "No Server Event", description: "No claimable server event is active right now.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  if (activeServerEvent.claimedUserIds?.includes(interaction.user.id)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Already Claimed", description: "You already claimed this server event.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  user.aura += activeServerEvent.rewardAura;
+  user.xp += activeServerEvent.rewardXp;
+  settings.activeEvent.claimedUserIds.push(interaction.user.id);
+  await syncRank(user);
+  await user.save();
+  await settings.save();
+  return interaction.reply(buildEmbedPayload({
+    title: `${activeServerEvent.name} Claimed`,
+    description: "You caught the server event before it faded.",
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Aura", value: `${formatNumber(activeServerEvent.rewardAura)}`, inline: true },
+      { name: "XP", value: `${formatNumber(activeServerEvent.rewardXp)}`, inline: true },
+      { name: "Claimed By", value: `${settings.activeEvent.claimedUserIds.length} player(s)`, inline: true },
+    ],
+  }));
+}
+
+async function maybeSpawnServerEvent(interaction) {
+  if (!interaction?.guildId || !interaction.channel?.send) {
+    return null;
+  }
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  if (!settings || getActiveServerEvent(settings)) {
+    return null;
+  }
+  const lastSpawn = settings.lastEventSpawnAt?.getTime?.() || 0;
+  if (Date.now() - lastSpawn < SERVER_EVENT_SPAWN_COOLDOWN_MS || Math.random() > 0.12) {
+    return null;
+  }
+  const template = pickFlavor(SERVER_EVENT_TEMPLATES);
+  settings.activeEvent = {
+    ...template,
+    expiresAt: new Date(Date.now() + SERVER_EVENT_DURATION_MS),
+    claimedUserIds: [],
+  };
+  settings.lastEventSpawnAt = new Date();
+  await settings.save();
+  const payload = buildEmbedPayload({
+    title: `Server Event: ${template.name}`,
+    description: `${template.description}\nUse \`/event action:claim\` before it fades.`,
+    visual: "help-summary.svg",
+    fields: [
+      { name: "Reward", value: `${formatNumber(template.rewardAura)} aura + ${formatNumber(template.rewardXp)} XP`, inline: true },
+      { name: "Window", value: humanizeMs(SERVER_EVENT_DURATION_MS), inline: true },
+    ],
+  });
+  await interaction.channel.send(withExtraComponents(payload, [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`event:claim:${interaction.guildId}`).setLabel("Claim Event").setStyle(ButtonStyle.Success)
+    ),
+  ])).catch(() => null);
+  return template;
+}
+
+const MILESTONE_RULES = Object.freeze([
+  { id: "rank_3", title: "Rank Milestone", test: (user) => user.rankIndex >= 3, text: (user) => `reached **${getRankLabel(RANKS[user.rankIndex])}**.` },
+  { id: "prestige_1", title: "Prestige Milestone", test: (user) => user.prestige >= 1, text: (user) => `entered **Prestige ${user.prestige}**.` },
+  { id: "vault_100k", title: "Vault Milestone", test: (user) => user.vaultAura >= 100000, text: () => "built a vault worth **100,000+ aura**." },
+  { id: "pvp_5", title: "PvP Milestone", test: (user) => user.stats.pvpWins >= 5, text: () => "won **5 PvP duels**." },
+  { id: "boss_5", title: "Boss Milestone", test: (user) => user.stats.bossWins >= 5, text: () => "defeated **5 bosses**." },
+]);
+
+async function maybeAnnounceMilestones(interaction, user) {
+  if (!interaction?.guildId || !interaction.channel?.send || !user) {
+    return;
+  }
+  user.announcedMilestones ||= [];
+  const milestone = MILESTONE_RULES.find((rule) => !user.announcedMilestones.includes(rule.id) && rule.test(user));
+  if (!milestone) {
+    return;
+  }
+  user.announcedMilestones.push(milestone.id);
+  await user.save();
+  await interaction.channel.send(buildEmbedPayload({
+    title: milestone.title,
+    description: `<@${user.userId}> ${milestone.text(user)}`,
+    visual: "emblem-success.svg",
+    footer: "Milestones are public so the server can celebrate progress together.",
+  })).catch(() => null);
 }
 
 const PROGRESS_PARTIAL_BLOCKS = Object.freeze(["", "\u258F", "\u258E", "\u258D", "\u258C", "\u258B", "\u258A", "\u2589"]);
@@ -1883,6 +2123,7 @@ async function getOrCreatePlayer(guildId, userId) {
   user.equippedGear = user.equippedGear || { tool: null, charm: null, relic: null };
   normalizeInventoryState(user);
   normalizeProgressionSystems(user);
+  normalizeTutorialState(user);
   if (!user.lastVaultInterestAt) {
     user.lastVaultInterestAt = new Date();
   }
@@ -1906,6 +2147,17 @@ async function getGuildSettings(guildId) {
     return null;
   }
   return GuildSettings.findOne({ guildId });
+}
+
+async function getOrCreateGuildSettings(guildId) {
+  if (!guildId) {
+    return null;
+  }
+  return GuildSettings.findOneAndUpdate(
+    { guildId },
+    { $setOnInsert: { guildId } },
+    { new: true, upsert: true }
+  );
 }
 
 async function setAurixChannel(guildId, channelId, configuredBy) {
@@ -2139,7 +2391,10 @@ async function claimVaultInterest(user) {
   const elapsedMs = now.getTime() - (user.lastVaultInterestAt?.getTime() || now.getTime());
   const elapsedHours = elapsedMs / (60 * 60 * 1000);
   const rate = 0.03 + (effects.vaultInterestBoost || 0) + user.prestige * 0.005;
-  const interest = Math.floor(user.vaultAura * rate * elapsedHours);
+  const accruedInterest = user.vaultAura * rate * elapsedHours;
+  const totalInterest = accruedInterest + (Number(user.vaultInterestRemainder) || 0);
+  const interest = Math.floor(totalInterest);
+  user.vaultInterestRemainder = Math.max(0, totalInterest - interest);
   user.lastVaultInterestAt = now;
   if (interest > 0) {
     user.vaultAura += interest;
@@ -2192,9 +2447,11 @@ const HELP_SECTIONS = [
     visual: "help-core.svg",
     commands: [
       { name: "/start", description: "Create your save and open the quick-start guide." },
+      { name: "/tutorial", description: "Follow the guided first-session reward path." },
       { name: "/profile [user]", description: "View your or another player's profile." },
       { name: "/stats [user]", description: "See a fuller breakdown of player activity." },
-      { name: "/event", description: "View the current rotating world event." },
+      { name: "/event action:<status|claim>", description: "View world events or claim active server events." },
+      { name: "/serverquest", description: "View the rotating community quest." },
       { name: "/setup", description: "Admin/mod command to choose where Aurix commands work." },
       { name: "/help", description: "Browse every command grouped by category." },
     ],
@@ -2218,7 +2475,9 @@ const HELP_SECTIONS = [
       { name: "/buy item:<id>", description: "Purchase a shop item by id." },
       { name: "/roleshop", description: "Browse and buy server roles listed by admins." },
       { name: "/gift user:<player> amount:<amount>", description: "Send aura to another player." },
+      { name: "/trade", description: "Offer aura or items to another player." },
       { name: "/inventory", description: "Review owned items, battle consumables, skills, and crates." },
+      { name: "/collection", description: "View collection progress and trophies." },
       { name: "/craft recipe:<id>", description: "Turn mined materials into useful rewards." },
       { name: "/forge", description: "Spend aura to upgrade or repair crafted gear." },
       { name: "/garden", description: "Plant and harvest real-time crops." },
@@ -2238,6 +2497,7 @@ const HELP_SECTIONS = [
       { name: "/quests", description: "View your current daily quest set." },
       { name: "/achievements", description: "Claim milestone rewards you have unlocked." },
       { name: "/leaderboard category:<type>", description: "See the top players or clans." },
+      { name: "/season", description: "View current clan season standings." },
       { name: "/authority user:<player>", description: "Use the Riftkeeper+ blessing command." },
       { name: "/premium", description: "View your premium status and website link." },
       { name: "/premium-chest", description: "Open your premium recurring loot chest." },
@@ -2510,26 +2770,48 @@ async function handleStart(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   await user.save();
   return interaction.reply({
-    ...buildPlayerStartPayload(user),
+    ...addQuickActions(buildPlayerStartPayload(user), interaction.user.id, ["daily", "work", "spin", "tutorial"]),
+    ephemeral: true,
+  });
+}
+
+async function handleTutorial(interaction) {
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  normalizeTutorialState(user);
+  const current = TUTORIAL_STEPS[user.tutorial.step];
+  await user.save();
+  return interaction.reply({
+    ...addQuickActions(buildEmbedPayload({
+      title: "Aurix Tutorial",
+      description: user.tutorial.completed
+        ? "Tutorial complete. You can keep growing through quests, vault interest, clans, bosses, and PvP."
+        : `Next step: **${current?.label || "Complete"}**`,
+      visual: "help-summary.svg",
+      fields: [
+        { name: "Path", value: getTutorialStatusLines(user) },
+        { name: "Step Reward", value: current ? `${formatNumber(current.rewardAura)} aura + ${formatNumber(current.rewardXp)} XP` : "Complete", inline: true },
+      ],
+      footer: "Use the buttons below for fast first steps.",
+    }), interaction.user.id, ["daily", "work", "spin", "profile"]),
     ephemeral: true,
   });
 }
 
 async function handleProfile(interaction) {
-  const target = interaction.options.getUser("user") || interaction.user;
+  const target = interaction.options?.getUser?.("user") || interaction.user;
   const user = await getOrCreatePlayer(interaction.guildId, target.id);
   await user.save();
   return interaction.reply(buildProfileEmbed(user, target));
 }
 
 async function handleBalance(interaction) {
-  const target = interaction.options.getUser("user") || interaction.user;
+  const target = interaction.options?.getUser?.("user") || interaction.user;
   const user = await getOrCreatePlayer(interaction.guildId, target.id);
   return interaction.reply(buildBalancePayload(user, target));
 }
 
 async function handleStats(interaction) {
-  const target = interaction.options.getUser("user") || interaction.user;
+  const target = interaction.options?.getUser?.("user") || interaction.user;
   const user = await getOrCreatePlayer(interaction.guildId, target.id);
   await user.save();
 
@@ -2584,6 +2866,287 @@ async function handleGift(interaction) {
   }));
 }
 
+function getTradableQuantity(user, itemId) {
+  if (!itemId) {
+    return 0;
+  }
+  if (itemId.startsWith("crate:")) {
+    const crateId = itemId.slice(6);
+    return CRATES[crateId] ? user.crates.get(crateId) || 0 : 0;
+  }
+  if (!isTradableItemId(itemId)) {
+    return 0;
+  }
+  return getInventoryQuantity(user, itemId);
+}
+
+function isTradableItemId(itemId) {
+  if (!itemId) {
+    return false;
+  }
+  if (MATERIALS[itemId]) {
+    return true;
+  }
+  const item = getItem(itemId);
+  return item?.type === "combat";
+}
+
+function getTradeItemHelpText() {
+  const materialExamples = Object.keys(MATERIALS).slice(0, 3).map((id) => `\`${id}\``).join(", ");
+  return `Tradable ids are materials like ${materialExamples}, combat consumables, or crates like \`crate:rare\`. Permanent perks, skills, and cosmetics are account-bound.`;
+}
+
+function buildTradeActionRows(offer) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`trade:accept:${offer.offerId}:${offer.toUserId}`).setLabel("Accept Trade").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`trade:decline:${offer.offerId}:${offer.toUserId}`).setLabel("Decline").setStyle(ButtonStyle.Secondary)
+    ),
+  ];
+}
+
+function addTradableItem(user, itemId, quantity) {
+  if (itemId.startsWith("crate:")) {
+    const crateId = itemId.slice(6);
+    user.crates.set(crateId, (user.crates.get(crateId) || 0) + quantity);
+    return;
+  }
+  addInventoryItem(user, itemId, quantity);
+}
+
+function removeTradableItem(user, itemId, quantity) {
+  if (itemId.startsWith("crate:")) {
+    const crateId = itemId.slice(6);
+    user.crates.set(crateId, Math.max(0, (user.crates.get(crateId) || 0) - quantity));
+    return;
+  }
+  const entry = user.inventory.find((item) => item.id === itemId);
+  if (entry) {
+    entry.quantity = Math.max(0, entry.quantity - quantity);
+  }
+}
+
+function getTradableLabel(itemId) {
+  if (!itemId) {
+    return "None";
+  }
+  if (itemId.startsWith("crate:")) {
+    return getCrateLabel(itemId.slice(6));
+  }
+  return getInventoryLabel(itemId);
+}
+
+async function acceptTradeOffer(interaction, offerId) {
+  const offer = await TradeOffer.findOne({ offerId, guildId: interaction.guildId, status: "pending" });
+  if (!offer || offer.expiresAt.getTime() <= Date.now()) {
+    if (offer) {
+      offer.status = "expired";
+      await offer.save();
+    }
+    return interaction.reply({ ...buildEmbedPayload({ title: "Trade Missing", description: "That pending trade was not found or already expired.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  if (offer.toUserId !== interaction.user.id) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Trade Blocked", description: "Only the receiving player can accept this trade.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  const sender = await getOrCreatePlayer(interaction.guildId, offer.fromUserId);
+  const receiver = await getOrCreatePlayer(interaction.guildId, offer.toUserId);
+  if (offer.aura > sender.aura || (offer.itemId && getTradableQuantity(sender, offer.itemId) < offer.quantity)) {
+    offer.status = "failed";
+    await offer.save();
+    return interaction.reply({ ...buildEmbedPayload({ title: "Trade Failed", description: "The sender no longer has the offered assets.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  sender.aura -= offer.aura;
+  receiver.aura += offer.aura;
+  if (offer.itemId && offer.quantity > 0) {
+    removeTradableItem(sender, offer.itemId, offer.quantity);
+    addTradableItem(receiver, offer.itemId, offer.quantity);
+  }
+  offer.status = "accepted";
+  await sender.save();
+  await receiver.save();
+  await offer.save();
+  return interaction.reply(buildEmbedPayload({
+    title: "Trade Accepted",
+    description: `Trade \`${offerId}\` completed.`,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Aura", value: `${formatNumber(offer.aura)}`, inline: true },
+      { name: "Item", value: offer.itemId ? `${getTradableLabel(offer.itemId)} x${formatNumber(offer.quantity)}` : "None", inline: true },
+    ],
+  }));
+}
+
+async function handleTrade(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  await TradeOffer.updateMany({ status: "pending", expiresAt: { $lte: new Date() } }, { $set: { status: "expired" } }).catch(() => null);
+
+  if (subcommand === "offer") {
+    const target = interaction.options.getUser("user", true);
+    const aura = interaction.options.getInteger("aura") || 0;
+    const itemId = (interaction.options.getString("item") || "").trim();
+    const quantity = interaction.options.getInteger("quantity") || (itemId ? 1 : 0);
+    if (target.bot || target.id === interaction.user.id) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Trade Blocked", description: "Choose another human player.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    if (aura <= 0 && (!itemId || quantity <= 0)) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Trade Empty", description: "Offer aura, an item, or both.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    const sender = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+    if (itemId && !itemId.startsWith("crate:") && !isTradableItemId(itemId)) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Trade Item Locked", description: getTradeItemHelpText(), visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    if (aura > sender.aura) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Trade Blocked", description: "You do not have that much aura.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    if (itemId && getTradableQuantity(sender, itemId) < quantity) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Trade Blocked", description: `You do not have ${formatNumber(quantity)} ${getTradableLabel(itemId)}.\n${getTradeItemHelpText()}`, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    const offerId = crypto.randomUUID().slice(0, 8);
+    const offer = await TradeOffer.create({
+      guildId: interaction.guildId,
+      offerId,
+      fromUserId: interaction.user.id,
+      toUserId: target.id,
+      aura,
+      itemId: itemId || null,
+      quantity: itemId ? quantity : 0,
+      expiresAt: new Date(Date.now() + TRADE_OFFER_TIMEOUT_MS),
+    });
+    return interaction.reply(withExtraComponents(buildEmbedPayload({
+      title: "Trade Offered",
+      description: `${interaction.user.username} offered a trade to ${target.username}.`,
+      visual: "emblem-success.svg",
+      fields: [
+        { name: "Offer ID", value: `\`${offerId}\``, inline: true },
+        { name: "Aura", value: `${formatNumber(aura)}`, inline: true },
+        { name: "Item", value: itemId ? `${getTradableLabel(itemId)} x${formatNumber(quantity)}` : "None", inline: true },
+      ],
+      footer: `${target.username} can accept with /trade accept id:${offerId}. Offers expire in ${humanizeMs(TRADE_OFFER_TIMEOUT_MS)}.`,
+    }), buildTradeActionRows(offer)));
+  }
+
+  const offerId = interaction.options.getString("id", true).trim();
+  const offer = await TradeOffer.findOne({ offerId, guildId: interaction.guildId, status: "pending" });
+  if (!offer || offer.expiresAt.getTime() <= Date.now()) {
+    if (offer) {
+      offer.status = "expired";
+      await offer.save();
+    }
+    return interaction.reply({ ...buildEmbedPayload({ title: "Trade Missing", description: "That pending trade was not found or already expired.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  if (subcommand === "cancel") {
+    if (offer.fromUserId !== interaction.user.id) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Trade Blocked", description: "Only the sender can cancel this trade.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    offer.status = "cancelled";
+    await offer.save();
+    return interaction.reply(buildEmbedPayload({ title: "Trade Cancelled", description: `Trade \`${offerId}\` was cancelled.`, visual: "emblem-success.svg" }));
+  }
+
+  return acceptTradeOffer(interaction, offerId);
+}
+
+async function handleCollection(interaction) {
+  const target = interaction.options?.getUser?.("user") || interaction.user;
+  const user = await getOrCreatePlayer(interaction.guildId, target.id);
+  const perkTotal = SHOP_ITEMS.filter((item) => item.type === "perk").length;
+  const skillUnlockTotal = SHOP_ITEMS.filter((item) => item.type === "skill_unlock").length;
+  const materialCount = user.inventory.filter((entry) => MATERIALS[entry.id] && entry.quantity > 0).length;
+  const perkCount = user.ownedPerks.length;
+  const skillCount = user.skills.length;
+  const unlockSkillCount = user.skills.filter((skillId) => skillId !== "focus").length;
+  const crateTypes = Array.from(user.crates.entries()).filter(([, count]) => count > 0).length;
+  const bossTrophies = [
+    user.stats.bossWins >= 1 ? "First Boss Clear" : null,
+    user.stats.bossWins >= 5 ? "Boss Hunter" : null,
+    user.stats.pvpWins >= 5 ? "Duelist Mark" : null,
+    user.prestige >= 1 ? "Prestige Sigil" : null,
+  ].filter(Boolean);
+  const totalSlots = Object.keys(MATERIALS).length + perkTotal + skillUnlockTotal + Object.keys(CRATES).length + 4;
+  const ownedSlots = materialCount + Math.min(perkCount, perkTotal) + Math.min(unlockSkillCount, skillUnlockTotal) + crateTypes + bossTrophies.length;
+  return interaction.reply(buildEmbedPayload({
+    title: `${target.username}'s Collection`,
+    description: withFlavor(
+      pickFlavor([
+        "The collection cabinet lights up row by row.",
+        "A profile archivist counts the rare pieces first.",
+        "Your trophies, crates, and materials settle into view.",
+      ]),
+      `${progressBar(ownedSlots, totalSlots)}\n${formatNumber(ownedSlots)} / ${formatNumber(totalSlots)} collection marks found.`
+    ),
+    visual: "core-profile.svg",
+    fields: [
+      { name: "Materials", value: `${materialCount} / ${Object.keys(MATERIALS).length}`, inline: true },
+      { name: "Perks", value: `${Math.min(perkCount, perkTotal)} / ${perkTotal}`, inline: true },
+      { name: "Skill Unlocks", value: `${Math.min(unlockSkillCount, skillUnlockTotal)} / ${skillUnlockTotal}`, inline: true },
+      { name: "Crate Types", value: `${crateTypes} / ${Object.keys(CRATES).length}`, inline: true },
+      { name: "Known Skills", value: `${skillCount}`, inline: true },
+      { name: "Trophies", value: bossTrophies.join("\n") || "No trophies yet." },
+    ],
+    footer: "Collection marks are earned from materials, perks, crates, prestige, PvP, and bosses.",
+  }));
+}
+
+function getSeasonId(date = new Date()) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+async function handleSeason(interaction) {
+  const clans = await Clan.find(buildClanLeaderboardFilter(interaction.guildId)).sort({ trophies: -1, wins: -1 }).limit(10);
+  const lines = clans.length
+    ? clans.map((clan, index) => `${index + 1}. **${clan.name}** - ${formatNumber(clan.trophies)} trophies, ${formatNumber(clan.wins)} war wins`).join("\n")
+    : "No clans are competing yet.";
+  return interaction.reply(buildEmbedPayload({
+    title: `Clan Season ${getSeasonId()}`,
+    description: lines,
+    visual: "clan-top.svg",
+    fields: [
+      { name: "How To Score", value: "Win clan raids and wars to gain trophies. Higher arsenal and hall upgrades improve your odds." },
+      { name: "Season Hook", value: "Use this leaderboard for monthly rewards, shoutouts, and server events." },
+    ],
+    footer: "Season standings are based on current clan trophies.",
+  }));
+}
+
+function getServerQuestTemplate() {
+  const templates = [
+    { id: "spins", label: "Server Spin Drive", metric: "stats.spins", goal: 100, description: "Use /spin as a community." },
+    { id: "mines", label: "Server Mining Push", metric: "stats.mines", goal: 80, description: "Run /mine and stock the server economy with materials." },
+    { id: "bosses", label: "Boss Hunt", metric: "stats.bossWins", goal: 25, description: "Defeat bosses across the server." },
+    { id: "vault", label: "Vault Builders", metric: "stats.vaultDeposit", goal: 250000, description: "Deposit aura into personal vaults." },
+  ];
+  const dayIndex = Math.floor(Date.now() / (24 * 60 * 60 * 1000)) % templates.length;
+  return templates[dayIndex];
+}
+
+async function handleServerQuest(interaction) {
+  const quest = getServerQuestTemplate();
+  const users = await User.find(buildPlayerLeaderboardFilter(interaction.guildId)).select(quest.metric).lean();
+  const totalProgress = users.reduce((sum, user) => {
+    const value = quest.metric.split(".").reduce((acc, key) => acc?.[key], user);
+    return sum + (Number(value) || 0);
+  }, 0);
+  const completedCycles = Math.floor(totalProgress / quest.goal);
+  const currentTier = Math.floor(Math.max(0, totalProgress - 1) / quest.goal) + 1;
+  const displayProgress = totalProgress === 0 ? 0 : ((totalProgress - 1) % quest.goal) + 1;
+  return interaction.reply(buildEmbedPayload({
+    title: quest.label,
+    description: `${quest.description}\n${progressBar(displayProgress, quest.goal)}\n${formatNumber(displayProgress)} / ${formatNumber(quest.goal)} toward community tier ${formatNumber(currentTier)}`,
+    visual: "help-summary.svg",
+    fields: [
+      { name: "Participants", value: `${formatNumber(users.length)} player profiles counted`, inline: true },
+      { name: "Completed Tiers", value: `${formatNumber(completedCycles)}`, inline: true },
+      { name: "Total Server Progress", value: `${formatNumber(totalProgress)}`, inline: true },
+    ],
+    footer: "The focus rotates daily. Server progress loops into repeatable community tiers.",
+  }));
+}
+
 async function handleWork(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const remaining = getCooldownRemaining(user.lastWorkAt, COOLDOWNS.workMs, user);
@@ -2602,9 +3165,23 @@ async function handleWork(interaction) {
   await syncRank(user);
   await user.save();
 
-  return interaction.reply(buildEmbedPayload({
+  const footer = await buildSocialProofFooter(
+    interaction.guildId,
+    { "stats.works": { $gte: user.stats.works } },
+    (count) => `${formatOtherPlayers(count)} completed this many shifts.`
+  );
+
+  return interaction.reply(addQuickActions(buildEmbedPayload({
     title: "Shift Complete",
-    description: `You finished a clean shift and earned **${formatNumber(auraReward)} aura** plus **${formatNumber(xpReward)} XP**.`,
+    description: withFlavor(
+      pickFlavor([
+        "The ledger clicks shut with another clean entry.",
+        "The market lights flicker as your shift wraps up.",
+        "A steady route, a steady payout, and a little more momentum.",
+        "The work board clears your name for the next cycle.",
+      ]),
+      `You earned **${formatNumber(auraReward)} aura** plus **${formatNumber(xpReward)} XP**.`
+    ),
     visual: "economy-vault.svg",
     fields: [
       { name: "Total Shifts", value: `${formatNumber(user.stats.works)}`, inline: true },
@@ -2612,7 +3189,8 @@ async function handleWork(interaction) {
       { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
       { name: "Premium", value: isPremiumActive(user) ? "Work boost applied" : "No premium boost", inline: true },
     ],
-  }));
+    footer,
+  }), interaction.user.id, ["work", "mine", "spin", "rank"]));
 }
 
 async function handleMine(interaction) {
@@ -2642,9 +3220,22 @@ async function handleMine(interaction) {
   await user.save();
 
   const materialLines = gained.map((entry) => `${getInventoryLabel(entry.id)} x${entry.quantity}`).join("\n");
-  return interaction.reply(buildEmbedPayload({
+  const footer = await buildSocialProofFooter(
+    interaction.guildId,
+    { "stats.mines": { $gte: user.stats.mines } },
+    (count) => `${formatOtherPlayers(count)} reached this mining count.`
+  );
+  return interaction.reply(addQuickActions(buildEmbedPayload({
     title: "Mining Run Complete",
-    description: "You returned from the tunnels with fresh materials and a little spare aura.",
+    description: withFlavor(
+      pickFlavor([
+        "Dust settles over the tunnel mouth as your pack hits the floor.",
+        "The scanner chirps twice before the haul is counted.",
+        "A quiet vein opens just long enough to make the run worth it.",
+        "Your tools cool down with a soft metallic tick.",
+      ]),
+      "You returned with fresh materials and a little spare aura."
+    ),
     visual: "economy-vault.svg",
     fields: [
       { name: "Materials", value: materialLines || "Nothing useful found." },
@@ -2653,7 +3244,8 @@ async function handleMine(interaction) {
       { name: "Next Mine", value: "12 minutes", inline: true },
       { name: "Premium", value: isPremiumActive(user) ? "Mining boost applied" : "No premium boost", inline: true },
     ],
-  }));
+    footer,
+  }), interaction.user.id, ["mine", "inventory", "collection", "quests"]));
 }
 
 async function handleRob(interaction) {
@@ -2782,15 +3374,30 @@ async function handleAchievements(interaction) {
     await user.save();
 
     const claimedLines = available.map((achievement) => `**${achievement.name}**\n${achievement.description}`).join("\n\n");
+    const featuredAchievement = available[available.length - 1];
+    const footer = await buildSocialProofFooter(
+      interaction.guildId,
+      { claimedAchievements: featuredAchievement.id },
+      (count) => `${formatOtherPlayers(count)} claimed ${featuredAchievement.name}.`
+    );
     return interaction.reply(buildEmbedPayload({
       title: "Achievements Claimed",
-      description: claimedLines,
+      description: withFlavor(
+        pickFlavor([
+          "The achievement ledger stamps the new milestone.",
+          "A quiet flare marks the progress you just locked in.",
+          "The milestone panel updates before the rewards arrive.",
+          "A new badge line joins your account history.",
+        ]),
+        claimedLines
+      ),
       visual: "help-summary.svg",
       fields: [
         { name: "Aura Earned", value: `${formatNumber(rewardAura)}`, inline: true },
         { name: "XP Earned", value: `${formatNumber(rewardXp)}`, inline: true },
         { name: "Claimed", value: `${available.length} achievement(s)`, inline: true },
       ],
+      footer,
     }));
   }
 
@@ -2802,17 +3409,35 @@ async function handleAchievements(interaction) {
 
   return interaction.reply(buildEmbedPayload({
     title: "Achievements",
-    description: lines,
+    description: withFlavor(
+      pickFlavor([
+        "The milestone board slides open for review.",
+        "Your progress markers settle into their current slots.",
+        "The achievement panel checks every route you have touched.",
+        "A full milestone scan runs across your profile.",
+      ]),
+      lines
+    ),
     visual: "help-summary.svg",
     footer: "This command auto-claims every unlocked achievement.",
   }));
 }
 
 async function handleEvent(interaction) {
+  const action = interaction.options.getString("action") || "status";
   const event = getCurrentWorldEvent();
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const activeServerEvent = getActiveServerEvent(settings);
+
+  if (action === "claim") {
+    return claimServerEvent(interaction);
+  }
+
   return interaction.reply(buildEmbedPayload({
     title: `World Event: ${event.name}`,
-    description: event.description,
+    description: activeServerEvent
+      ? `${event.description}\n\nActive server event:\n${formatServerEvent(activeServerEvent)}`
+      : `${event.description}\n\nNo server event is active right now. Keep using Aurix commands and one may appear.`,
     visual: "help-summary.svg",
     fields: [
       { name: "Ends In", value: humanizeMs(event.endsAt - Date.now()), inline: true },
@@ -3349,9 +3974,23 @@ async function handleSpin(interaction) {
   await syncRank(user);
   await user.save();
 
-  return interaction.reply(buildEmbedPayload({
+  const footer = await buildSocialProofFooter(
+    interaction.guildId,
+    { "stats.spins": { $gte: user.stats.spins } },
+    (count) => `${formatOtherPlayers(count)} spun this many times.`
+  );
+
+  return interaction.reply(addQuickActions(buildEmbedPayload({
     title: "Spin Complete",
-    description: `The wheel landed clean. You gained **${formatNumber(reward)} aura** and **${formatNumber(xpGain)} XP**.`,
+    description: withFlavor(
+      pickFlavor([
+        "The wheel creaks once, then snaps into place.",
+        "The aura dial pulses brighter just before the result locks.",
+        "A clean spin sends sparks across the arcade glass.",
+        "The spinner hums like it knew where it wanted to land.",
+      ]),
+      `You gained **${formatNumber(reward)} aura** and **${formatNumber(xpGain)} XP**.`
+    ),
     visual: "core-arcade.svg",
     fields: [
       { name: "Jackpot", value: jackpot > 0 ? `Triggered for ${formatNumber(jackpot)} aura` : "Not this time", inline: true },
@@ -3359,7 +3998,8 @@ async function handleSpin(interaction) {
       { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
       { name: "Premium", value: isPremiumActive(user) ? "Spin boost applied" : "No premium boost", inline: true },
     ],
-  }));
+    footer,
+  }), interaction.user.id, ["spin", "daily", "work", "rank"]));
 }
 
 async function handleCoinflip(interaction) {
@@ -3454,16 +4094,31 @@ async function handleDaily(interaction) {
   await syncRank(user);
   await user.save();
 
-  return interaction.reply(buildEmbedPayload({
+  const footer = await buildSocialProofFooter(
+    interaction.guildId,
+    { streak: { $gte: user.streak } },
+    (count) => `${formatOtherPlayers(count)} held a streak this long.`
+  );
+
+  return interaction.reply(addQuickActions(buildEmbedPayload({
     title: "Daily Reward Claimed",
-    description: `Your streak is now **${user.streak}**.`,
+    description: withFlavor(
+      pickFlavor([
+        "The daily seal opens with a warm flash.",
+        "A fresh reward packet drops into your route.",
+        "The streak counter wakes up and keeps climbing.",
+        "Today's claim lands right on schedule.",
+      ]),
+      `Your streak is now **${user.streak}**.`
+    ),
     visual: "emblem-success.svg",
     fields: [
       { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
       { name: "XP", value: `${formatNumber(xpReward)}`, inline: true },
       { name: "Bonus", value: premiumRareCrates > 0 ? `Premium bonus ${getCrateLabel("rare")} x${premiumRareCrates} + ${user.streak % 7 === 0 ? `streak ${getCrateLabel("rare")}` : getCrateLabel("common")}` : user.streak % 7 === 0 ? `${getCrateLabel("rare")} earned` : `${getCrateLabel("common")} earned`, inline: true },
     ],
-  }));
+    footer,
+  }), interaction.user.id, ["work", "spin", "quests", "tutorial"]));
 }
 
 async function handlePremiumChest(interaction) {
@@ -3568,9 +4223,23 @@ async function handleVault(interaction) {
 
   await user.save();
 
-  return interaction.reply(buildEmbedPayload({
+  const footer = await buildSocialProofFooter(
+    interaction.guildId,
+    { vaultAura: { $gte: user.vaultAura } },
+    (count) => `${formatOtherPlayers(count)} built a vault this large.`
+  );
+
+  return interaction.reply(addQuickActions(buildEmbedPayload({
     title: "Vault Updated",
-    description: `${interest > 0 ? `Interest added before processing: **${formatNumber(interest)} aura**.\n` : ""}Your vault is secure and compounding.`,
+    description: withFlavor(
+      pickFlavor([
+        "The vault seals rotate and settle into place.",
+        "A low chime rolls through the vault chamber.",
+        "The ledger recalculates before the doors lock again.",
+        "Stored aura glows behind the reinforced glass.",
+      ]),
+      `${interest > 0 ? `Interest added before processing: **${formatNumber(interest)} aura**.\n` : ""}Your vault is secure and compounding.`
+    ),
     visual: "economy-vault.svg",
     fields: [
       { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
@@ -3578,7 +4247,8 @@ async function handleVault(interaction) {
       { name: "Current Interest", value: `${(vaultRate * 100).toFixed(1)}% per hour`, inline: true },
       { name: "Rate Breakdown", value: bonusLines.join("\n") },
     ],
-  }));
+    footer,
+  }), interaction.user.id, ["balance", "rank", "collection", "quests"]));
 }
 
 async function handleShop(interaction) {
@@ -3819,9 +4489,22 @@ async function handleRank(interaction) {
   const next = nextRank(user.rankIndex);
   const currentXp = user.xp - current.xpRequired;
   const totalXp = Math.max(1, next.xpRequired - current.xpRequired);
-  return interaction.reply(buildEmbedPayload({
+  const footer = await buildSocialProofFooter(
+    interaction.guildId,
+    { rankIndex: { $gte: user.rankIndex } },
+    (count) => `${formatOtherPlayers(count)} reached ${getRankLabel(current)} or higher.`
+  );
+  return interaction.reply(addQuickActions(buildEmbedPayload({
     title: "Rank Progress",
-    description: "Rank is based on XP, separate from aura. Losing combat can rank you down if XP falls below the threshold.",
+    description: withFlavor(
+      pickFlavor([
+        "The rank board refreshes and finds your marker.",
+        "Your XP trail sharpens into the next visible step.",
+        "The ladder holds steady while the next tier waits.",
+        "Progress scans clean across the current bracket.",
+      ]),
+      "Rank is based on XP, separate from aura. Losing combat can rank you down if XP falls below the threshold."
+    ),
     visual: "core-profile.svg",
     fields: [
       { name: "Current Rank", value: getRankLabel(current), inline: true },
@@ -3829,7 +4512,8 @@ async function handleRank(interaction) {
       { name: "Prestige", value: `${user.prestige}`, inline: true },
       { name: "Progress", value: `${progressBar(currentXp, totalXp)}\n${formatNumber(currentXp)} / ${formatNumber(totalXp)} XP` },
     ],
-  }));
+    footer,
+  }), interaction.user.id, ["profile", "quests", "achievements", "collection"]));
 }
 
 async function handlePrestige(interaction) {
@@ -3848,14 +4532,29 @@ async function handlePrestige(interaction) {
   user.crates.set("epic", (user.crates.get("epic") || 0) + 1);
   await user.save();
 
+  const footer = await buildSocialProofFooter(
+    interaction.guildId,
+    { prestige: { $gte: user.prestige } },
+    (count) => `${formatOtherPlayers(count)} reached prestige ${user.prestige} or higher.`
+  );
+
   return interaction.reply(buildEmbedPayload({
     title: "Prestige Complete",
-    description: `You reset your rank ladder and advanced to prestige **${user.prestige}**.`,
+    description: withFlavor(
+      pickFlavor([
+        "The ladder folds inward, then opens at a higher layer.",
+        "A new prestige mark burns into the profile ledger.",
+        "The old climb resets, but the account remembers the height.",
+        "The next run starts with a brighter baseline.",
+      ]),
+      `You reset your rank ladder and advanced to prestige **${user.prestige}**.`
+    ),
     visual: "emblem-success.svg",
     fields: [
       { name: "Aura Cost", value: `${formatNumber(auraCost)}`, inline: true },
       { name: "Reward", value: "1 epic crate + higher future daily and vault scaling", inline: true },
     ],
+    footer,
   }));
 }
 
@@ -5493,6 +6192,84 @@ async function handlePvpQueueButton(interaction) {
   });
 }
 
+async function handleQuickActionButton(interaction) {
+  const [, action, ownerId] = interaction.customId.split(":");
+  if (ownerId !== interaction.user.id) {
+    return interaction.reply({ content: "Only the player who opened this panel can use these shortcuts.", ephemeral: true });
+  }
+  const handlers = {
+    daily: handleDaily,
+    work: handleWork,
+    mine: handleMine,
+    spin: handleSpin,
+    balance: handleBalance,
+    profile: handleProfile,
+    rank: handleRank,
+    quests: handleQuests,
+    achievements: handleAchievements,
+    tutorial: handleTutorial,
+    inventory: handleInventory,
+    collection: handleCollection,
+  };
+  const handler = handlers[action];
+  if (!handler) {
+    return interaction.reply({ content: "That shortcut is not available anymore.", ephemeral: true });
+  }
+  const result = await handler(interaction);
+  await runPostCommandEngagement(interaction, action, null);
+  await sendPendingRankUpMessages(interaction);
+  return result;
+}
+
+async function handleTradeButton(interaction) {
+  const [, action, offerId, targetUserId] = interaction.customId.split(":");
+  if (targetUserId !== interaction.user.id) {
+    return interaction.reply({ content: "Only the trade recipient can use this button.", ephemeral: true });
+  }
+  if (action === "accept") {
+    return acceptTradeOffer(interaction, offerId);
+  }
+  if (action === "decline") {
+    const offer = await TradeOffer.findOne({ offerId, guildId: interaction.guildId, status: "pending" });
+    if (!offer) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Trade Missing", description: "That trade is no longer pending.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    offer.status = "declined";
+    await offer.save();
+    return interaction.reply(buildEmbedPayload({ title: "Trade Declined", description: `Trade \`${offerId}\` was declined.`, visual: "emblem-success.svg" }));
+  }
+  return interaction.reply({ content: "That trade action is not supported.", ephemeral: true });
+}
+
+async function handleEventButton(interaction) {
+  const [, action, guildId] = interaction.customId.split(":");
+  if (action !== "claim" || guildId !== interaction.guildId) {
+    return interaction.reply({ content: "That event action is no longer available here.", ephemeral: true });
+  }
+  return claimServerEvent(interaction);
+}
+
+async function runPostCommandEngagement(interaction, commandName, subcommand = null) {
+  if (!interaction?.guildId || !interaction.user?.id || !ENGAGEMENT_COMMANDS.has(commandName)) {
+    return;
+  }
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const tutorialResult = await advanceTutorial(user, commandName, subcommand);
+  await user.save();
+  if (tutorialResult && interaction.followUp) {
+    await interaction.followUp({
+      ...buildEmbedPayload({
+        title: tutorialResult.completed ? "Tutorial Complete" : "Tutorial Progress",
+        description: tutorialResult.message,
+        visual: "emblem-success.svg",
+      }),
+      ephemeral: true,
+    }).catch(() => null);
+  }
+  await maybeAnnounceMilestones(interaction, user);
+  await maybeSpawnServerEvent(interaction);
+}
+
 async function showPvpQueueStatus(interaction) {
   const entry = await findQueuedPvpForUser(interaction.user.id);
   if (!entry) {
@@ -6458,9 +7235,10 @@ async function handleAuthority(interaction) {
 function buildCommands() {
   return [
     new SlashCommandBuilder().setName("help").setDescription("Browse game commands by category.").addStringOption((option) => option.setName("category").setDescription("Open one help category").addChoices(...HELP_SECTIONS.map((section) => ({ name: section.name, value: section.id })))),
-    new SlashCommandBuilder().setName("event").setDescription("View the current rotating world event."),
+    new SlashCommandBuilder().setName("event").setDescription("View or claim current events.").addStringOption((option) => option.setName("action").setDescription("Event action").addChoices({ name: "status", value: "status" }, { name: "claim", value: "claim" })),
     new SlashCommandBuilder().setName("setup").setDescription("Set this or another channel as the Aurix bot channel.").addChannelOption((option) => option.setName("channel").setDescription("Optional channel; leave empty to use this channel").addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
     new SlashCommandBuilder().setName("start").setDescription("Create your save and open the quick-start guide."),
+    new SlashCommandBuilder().setName("tutorial").setDescription("Follow the guided first-session reward path."),
     new SlashCommandBuilder().setName("profile").setDescription("View your or another player's profile.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
     new SlashCommandBuilder().setName("stats").setDescription("View deeper player stats.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
     new SlashCommandBuilder().setName("balance").setDescription("Check wallet and vault balance.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
@@ -6483,7 +7261,12 @@ function buildCommands() {
       .addSubcommand((sub) => sub.setName("list").setDescription("View purchasable server roles."))
       .addSubcommand((sub) => sub.setName("buy").setDescription("Buy a listed server role with aura.").addStringOption((option) => option.setName("listing").setDescription("Listing id from /roleshop list").setRequired(true))),
     new SlashCommandBuilder().setName("gift").setDescription("Send aura to another player.").addUserOption((option) => option.setName("user").setDescription("Receiving player").setRequired(true)).addIntegerOption((option) => option.setName("amount").setDescription("Aura to send").setRequired(true).setMinValue(1)),
+    new SlashCommandBuilder().setName("trade").setDescription("Offer or accept player trades.")
+      .addSubcommand((sub) => sub.setName("offer").setDescription("Offer aura or an item to another player.").addUserOption((option) => option.setName("user").setDescription("Receiving player").setRequired(true)).addIntegerOption((option) => option.setName("aura").setDescription("Aura to offer").setMinValue(1)).addStringOption((option) => option.setName("item").setDescription("Item id, or crate:<type> for crates")).addIntegerOption((option) => option.setName("quantity").setDescription("Item quantity").setMinValue(1)))
+      .addSubcommand((sub) => sub.setName("accept").setDescription("Accept a pending trade.").addStringOption((option) => option.setName("id").setDescription("Trade offer id").setRequired(true)))
+      .addSubcommand((sub) => sub.setName("cancel").setDescription("Cancel your pending trade.").addStringOption((option) => option.setName("id").setDescription("Trade offer id").setRequired(true))),
     new SlashCommandBuilder().setName("inventory").setDescription("View your items, perks, skills, and crates."),
+    new SlashCommandBuilder().setName("collection").setDescription("View a player's collection progress.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
     new SlashCommandBuilder().setName("craft").setDescription("Craft something from mined materials.").addStringOption((option) => option.setName("recipe").setDescription("Recipe id").setRequired(true).addChoices(...CRAFTING_RECIPES.map((recipe) => ({ name: recipe.name, value: recipe.id })))),
     new SlashCommandBuilder().setName("forge").setDescription("Upgrade and repair crafted gear with aura.")
       .addSubcommand((sub) => sub.setName("status").setDescription("View forge levels and durability."))
@@ -6512,6 +7295,8 @@ function buildCommands() {
       .addStringOption((option) => option.setName("mode").setDescription("Global matchmaking control").addChoices({ name: "join", value: "join" }, { name: "status", value: "status" })),
     new SlashCommandBuilder().setName("boss").setDescription("Fight a boss.").addStringOption((option) => option.setName("boss").setDescription("Boss id").addChoices({ name: "ember", value: "ember" }, { name: "oracle", value: "oracle" }, { name: "warden", value: "warden" }, { name: "codex", value: "codex" })),
     new SlashCommandBuilder().setName("leaderboard").setDescription("View top players and clans.").addStringOption((option) => option.setName("category").setDescription("Leaderboard type").setRequired(true).addChoices({ name: "aura", value: "aura" }, { name: "vault", value: "vault" }, { name: "xp", value: "xp" }, { name: "prestige", value: "prestige" }, { name: "clans", value: "clans" })).addStringOption((option) => option.setName("scope").setDescription("Global or this server only").addChoices({ name: "global", value: "global" }, { name: "server", value: "server" })),
+    new SlashCommandBuilder().setName("season").setDescription("View the current clan season standings."),
+    new SlashCommandBuilder().setName("serverquest").setDescription("View the rotating community quest."),
     new SlashCommandBuilder().setName("premium").setDescription("View your premium status."),
     new SlashCommandBuilder().setName("premium-chest").setDescription("Open your premium recurring loot chest."),
     new SlashCommandBuilder().setName("clan").setDescription("Manage your clan.").addSubcommand((sub) => sub.setName("create").setDescription("Create a clan for 50,000 aura.").addStringOption((option) => option.setName("name").setDescription("Clan name").setRequired(true))).addSubcommand((sub) => sub.setName("join").setDescription("Join a clan by code.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("apply").setDescription("Send a join request for approval.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("leave").setDescription("Leave your clan.")).addSubcommand((sub) => sub.setName("info").setDescription("View your clan.")).addSubcommand((sub) => sub.setName("members").setDescription("List clan members.")).addSubcommand((sub) => sub.setName("log").setDescription("View recent clan activity.")).addSubcommand((sub) => sub.setName("kick").setDescription("Owner-only member removal.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true))).addSubcommand((sub) => sub.setName("approve").setDescription("Owner or officer request approval.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("decline").setDescription("Owner or officer reject an applicant.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("role").setDescription("Owner-only officer management.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true)).addStringOption((option) => option.setName("role").setDescription("Role to set").setRequired(true).addChoices({ name: "officer", value: "officer" }, { name: "member", value: "member" }))).addSubcommand((sub) => sub.setName("transfer").setDescription("Owner-only leadership transfer.").addUserOption((option) => option.setName("user").setDescription("New owner").setRequired(true))).addSubcommand((sub) => sub.setName("disband").setDescription("Owner-only full clan deletion.")).addSubcommand((sub) => sub.setName("upgrade").setDescription("Spend clan vault aura on upgrades.").addStringOption((option) => option.setName("path").setDescription("Upgrade path").setRequired(true).addChoices({ name: "hall", value: "hall" }, { name: "vault", value: "vault" }, { name: "arsenal", value: "arsenal" }))).addSubcommand((sub) => sub.setName("raid").setDescription("Launch a cooldown-based clan raid.")).addSubcommand((sub) => sub.setName("donate").setDescription("Donate aura to your clan.").addIntegerOption((option) => option.setName("amount").setDescription("Amount").setRequired(true).setMinValue(1))).addSubcommand((sub) => sub.setName("war").setDescription("Fight another clan by code.").addStringOption((option) => option.setName("enemy").setDescription("Enemy clan code").setRequired(true))),
@@ -6535,6 +7320,22 @@ async function routeInteraction(interaction) {
   recentInteractions.splice(25);
   console.log("Aurix interaction routed:", interactionLog);
 
+  if (interaction.isButton() && interaction.customId?.startsWith("quick:")) {
+    return handleQuickActionButton(interaction);
+  }
+
+  if (interaction.isButton() && interaction.customId?.startsWith("trade:")) {
+    const result = await handleTradeButton(interaction);
+    await sendPendingRankUpMessages(interaction);
+    return result;
+  }
+
+  if (interaction.isButton() && interaction.customId?.startsWith("event:")) {
+    const result = await handleEventButton(interaction);
+    await sendPendingRankUpMessages(interaction);
+    return result;
+  }
+
   if (interaction.isButton() && interaction.customId?.startsWith("pvpqueue:")) {
     const result = await handlePvpQueueButton(interaction);
     await sendPendingRankUpMessages(interaction);
@@ -6550,7 +7351,7 @@ async function routeInteraction(interaction) {
     return null;
   }
 
-  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, inventory: handleInventory, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, premium: handlePremium, clan: handleClan, authority: handleAuthority };
+  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, tutorial: handleTutorial, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, trade: handleTrade, inventory: handleInventory, collection: handleCollection, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, season: handleSeason, serverquest: handleServerQuest, premium: handlePremium, clan: handleClan, authority: handleAuthority };
   const handler = handlers[interaction.commandName];
   if (!handler) {
     return interaction.reply({ content: "Unknown command.", ephemeral: true });
@@ -6575,6 +7376,8 @@ async function routeInteraction(interaction) {
   }
 
   const result = await handler(interaction);
+  const subcommand = interaction.options?.getSubcommand?.(false) || null;
+  await runPostCommandEngagement(interaction, interaction.commandName, subcommand);
   await sendPendingRankUpMessages(interaction);
   return result;
 }

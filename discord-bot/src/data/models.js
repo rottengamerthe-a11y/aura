@@ -59,6 +59,19 @@ const clanLogEntrySchema = new mongoose.Schema(
   { _id: false }
 );
 
+const activeEventSchema = new mongoose.Schema(
+  {
+    id: { type: String, default: null },
+    name: { type: String, default: null },
+    description: { type: String, default: null },
+    rewardAura: { type: Number, default: 0 },
+    rewardXp: { type: Number, default: 0 },
+    expiresAt: { type: Date, default: null },
+    claimedUserIds: { type: [String], default: [] },
+  },
+  { _id: false }
+);
+
 const userSchema = new mongoose.Schema(
   {
     guildId: { type: String, index: true },
@@ -78,6 +91,7 @@ const userSchema = new mongoose.Schema(
     lastBossAt: { type: Date, default: null },
     lastAuthorityAt: { type: Date, default: null },
     lastVaultInterestAt: { type: Date, default: null },
+    vaultInterestRemainder: { type: Number, default: 0 },
     inventory: { type: [inventoryEntrySchema], default: [] },
     gardenPlots: { type: [gardenPlotSchema], default: [{ cropId: null, plantedAt: null }, { cropId: null, plantedAt: null }] },
     ownedPerks: { type: [String], default: [] },
@@ -100,6 +114,12 @@ const userSchema = new mongoose.Schema(
     crates: { type: Map, of: Number, default: {} },
     quests: { type: [questSchema], default: [] },
     claimedAchievements: { type: [String], default: [] },
+    announcedMilestones: { type: [String], default: [] },
+    tutorial: {
+      step: { type: Number, default: 0 },
+      completed: { type: Boolean, default: false },
+      claimedSteps: { type: [String], default: [] },
+    },
     premium: {
       active: { type: Boolean, default: false },
       expiresAt: { type: Date, default: null },
@@ -253,6 +273,23 @@ const guildSettingsSchema = new mongoose.Schema(
     aurixChannelId: { type: String, default: null },
     configuredBy: { type: String, default: null },
     configuredAt: { type: Date, default: null },
+    activeEvent: { type: activeEventSchema, default: null },
+    lastEventSpawnAt: { type: Date, default: null },
+  },
+  { timestamps: true }
+);
+
+const tradeOfferSchema = new mongoose.Schema(
+  {
+    guildId: { type: String, default: null, index: true },
+    offerId: { type: String, required: true, unique: true, index: true },
+    fromUserId: { type: String, required: true, index: true },
+    toUserId: { type: String, required: true, index: true },
+    aura: { type: Number, default: 0 },
+    itemId: { type: String, default: null },
+    quantity: { type: Number, default: 0 },
+    status: { type: String, default: "pending", index: true },
+    expiresAt: { type: Date, required: true, index: true },
   },
   { timestamps: true }
 );
@@ -297,5 +334,6 @@ const PvpInvite = mongoose.models.PvpInvite || mongoose.model("PvpInvite", pvpIn
 const PvpMatchmakingQueue = mongoose.models.PvpMatchmakingQueue || mongoose.model("PvpMatchmakingQueue", pvpMatchmakingQueueSchema);
 const RoleListing = mongoose.models.RoleListing || mongoose.model("RoleListing", roleListingSchema);
 const RolePurchase = mongoose.models.RolePurchase || mongoose.model("RolePurchase", rolePurchaseSchema);
+const TradeOffer = mongoose.models.TradeOffer || mongoose.model("TradeOffer", tradeOfferSchema);
 
-module.exports = { BattleSession, Clan, GuildSettings, PaddleWebhookLog, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, User };
+module.exports = { BattleSession, Clan, GuildSettings, PaddleWebhookLog, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TradeOffer, User };
