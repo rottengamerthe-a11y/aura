@@ -1,7 +1,7 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
 const crypto = require("crypto");
 const { BOSSES, COLORS, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
-const { BattleSession, Clan, GuildSettings, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TradeOffer, User } = require("../data/models");
+const { BattleSession, Clan, GuildSettings, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TopggVoteLog, TradeOffer, User } = require("../data/models");
 const { buildClanCreateData, buildClanLeaderboardFilter, buildClanLookup, buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
 const { buildProfileCosmeticAttachment, FILE_NAME: PROFILE_COSMETIC_FILE } = require("../utils/cosmeticArt");
 const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
@@ -10,7 +10,7 @@ const activeBattles = new Map();
 const pendingRankUps = new Map();
 const reminderIntervals = new WeakMap();
 const recentInteractions = [];
-const COMMAND_BUILD_ID = "aurix-premium-buffs-v20";
+const COMMAND_BUILD_ID = "aurix-topgg-vote-rewards-v21";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const BATTLE_ANIMATION_DELAY_MS = 900;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
@@ -48,7 +48,7 @@ const SERVER_EVENT_TEMPLATES = Object.freeze([
     rewardXp: 180,
   },
 ]);
-const ENGAGEMENT_COMMANDS = new Set(["start", "tutorial", "profile", "stats", "balance", "work", "mine", "spin", "coinflip", "rob", "daily", "vault", "shop", "buy", "gift", "trade", "inventory", "collection", "craft", "forge", "garden", "property", "expedition", "gear", "rank", "prestige", "achievements", "quests", "crate", "skills", "pvp", "boss", "leaderboard", "season", "serverquest", "premium-chest", "clan", "authority", "event"]);
+const ENGAGEMENT_COMMANDS = new Set(["start", "tutorial", "profile", "stats", "balance", "work", "mine", "spin", "coinflip", "rob", "daily", "vote", "vault", "shop", "buy", "gift", "trade", "inventory", "collection", "craft", "forge", "garden", "property", "expedition", "gear", "rank", "prestige", "achievements", "quests", "crate", "skills", "pvp", "boss", "leaderboard", "season", "serverquest", "premium-chest", "clan", "authority", "event"]);
 const QUICK_ACTIONS = Object.freeze({
   achievements: { label: "Achievements", style: ButtonStyle.Secondary },
   balance: { label: "Balance", style: ButtonStyle.Secondary },
@@ -147,6 +147,16 @@ const PREMIUM_PLANS = Object.freeze({
 });
 const PREMIUM_PURCHASE_URL = "https://aurawebsite-12gd.onrender.com";
 const OFFICIAL_SERVER_URL = "https://aurawebsite-12gd.onrender.com";
+const TOPGG_VOTE_COOLDOWN_MS = 12 * 60 * 60 * 1000;
+const TOPGG_VOTE_REWARD = Object.freeze({
+  aura: Number(process.env.TOPGG_VOTE_REWARD_AURA) || 30000,
+  xp: Number(process.env.TOPGG_VOTE_REWARD_XP) || 300,
+  crates: Object.freeze({
+    common: Number(process.env.TOPGG_VOTE_REWARD_COMMON_CRATES) || 0,
+    rare: Number(process.env.TOPGG_VOTE_REWARD_RARE_CRATES) || 2,
+    legendary: Number(process.env.TOPGG_VOTE_REWARD_LEGENDARY_CRATES) || 1,
+  }),
+});
 const FORGE_MAX_LEVEL = 5;
 const PROPERTY_TYPES = Object.freeze({
   aura_mine: {
@@ -263,6 +273,7 @@ const REMINDER_ACTIONS = Object.freeze({
   rob: { label: "Rob", command: "/rob" },
   harvest: { label: "Harvest", command: "/garden harvest" },
   daily: { label: "Daily", command: "/daily" },
+  vote: { label: "Top.gg Vote", command: "/vote" },
   boss: { label: "Boss", command: "/boss" },
   authority: { label: "Authority", command: "/authority" },
 });
@@ -983,6 +994,15 @@ function normalizeReminderState(user) {
   if (!user.reminders.lastNotifiedAt?.get) {
     user.reminders.lastNotifiedAt = new Map(mapEntries(user.reminders.lastNotifiedAt));
   }
+}
+
+function normalizeTopggState(user) {
+  user.topgg ||= {};
+  user.topgg.voteCount = Number(user.topgg.voteCount) || 0;
+  user.topgg.voteWeight = Number(user.topgg.voteWeight) || 0;
+  user.topgg.lastVoteAt = user.topgg.lastVoteAt || null;
+  user.topgg.nextVoteAt = user.topgg.nextVoteAt || null;
+  user.topgg.lastVoteEventId = user.topgg.lastVoteEventId || null;
 }
 
 function getPremiumEffects(user) {
@@ -2130,6 +2150,7 @@ async function getOrCreatePlayer(guildId, userId) {
   normalizePremiumState(user);
   ensureGardenPlotLimit(user);
   normalizeReminderState(user);
+  normalizeTopggState(user);
   return user;
 }
 
@@ -2140,6 +2161,144 @@ async function rememberPlayerContext(user, interaction) {
   user.botContext = user.botContext || {};
   user.botContext.lastGuildId = interaction.guildId;
   user.botContext.lastChannelId = interaction.channelId;
+}
+
+function getTopggVoteUrl() {
+  const botId = process.env.TOPGG_BOT_ID?.trim() || process.env.DISCORD_CLIENT_ID?.trim();
+  return botId ? `https://top.gg/bot/${botId}/vote` : "https://top.gg/";
+}
+
+function resolveTopggVotePayload(payload = {}) {
+  const data = payload.data || {};
+  const isV1 = payload.type === "vote.create" || payload.type === "webhook.test";
+  const voteType = isV1 ? payload.type : payload.type;
+  const eventId = isV1 ? data.id || null : payload.id || null;
+  const userId = isV1
+    ? data.user?.platform_id || data.user?.platformId || data.user?.id || null
+    : payload.user || null;
+  const weight = isV1
+    ? Number(data.weight) || 1
+    : payload.isWeekend ? 2 : 1;
+  const createdAt = isV1 && data.created_at ? new Date(data.created_at) : new Date();
+  const expiresAt = isV1 && data.expires_at
+    ? new Date(data.expires_at)
+    : new Date(createdAt.getTime() + TOPGG_VOTE_COOLDOWN_MS);
+  const project = data.project || {};
+
+  return {
+    eventId,
+    userId: userId ? String(userId) : null,
+    voteType,
+    isTest: voteType === "webhook.test" || voteType === "test",
+    isVote: voteType === "vote.create" || voteType === "upvote",
+    weight: clamp(weight, 1, 5),
+    createdAt: Number.isNaN(createdAt.getTime()) ? new Date() : createdAt,
+    expiresAt: Number.isNaN(expiresAt.getTime()) ? new Date(Date.now() + TOPGG_VOTE_COOLDOWN_MS) : expiresAt,
+    projectId: project.id || payload.entity || payload.bot || null,
+    projectPlatformId: project.platform_id || project.platformId || payload.bot || null,
+  };
+}
+
+function buildTopggReward(weight) {
+  const multiplier = clamp(Number(weight) || 1, 1, 5);
+  const crates = Object.entries(TOPGG_VOTE_REWARD.crates).reduce((drops, [crateId, amount]) => {
+    const total = Math.floor((Number(amount) || 0) * multiplier);
+    if (total > 0) {
+      drops[crateId] = total;
+    }
+    return drops;
+  }, {});
+
+  return {
+    aura: Math.floor(TOPGG_VOTE_REWARD.aura * multiplier),
+    xp: Math.floor(TOPGG_VOTE_REWARD.xp * multiplier),
+    crates,
+  };
+}
+
+function formatTopggReward(reward) {
+  const crates = Object.entries(reward.crates || {})
+    .map(([crateId, amount]) => `${getCrateLabel(crateId)} x${amount}`)
+    .join(", ");
+  return [
+    `${formatNumber(reward.aura)} aura`,
+    `${formatNumber(reward.xp)} XP`,
+    crates,
+  ].filter(Boolean).join(", ");
+}
+
+async function applyTopggVoteWebhookEvent(payload) {
+  const vote = resolveTopggVotePayload(payload);
+  if (!vote.userId) {
+    return { ok: false, action: "ignored", reason: "missing_user" };
+  }
+  if (!vote.isVote) {
+    return { ok: true, action: vote.isTest ? "test_received" : "ignored", userId: vote.userId, voteType: vote.voteType };
+  }
+  if (vote.eventId) {
+    const existing = await TopggVoteLog.findOne({ eventId: vote.eventId }).lean();
+    if (existing) {
+      return { ok: true, action: "duplicate", userId: vote.userId, eventId: vote.eventId, reward: existing.reward || null };
+    }
+  }
+
+  let user = isGlobalPlayerDataEnabled()
+    ? await getOrCreatePlayer(null, vote.userId)
+    : await User.findOne({ userId: vote.userId }).sort({ updatedAt: -1, createdAt: 1 });
+  if (!user) {
+    user = await getOrCreatePlayer(null, vote.userId);
+  } else {
+    setQuestSet(user);
+    normalizeInventoryState(user);
+    normalizeProgressionSystems(user);
+    normalizeTutorialState(user);
+    normalizePremiumState(user);
+    normalizeReminderState(user);
+  }
+  normalizeTopggState(user);
+  const reward = buildTopggReward(vote.weight);
+
+  user.aura += reward.aura;
+  user.xp += reward.xp;
+  Object.entries(reward.crates).forEach(([crateId, amount]) => {
+    user.crates.set(crateId, (user.crates.get(crateId) || 0) + amount);
+  });
+  user.topgg.voteCount += 1;
+  user.topgg.voteWeight += vote.weight;
+  user.topgg.lastVoteAt = vote.createdAt;
+  user.topgg.nextVoteAt = vote.expiresAt;
+  user.topgg.lastVoteEventId = vote.eventId;
+
+  await syncRank(user);
+  await user.save();
+
+  await TopggVoteLog.create({
+    eventId: vote.eventId,
+    userId: vote.userId,
+    voteType: vote.voteType,
+    weight: vote.weight,
+    projectId: vote.projectId,
+    projectPlatformId: vote.projectPlatformId,
+    reward,
+    payload,
+  }).catch((error) => {
+    if (error?.code !== 11000) {
+      throw error;
+    }
+  });
+
+  return {
+    ok: true,
+    action: "rewarded",
+    userId: vote.userId,
+    eventId: vote.eventId,
+    weight: vote.weight,
+    reward,
+    rewardSummary: formatTopggReward(reward),
+    nextVoteAt: vote.expiresAt,
+    announcementGuildId: user.botContext?.lastGuildId || user.reminders?.guildId || user.guildId || null,
+    announcementChannelId: user.botContext?.lastChannelId || user.reminders?.channelId || null,
+  };
 }
 
 async function getGuildSettings(guildId) {
@@ -2212,6 +2371,15 @@ function getReminderReadyTimestamp(user, action) {
   }
   if (action === "daily" && user.lastDailyAt) {
     return user.lastDailyAt.getTime() + getEffectiveCooldownMs(user, COOLDOWNS.dailyMs);
+  }
+  if (action === "vote") {
+    normalizeTopggState(user);
+    if (user.topgg.nextVoteAt) {
+      return user.topgg.nextVoteAt.getTime();
+    }
+    if (user.topgg.lastVoteAt) {
+      return user.topgg.lastVoteAt.getTime() + TOPGG_VOTE_COOLDOWN_MS;
+    }
   }
   if (action === "authority" && user.lastAuthorityAt) {
     return user.lastAuthorityAt.getTime() + getEffectiveCooldownMs(user, COOLDOWNS.authorityMs);
@@ -2462,6 +2630,7 @@ const HELP_SECTIONS = [
     visual: "economy-vault.svg",
     commands: [
       { name: "/daily", description: "Claim your streak reward and refresh quests." },
+      { name: "/vote", description: "Vote on Top.gg for webhook-delivered aura, XP, and crates." },
       { name: "/premium-chest", description: "Premium-only recurring loot chest with aura, XP, crates, and materials." },
       { name: "/work", description: "Complete a shift for steady aura and XP." },
       { name: "/mine", description: "Gather crafting materials on a cooldown." },
@@ -4119,6 +4288,31 @@ async function handleDaily(interaction) {
     ],
     footer,
   }), interaction.user.id, ["work", "spin", "quests", "tutorial"]));
+}
+
+async function handleVote(interaction) {
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  normalizeTopggState(user);
+
+  const readyAt = getReminderReadyTimestamp(user, "vote");
+  const remaining = readyAt ? Math.max(0, readyAt - Date.now()) : 0;
+  const voteUrl = getTopggVoteUrl();
+  const reminderEnabled = user.reminders?.enabledActions?.includes("vote");
+
+  return interaction.reply(buildEmbedPayload({
+    title: "Vote Rewards",
+    description: remaining > 0
+      ? `Thanks for voting. Your next Top.gg vote should unlock in about **${humanizeMs(remaining)}**.`
+      : "Vote for Aurix on Top.gg and your reward will arrive automatically after Top.gg sends the webhook.",
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Vote Link", value: voteUrl },
+      { name: "Reward", value: formatTopggReward(buildTopggReward(1)), inline: true },
+      { name: "Weekend", value: "Top.gg double-vote weekends pay double when Top.gg sends weight 2.", inline: true },
+      { name: "Reminders", value: reminderEnabled ? "Enabled. I will tag you when Top.gg says you can vote again." : "Optional. Use `/reminders enable action:Top.gg Vote` to get a ping every 12 hours after voting." },
+    ],
+    footer: user.topgg.voteCount > 0 ? `Votes rewarded: ${formatNumber(user.topgg.voteCount)}` : "Rewards are delivered by the Top.gg webhook.",
+  }));
 }
 
 async function handlePremiumChest(interaction) {
@@ -7248,6 +7442,7 @@ function buildCommands() {
     new SlashCommandBuilder().setName("coinflip").setDescription("Bet aura on heads or tails on a cooldown.").addIntegerOption((option) => option.setName("amount").setDescription("Aura to bet").setRequired(true).setMinValue(1)).addStringOption((option) => option.setName("choice").setDescription("Choose heads or tails").setRequired(true).addChoices({ name: "heads", value: "heads" }, { name: "tails", value: "tails" })),
     new SlashCommandBuilder().setName("rob").setDescription("Attempt to steal aura from another player.").addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true)),
     new SlashCommandBuilder().setName("daily").setDescription("Claim your daily streak reward."),
+    new SlashCommandBuilder().setName("vote").setDescription("Get the Top.gg vote link and reward reminder info."),
     new SlashCommandBuilder().setName("reminders").setDescription("Manage ready-state tag reminders.")
       .addSubcommand((sub) => sub.setName("status").setDescription("View your reminder settings."))
       .addSubcommand((sub) => sub.setName("enable").setDescription("Tag me when an action is ready.").addStringOption((option) => option.setName("action").setDescription("Action to track").setRequired(true).addChoices(...REMINDER_ACTION_CHOICES)))
@@ -7351,7 +7546,7 @@ async function routeInteraction(interaction) {
     return null;
   }
 
-  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, tutorial: handleTutorial, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, trade: handleTrade, inventory: handleInventory, collection: handleCollection, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, season: handleSeason, serverquest: handleServerQuest, premium: handlePremium, clan: handleClan, authority: handleAuthority };
+  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, tutorial: handleTutorial, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, vote: handleVote, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, trade: handleTrade, inventory: handleInventory, collection: handleCollection, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, season: handleSeason, serverquest: handleServerQuest, premium: handlePremium, clan: handleClan, authority: handleAuthority };
   const handler = handlers[interaction.commandName];
   if (!handler) {
     return interaction.reply({ content: "Unknown command.", ephemeral: true });
@@ -7383,6 +7578,7 @@ async function routeInteraction(interaction) {
 }
 
 module.exports = {
+  applyTopggVoteWebhookEvent,
   applyPaddleWebhookEvent,
   buildCommands,
   recentInteractions,

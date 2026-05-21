@@ -9,7 +9,7 @@ const session = require("express-session");
 const mongoose = require("mongoose");
 const { GuildSettings, PaddleWebhookLog, User } = require("./src/data/models");
 const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigration");
-const { applyPaddleWebhookEvent, buildCommands, recentInteractions, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
+const { applyPaddleWebhookEvent, applyTopggVoteWebhookEvent, buildCommands, recentInteractions, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
 const { buildEmbedPayload } = require("./src/utils/visuals");
 
 const APP_VERSION = "aurix-premium-buffs-v19";
@@ -115,6 +115,53 @@ function verifyPaddleWebhookSignature(rawBody, signatureHeader, secret) {
   });
 }
 
+function verifySharedSecret(providedValue, expectedValue) {
+  if (!providedValue || !expectedValue) {
+    return false;
+  }
+
+  const providedBuffer = Buffer.from(String(providedValue));
+  const expectedBuffer = Buffer.from(String(expectedValue));
+  return providedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(providedBuffer, expectedBuffer);
+}
+
+function parseTopggSignatureHeader(headerValue) {
+  return String(headerValue || "").split(",").reduce((parts, piece) => {
+    const [key, value] = piece.split("=");
+    if (key && value) {
+      parts[key.trim()] = value.trim();
+    }
+    return parts;
+  }, {});
+}
+
+function verifyTopggWebhookSignature(rawBody, signatureHeader, secret) {
+  if (!rawBody || !signatureHeader || !secret) {
+    return false;
+  }
+
+  const signatureParts = parseTopggSignatureHeader(signatureHeader);
+  const timestamp = signatureParts.t;
+  const receivedSignature = signatureParts.v1;
+  if (!timestamp || !receivedSignature) {
+    return false;
+  }
+
+  const toleranceSeconds = Number(process.env.TOPGG_WEBHOOK_TOLERANCE_SECONDS) || 300;
+  if (Math.abs(Date.now() / 1000 - Number(timestamp)) > toleranceSeconds) {
+    return false;
+  }
+
+  const expected = crypto
+    .createHmac("sha256", secret)
+    .update(`${timestamp}.${rawBody}`)
+    .digest("hex");
+
+  const expectedBuffer = Buffer.from(expected);
+  const receivedBuffer = Buffer.from(receivedSignature);
+  return expectedBuffer.length === receivedBuffer.length && crypto.timingSafeEqual(expectedBuffer, receivedBuffer);
+}
+
 function buildDiscordAuthUrl(state) {
   const authUrl = new URL("https://discord.com/oauth2/authorize");
   authUrl.searchParams.set("client_id", process.env.DISCORD_CLIENT_ID);
@@ -169,8 +216,11 @@ function startWebServer() {
   const app = express();
   const port = Number(process.env.PORT) || 3000;
   const paddleWebhookSecret = process.env.PADDLE_WEBHOOK_SECRET?.trim();
+  const topggWebhookSecret = process.env.TOPGG_WEBHOOK_SECRET?.trim();
+  const topggWebhookAuth = process.env.TOPGG_WEBHOOK_AUTH?.trim();
   const isProduction = process.env.NODE_ENV === "production";
   const recentPaddleWebhooks = [];
+  const recentTopggWebhooks = [];
 
   function rememberPaddleWebhook(entry) {
     recentPaddleWebhooks.unshift({
@@ -247,6 +297,50 @@ function startWebServer() {
     return { sent: false, reason: "no_target" };
   }
 
+  async function sendTopggVoteAnnouncement(result) {
+    if (!discordClient?.isReady?.() || result?.action !== "rewarded" || !result.userId) {
+      return { sent: false, reason: "not_ready_or_not_rewarded" };
+    }
+
+    const embedPayload = buildEmbedPayload({
+      title: "Top.gg Vote Reward",
+      description: `<@${result.userId}> voted for Aurix on Top.gg and received **${result.rewardSummary}**.`,
+      visual: "emblem-success.svg",
+      fields: [
+        { name: "Vote Weight", value: `${result.weight || 1}x`, inline: true },
+        { name: "Next Vote", value: result.nextVoteAt ? `<t:${Math.floor(new Date(result.nextVoteAt).getTime() / 1000)}:R>` : "About 12 hours", inline: true },
+        { name: "Reminder", value: "Use `/reminders enable action:Top.gg Vote` to get tagged when voting is ready again." },
+      ],
+    });
+
+    const channelIds = [
+      result.announcementChannelId,
+      process.env.TOPGG_VOTE_ANNOUNCEMENT_CHANNEL_ID,
+    ].filter(Boolean);
+
+    for (const channelId of channelIds) {
+      const channel = await discordClient.channels.fetch(channelId).catch(() => null);
+      if (channel?.isTextBased?.() && channel.send) {
+        await channel.send({
+          content: `<@${result.userId}>`,
+          ...embedPayload,
+          allowedMentions: { users: [result.userId] },
+        });
+        return { sent: true, target: "channel", channelId };
+      }
+    }
+
+    const user = await discordClient.users.fetch(result.userId).catch(() => null);
+    if (user) {
+      const dm = await user.send(embedPayload).then(() => true).catch(() => false);
+      if (dm) {
+        return { sent: true, target: "dm" };
+      }
+    }
+
+    return { sent: false, reason: "no_target" };
+  }
+
   app.set("trust proxy", 1);
 
   app.get("/paddle/webhook", (_req, res) => {
@@ -255,6 +349,61 @@ function startWebServer() {
       endpoint: "/paddle/webhook",
       message: "Webhook endpoint is reachable. Paddle must send POST requests here.",
     });
+  });
+
+  app.get("/topgg/webhook", (_req, res) => {
+    return res.status(200).json({
+      ok: true,
+      endpoint: "/topgg/webhook",
+      message: "Top.gg webhook endpoint is reachable. Top.gg must send POST requests here.",
+    });
+  });
+
+  app.post("/topgg/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+    const signature = req.headers["x-topgg-signature"];
+    const rawBody = req.body.toString("utf8");
+
+    if (signature) {
+      if (!topggWebhookSecret) {
+        recentTopggWebhooks.unshift({ at: new Date().toISOString(), ok: false, error: "topgg_v1_not_configured" });
+        recentTopggWebhooks.splice(10);
+        return res.status(503).json({ ok: false, error: "topgg_v1_not_configured" });
+      }
+      if (!verifyTopggWebhookSignature(rawBody, signature, topggWebhookSecret)) {
+        recentTopggWebhooks.unshift({ at: new Date().toISOString(), ok: false, error: "invalid_signature", trace: req.headers["x-topgg-trace"] || null });
+        recentTopggWebhooks.splice(10);
+        return res.status(401).json({ ok: false, error: "invalid_signature" });
+      }
+    } else if (!topggWebhookAuth) {
+      recentTopggWebhooks.unshift({ at: new Date().toISOString(), ok: false, error: "topgg_not_configured" });
+      recentTopggWebhooks.splice(10);
+      return res.status(503).json({ ok: false, error: "topgg_not_configured" });
+    } else if (!verifySharedSecret(req.headers.authorization, topggWebhookAuth)) {
+      recentTopggWebhooks.unshift({ at: new Date().toISOString(), ok: false, error: "invalid_authorization" });
+      recentTopggWebhooks.splice(10);
+      return res.status(401).json({ ok: false, error: "invalid_authorization" });
+    }
+
+    try {
+      const payload = JSON.parse(rawBody);
+      const result = await applyTopggVoteWebhookEvent(payload || {});
+      const announcement = await sendTopggVoteAnnouncement(result);
+      recentTopggWebhooks.unshift({
+        at: new Date().toISOString(),
+        ok: result.ok,
+        action: result.action,
+        userId: result.userId || null,
+        eventId: result.eventId || null,
+        trace: req.headers["x-topgg-trace"] || null,
+        announcement,
+      });
+      recentTopggWebhooks.splice(10);
+      console.log("Top.gg webhook processed:", { result, announcement });
+      return res.status(200).json({ ok: true, ...result });
+    } catch (error) {
+      console.error("Top.gg webhook processing failed:", error);
+      return res.status(500).json({ ok: false, error: "webhook_processing_failed" });
+    }
   });
 
   app.post("/paddle/webhook", express.raw({ type: "application/json" }), async (req, res) => {
@@ -300,6 +449,10 @@ function startWebServer() {
   app.get("/debug/paddle-webhooks", async (_req, res) => {
     const persisted = await PaddleWebhookLog.find({}).sort({ createdAt: -1 }).limit(10).lean();
     return res.status(200).json({ ok: true, memory: recentPaddleWebhooks, persisted });
+  });
+
+  app.get("/debug/topgg-webhooks", (_req, res) => {
+    return res.status(200).json({ ok: true, memory: recentTopggWebhooks });
   });
 
   app.get("/debug/premium/:userId", async (req, res) => {

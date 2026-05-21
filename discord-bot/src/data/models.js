@@ -130,6 +130,13 @@ const userSchema = new mongoose.Schema(
       lastWelcomeGrantEventId: { type: String, default: null },
       lastChestAt: { type: Date, default: null },
     },
+    topgg: {
+      voteCount: { type: Number, default: 0 },
+      voteWeight: { type: Number, default: 0 },
+      lastVoteAt: { type: Date, default: null },
+      nextVoteAt: { type: Date, default: null },
+      lastVoteEventId: { type: String, default: null },
+    },
     billing: {
       provider: { type: String, default: null },
       paddleCustomerId: { type: String, default: null },
@@ -225,6 +232,30 @@ const paddleWebhookLogSchema = new mongoose.Schema(
     createdAt: { type: Date, default: Date.now, index: true },
   },
   { versionKey: false }
+);
+
+const topggVoteLogSchema = new mongoose.Schema(
+  {
+    eventId: { type: String, default: null },
+    userId: { type: String, required: true, index: true },
+    voteType: { type: String, default: null },
+    weight: { type: Number, default: 1 },
+    projectId: { type: String, default: null },
+    projectPlatformId: { type: String, default: null },
+    source: { type: String, default: "topgg" },
+    reward: { type: mongoose.Schema.Types.Mixed, default: null },
+    payload: { type: mongoose.Schema.Types.Mixed, default: null },
+    createdAt: { type: Date, default: Date.now, index: true },
+  },
+  { versionKey: false }
+);
+
+topggVoteLogSchema.index(
+  { eventId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { eventId: { $type: "string" } },
+  }
 );
 
 const pvpInviteSchema = new mongoose.Schema(
@@ -334,6 +365,7 @@ const PvpInvite = mongoose.models.PvpInvite || mongoose.model("PvpInvite", pvpIn
 const PvpMatchmakingQueue = mongoose.models.PvpMatchmakingQueue || mongoose.model("PvpMatchmakingQueue", pvpMatchmakingQueueSchema);
 const RoleListing = mongoose.models.RoleListing || mongoose.model("RoleListing", roleListingSchema);
 const RolePurchase = mongoose.models.RolePurchase || mongoose.model("RolePurchase", rolePurchaseSchema);
+const TopggVoteLog = mongoose.models.TopggVoteLog || mongoose.model("TopggVoteLog", topggVoteLogSchema);
 const TradeOffer = mongoose.models.TradeOffer || mongoose.model("TradeOffer", tradeOfferSchema);
 
-module.exports = { BattleSession, Clan, GuildSettings, PaddleWebhookLog, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TradeOffer, User };
+module.exports = { BattleSession, Clan, GuildSettings, PaddleWebhookLog, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TopggVoteLog, TradeOffer, User };
