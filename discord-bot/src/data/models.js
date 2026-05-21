@@ -135,6 +135,7 @@ const userSchema = new mongoose.Schema(
       voteWeight: { type: Number, default: 0 },
       lastVoteAt: { type: Date, default: null },
       nextVoteAt: { type: Date, default: null },
+      lastPromptAt: { type: Date, default: null },
       lastVoteEventId: { type: String, default: null },
     },
     billing: {

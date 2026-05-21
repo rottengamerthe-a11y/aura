@@ -148,6 +148,8 @@ const PREMIUM_PLANS = Object.freeze({
 const PREMIUM_PURCHASE_URL = "https://aurawebsite-12gd.onrender.com";
 const OFFICIAL_SERVER_URL = "https://aurawebsite-12gd.onrender.com";
 const TOPGG_VOTE_COOLDOWN_MS = 12 * 60 * 60 * 1000;
+const TOPGG_VOTE_PROMPT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const TOPGG_VOTE_PROMPT_CHANCE = Number(process.env.TOPGG_VOTE_PROMPT_CHANCE) || 0.12;
 const TOPGG_VOTE_REWARD = Object.freeze({
   aura: Number(process.env.TOPGG_VOTE_REWARD_AURA) || 30000,
   xp: Number(process.env.TOPGG_VOTE_REWARD_XP) || 300,
@@ -1002,6 +1004,7 @@ function normalizeTopggState(user) {
   user.topgg.voteWeight = Number(user.topgg.voteWeight) || 0;
   user.topgg.lastVoteAt = user.topgg.lastVoteAt || null;
   user.topgg.nextVoteAt = user.topgg.nextVoteAt || null;
+  user.topgg.lastPromptAt = user.topgg.lastPromptAt || null;
   user.topgg.lastVoteEventId = user.topgg.lastVoteEventId || null;
 }
 
@@ -2225,6 +2228,61 @@ function formatTopggReward(reward) {
     `${formatNumber(reward.xp)} XP`,
     crates,
   ].filter(Boolean).join(", ");
+}
+
+function buildVotePromptPayload(user) {
+  const voteUrl = getTopggVoteUrl();
+  const rewardSummary = formatTopggReward(buildTopggReward(1));
+  const reminderEnabled = user.reminders?.enabledActions?.includes("vote");
+  return {
+    ...buildEmbedPayload({
+      title: "Vote Reward Ready",
+      description: `Vote for Aurix on Top.gg and get **${rewardSummary}** automatically.`,
+      visual: "emblem-success.svg",
+      fields: [
+        { name: "Vote Link", value: voteUrl },
+        { name: "Reminder", value: reminderEnabled ? "Your vote reminder is already enabled." : "Want the next ping too? Use `/reminders enable action:Top.gg Vote`." },
+      ],
+      footer: "Top.gg votes refresh about every 12 hours.",
+    }),
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setLabel("Vote on Top.gg").setStyle(ButtonStyle.Link).setURL(voteUrl)
+      ),
+    ],
+  };
+}
+
+async function maybePromptTopggVote(interaction, user, commandName) {
+  if (!interaction?.guildId || !interaction.user?.id || !interaction.followUp || !user || commandName === "vote") {
+    return;
+  }
+
+  normalizeTopggState(user);
+  const now = Date.now();
+  const readyAt = getReminderReadyTimestamp(user, "vote");
+  if (readyAt && readyAt > now) {
+    return;
+  }
+
+  const lastPrompt = user.topgg.lastPromptAt?.getTime?.() || 0;
+  if (now - lastPrompt < TOPGG_VOTE_PROMPT_COOLDOWN_MS) {
+    return;
+  }
+
+  const neverVoted = !user.topgg.lastVoteAt;
+  const promptChance = neverVoted ? Math.max(TOPGG_VOTE_PROMPT_CHANCE, 0.22) : TOPGG_VOTE_PROMPT_CHANCE;
+  if (Math.random() > promptChance) {
+    return;
+  }
+
+  user.topgg.lastPromptAt = new Date(now);
+  user.markModified("topgg");
+  await user.save();
+  await interaction.followUp({
+    ...buildVotePromptPayload(user),
+    ephemeral: true,
+  }).catch(() => null);
 }
 
 async function applyTopggVoteWebhookEvent(payload) {
@@ -6461,6 +6519,7 @@ async function runPostCommandEngagement(interaction, commandName, subcommand = n
     }).catch(() => null);
   }
   await maybeAnnounceMilestones(interaction, user);
+  await maybePromptTopggVote(interaction, user, commandName);
   await maybeSpawnServerEvent(interaction);
 }
 
