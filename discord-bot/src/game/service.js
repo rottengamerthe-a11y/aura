@@ -1844,6 +1844,11 @@ function buildRelicSpawnAttachment(relic) {
 function buildRelicSpawnPayload(relic, source = "chat") {
   const rarity = getRelicRarity(relic);
   const attachment = buildRelicSpawnAttachment(relic);
+  const sourceLabels = {
+    chat: "Chat activity",
+    incense: "Incense",
+    summon: "Aura summon",
+  };
   const embed = new EmbedBuilder()
     .setColor(COLORS.primary)
     .setAuthor({ name: "Aurix" })
@@ -1855,7 +1860,7 @@ function buildRelicSpawnPayload(relic, source = "chat") {
     ].join("\n"))
     .addFields(
       { name: "Rarity Signal", value: rarity.label, inline: true },
-      { name: "Source", value: source === "incense" ? "Incense" : "Chat activity", inline: true }
+      { name: "Source", value: sourceLabels[source] || sourceLabels.chat, inline: true }
     )
     .setImage("attachment://aurix-relic-spawn.png")
     .setFooter({ text: "AURIX • Failed guesses do not despawn the relic." })
@@ -3993,44 +3998,29 @@ async function handleSummon(interaction) {
   if (user.aura < SUMMON_COST) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: `A relic summon costs ${formatNumber(SUMMON_COST)} aura.`, visual: "emblem-economy.svg" }), ephemeral: true });
   }
+  if (!interaction.channel?.send) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Summon Blocked", description: "I need a normal text channel where I can post the relic spawn.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
 
-  const relic = rollRelicForUser(user);
-  const rarity = getRelicRarity(relic);
-  const printNumber = await nextRelicPrint(relic.id);
-  const shiny = Math.random() < SHINY_RELIC_CHANCE;
-  const { entry, isNew } = addRelicToUser(user, relic, printNumber, shiny);
-  const xpReward = 80 + rarity.value * 25 + (shiny ? 350 : 0);
   user.aura -= SUMMON_COST;
-  user.xp += xpReward;
   user.lastSummonAt = new Date();
   user.stats.summons = (user.stats.summons || 0) + 1;
-  if (["legendary", "mythic"].includes(relic.rarity)) {
-    user.crates.set("rare", (user.crates.get("rare") || 0) + 1);
-  }
-  if (relic.rarity === "mythic") {
-    user.crates.set("epic", (user.crates.get("epic") || 0) + 1);
-  }
-  await syncRank(user);
   await user.save();
-
-  const fields = [
-    { name: "Relic", value: `${getRelicLabel(relic.id)}\n${relic.description}` },
-    { name: "Rarity", value: `${rarity.label}${shiny ? " Shiny" : ""}`, inline: true },
-    { name: "Print", value: `#${formatNumber(printNumber)}`, inline: true },
-    { name: "Owned", value: `x${formatNumber(entry.quantity)}`, inline: true },
-    { name: "XP", value: `${formatNumber(xpReward)}`, inline: true },
-    { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
-  ];
+  const spawned = await spawnRelicInChannel(interaction.channel, "summon");
 
   return interaction.reply(addQuickActions(buildEmbedPayload({
-    title: isNew ? "New Relic Summoned" : "Relic Duplicate Summoned",
-    description: shiny
-      ? "A brighter variant breaks through the gate. That one is going on the shelf."
-      : "The relic gate opens, prints the find, and seals again.",
+    title: "Relic Summoned",
+    description: spawned
+      ? `${interaction.user.username} spent **${formatNumber(SUMMON_COST)} aura** to pull a claimable relic into this channel.`
+      : "The aura was spent, but I could not post the relic spawn in this channel.",
     visual: "emblem-success.svg",
-    fields,
-    footer: "Duplicates can be burned with /burn to recover aura and XP.",
-  }), interaction.user.id, ["collection", "summon", "inventory", "rank"]));
+    fields: [
+      { name: "Cost", value: `${formatNumber(SUMMON_COST)} aura`, inline: true },
+      { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+      { name: "Claim", value: "Use `/claim guess:<relic name>` to win it.", inline: false },
+    ],
+    footer: "Use /hint if the server gets stuck.",
+  }), interaction.user.id, ["hint", "claim", "summon", "collection"]));
 }
 
 async function handleBurn(interaction) {
