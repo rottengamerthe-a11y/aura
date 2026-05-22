@@ -1814,6 +1814,43 @@ function buildRelicSpawnAttachment(relic) {
         break;
     }
   };
+  const applyPixelArtPass = (blockSize = 12) => {
+    const snap = (value) => Math.max(0, Math.min(255, Math.round(value / 17) * 17));
+    for (let blockY = 0; blockY < height; blockY += blockSize) {
+      for (let blockX = 0; blockX < width; blockX += blockSize) {
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        let a = 0;
+        let count = 0;
+        const maxY = Math.min(height, blockY + blockSize);
+        const maxX = Math.min(width, blockX + blockSize);
+        for (let y = blockY; y < maxY; y += 1) {
+          for (let x = blockX; x < maxX; x += 1) {
+            const index = (y * width + x) * 4;
+            r += pixels[index];
+            g += pixels[index + 1];
+            b += pixels[index + 2];
+            a += pixels[index + 3];
+            count += 1;
+          }
+        }
+        const blockR = snap(r / count);
+        const blockG = snap(g / count);
+        const blockB = snap(b / count);
+        const blockA = Math.round(a / count);
+        for (let y = blockY; y < maxY; y += 1) {
+          for (let x = blockX; x < maxX; x += 1) {
+            const index = (y * width + x) * 4;
+            pixels[index] = blockR;
+            pixels[index + 1] = blockG;
+            pixels[index + 2] = blockB;
+            pixels[index + 3] = blockA;
+          }
+        }
+      }
+    }
+  };
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -1838,6 +1875,7 @@ function buildRelicSpawnAttachment(relic) {
   for (let x = 130; x <= 830; x += 70) {
     drawDiamond(x, 94 + ((x / 70) % 2) * 340, 9, color, 220);
   }
+  applyPixelArtPass();
   return new AttachmentBuilder(encodePng(width, height, pixels), { name: "aurix-relic-spawn.png" });
 }
 
