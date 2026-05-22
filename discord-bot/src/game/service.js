@@ -3694,18 +3694,23 @@ function buildOfficialServerValue() {
 }
 
 function buildPlayerStartPayload(user) {
+  normalizeTutorialState(user);
+  const current = TUTORIAL_STEPS[user.tutorial.step];
   return buildEmbedPayload({
-    title: "Aurix Online",
-    description: `Your save is ready with ${formatNumber(user.aura)} starter aura. Here is the fastest way to get moving.`,
+    title: "Aurix Tutorial",
+    description: `Your save is ready with **${formatNumber(user.aura)} aura**. Follow this route to learn the economy, relics, progression, and combat without guessing what matters first.`,
     visual: "help-core.svg",
     fields: [
-      { name: "1. Build Income", value: "Run `/daily`, `/work`, `/spin`, and `/mine` whenever they are ready." },
-      { name: "2. Track Progress", value: "Check `/profile`, `/rank`, `/quests`, and `/achievements` to keep your build growing." },
-      { name: "3. Expand Systems", value: "Use `/garden`, `/craft`, `/gear`, and `/shop` to stack more long-term power." },
-      { name: "4. Enter Combat", value: "Try `/boss` and `/pvp` once your economy and skills are in a good spot." },
-      { name: "Need Commands?", value: "Open `/help` to browse the full command list by category." },
+      { name: "1. First Money", value: "`/daily`, `/work`, `/spin`, and `/mine` are your starter loop. They give aura, XP, crates, or materials on cooldown." },
+      { name: "2. Guided Rewards", value: getTutorialStatusLines(user) },
+      { name: "3. Relic Hunting", value: "`/summon` spends aura to spawn a public relic. Chat activity and `/incense buy` can spawn relics too. Use `/hint`, then `/claim guess:<name>`." },
+      { name: "4. Wallet And Vault", value: "`/balance` checks your money. `/vault deposit` protects aura and starts interest growth. `/vault interest` claims the passive payout." },
+      { name: "5. Inventory Path", value: "`/inventory`, `/collection`, `/crate`, `/shop`, `/craft`, `/forge`, and `/gear` turn drops into long-term power." },
+      { name: "6. Daily Direction", value: "`/quests`, `/achievements`, `/rank`, and `/prestige` show what to chase next once the basics are moving." },
+      { name: "7. Server Play", value: "`/boss`, `/pvp`, `/clan`, `/leaderboard`, `/event`, and `/serverquest` are the bigger multiplayer loops." },
+      { name: "Next Step", value: current ? `Do **${current.label}** for ${formatNumber(current.rewardAura)} aura + ${formatNumber(current.rewardXp)} XP.` : "Tutorial complete. Keep building through quests, relics, clans, bosses, and PvP." },
     ],
-    footer: "Use /help if you want the full command list.",
+    footer: "Use /tutorial any time to check your guided step progress. Use /help for the full command list.",
   });
 }
 
