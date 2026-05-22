@@ -23,6 +23,18 @@ const inventoryEntrySchema = new mongoose.Schema(
   { _id: false }
 );
 
+const relicEntrySchema = new mongoose.Schema(
+  {
+    id: String,
+    quantity: { type: Number, default: 0 },
+    firstPrint: { type: Number, default: null },
+    bestPrint: { type: Number, default: null },
+    shiny: { type: Number, default: 0 },
+    lastPrintAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
 const gardenPlotSchema = new mongoose.Schema(
   {
     cropId: String,
@@ -72,6 +84,27 @@ const activeEventSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const activeRelicSpawnSchema = new mongoose.Schema(
+  {
+    relicId: { type: String, default: null },
+    relicName: { type: String, default: null },
+    rarity: { type: String, default: null },
+    spawnedAt: { type: Date, default: null },
+    spawnedBy: { type: String, default: null },
+    hintUses: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
+const relicSpawnStateSchema = new mongoose.Schema(
+  {
+    current: { type: activeRelicSpawnSchema, default: null },
+    incenseRemaining: { type: Number, default: 0 },
+    lastIncenseSpawnAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
 const userSchema = new mongoose.Schema(
   {
     guildId: { type: String, index: true },
@@ -88,11 +121,13 @@ const userSchema = new mongoose.Schema(
     lastWorkAt: { type: Date, default: null },
     lastRobAt: { type: Date, default: null },
     lastMineAt: { type: Date, default: null },
+    lastSummonAt: { type: Date, default: null },
     lastBossAt: { type: Date, default: null },
     lastAuthorityAt: { type: Date, default: null },
     lastVaultInterestAt: { type: Date, default: null },
     vaultInterestRemainder: { type: Number, default: 0 },
     inventory: { type: [inventoryEntrySchema], default: [] },
+    relics: { type: [relicEntrySchema], default: [] },
     gardenPlots: { type: [gardenPlotSchema], default: [{ cropId: null, plantedAt: null }, { cropId: null, plantedAt: null }] },
     ownedPerks: { type: [String], default: [] },
     skills: { type: [String], default: ["focus"] },
@@ -153,6 +188,8 @@ const userSchema = new mongoose.Schema(
       spins: { type: Number, default: 0 },
       works: { type: Number, default: 0 },
       mines: { type: Number, default: 0 },
+      summons: { type: Number, default: 0 },
+      relicsBurned: { type: Number, default: 0 },
       crafts: { type: Number, default: 0 },
       harvests: { type: Number, default: 0 },
       coinflips: { type: Number, default: 0 },
@@ -173,6 +210,7 @@ const userSchema = new mongoose.Schema(
       enabledActions: { type: [String], default: [] },
       lastNotifiedAt: { type: Map, of: Date, default: {} },
     },
+    relicHuntStreaks: { type: Map, of: Number, default: {} },
     botContext: {
       lastGuildId: { type: String, default: null },
       lastChannelId: { type: String, default: null },
@@ -303,9 +341,12 @@ const guildSettingsSchema = new mongoose.Schema(
   {
     guildId: { type: String, required: true, unique: true, index: true },
     aurixChannelId: { type: String, default: null },
+    commandChannelId: { type: String, default: null },
+    dropsChannelId: { type: String, default: null },
     configuredBy: { type: String, default: null },
     configuredAt: { type: Date, default: null },
     activeEvent: { type: activeEventSchema, default: null },
+    relicSpawn: { type: relicSpawnStateSchema, default: () => ({ current: null, incenseRemaining: 0, lastIncenseSpawnAt: null }) },
     lastEventSpawnAt: { type: Date, default: null },
   },
   { timestamps: true }
@@ -324,6 +365,14 @@ const tradeOfferSchema = new mongoose.Schema(
     expiresAt: { type: Date, required: true, index: true },
   },
   { timestamps: true }
+);
+
+const collectiblePrintCounterSchema = new mongoose.Schema(
+  {
+    itemId: { type: String, required: true, unique: true, index: true },
+    count: { type: Number, default: 0 },
+  },
+  { versionKey: false }
 );
 
 const roleListingSchema = new mongoose.Schema(
@@ -360,6 +409,7 @@ rolePurchaseSchema.index({ guildId: 1, userId: 1, roleId: 1 });
 const User = mongoose.models.User || mongoose.model("User", userSchema);
 const BattleSession = mongoose.models.BattleSession || mongoose.model("BattleSession", battleSessionSchema);
 const Clan = mongoose.models.Clan || mongoose.model("Clan", clanSchema);
+const CollectiblePrintCounter = mongoose.models.CollectiblePrintCounter || mongoose.model("CollectiblePrintCounter", collectiblePrintCounterSchema);
 const GuildSettings = mongoose.models.GuildSettings || mongoose.model("GuildSettings", guildSettingsSchema);
 const PaddleWebhookLog = mongoose.models.PaddleWebhookLog || mongoose.model("PaddleWebhookLog", paddleWebhookLogSchema);
 const PvpInvite = mongoose.models.PvpInvite || mongoose.model("PvpInvite", pvpInviteSchema);
@@ -369,4 +419,4 @@ const RolePurchase = mongoose.models.RolePurchase || mongoose.model("RolePurchas
 const TopggVoteLog = mongoose.models.TopggVoteLog || mongoose.model("TopggVoteLog", topggVoteLogSchema);
 const TradeOffer = mongoose.models.TradeOffer || mongoose.model("TradeOffer", tradeOfferSchema);
 
-module.exports = { BattleSession, Clan, GuildSettings, PaddleWebhookLog, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TopggVoteLog, TradeOffer, User };
+module.exports = { BattleSession, Clan, CollectiblePrintCounter, GuildSettings, PaddleWebhookLog, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TopggVoteLog, TradeOffer, User };

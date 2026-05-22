@@ -298,5 +298,6 @@ function buildThemeBannerAttachment(theme = {}) {
 module.exports = {
   buildProfileCosmeticAttachment,
   buildThemeBannerAttachment,
+  encodePng,
   FILE_NAME,
 };

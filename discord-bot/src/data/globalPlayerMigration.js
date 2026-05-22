@@ -1,5 +1,5 @@
 const { RANKS } = require("../config/gameConfig");
-const { Clan, User } = require("./models");
+const { Clan, GuildSettings, User } = require("./models");
 const { isGlobalClanDataEnabled, isGlobalPlayerDataEnabled } = require("./playerScope");
 
 function asDate(value) {
@@ -38,6 +38,14 @@ function mergeCountMaps(targetMap, sourceMap) {
   });
 }
 
+function mergeMaxMaps(targetMap, sourceMap) {
+  const entries = sourceMap?.entries ? [...sourceMap.entries()] : Object.entries(sourceMap || {});
+  entries.forEach(([key, value]) => {
+    const amount = Number(value) || 0;
+    targetMap.set(key, Math.max(Number(targetMap.get(key)) || 0, amount));
+  });
+}
+
 function mergeInventory(targetInventory, sourceInventory) {
   (sourceInventory || []).forEach((entry) => {
     if (!entry?.id) {
@@ -51,6 +59,35 @@ function mergeInventory(targetInventory, sourceInventory) {
     targetInventory.push({
       id: entry.id,
       quantity: Number(entry.quantity) || 0,
+    });
+  });
+}
+
+function mergeRelics(targetRelics, sourceRelics) {
+  (sourceRelics || []).forEach((entry) => {
+    if (!entry?.id) {
+      return;
+    }
+    const existing = targetRelics.find((item) => item.id === entry.id);
+    if (existing) {
+      existing.quantity += Number(entry.quantity) || 0;
+      existing.shiny += Number(entry.shiny) || 0;
+      existing.firstPrint = existing.firstPrint && entry.firstPrint
+        ? Math.min(existing.firstPrint, entry.firstPrint)
+        : existing.firstPrint || entry.firstPrint || null;
+      existing.bestPrint = existing.bestPrint && entry.bestPrint
+        ? Math.min(existing.bestPrint, entry.bestPrint)
+        : existing.bestPrint || entry.bestPrint || null;
+      existing.lastPrintAt = latestDate(existing.lastPrintAt, entry.lastPrintAt);
+      return;
+    }
+    targetRelics.push({
+      id: entry.id,
+      quantity: Number(entry.quantity) || 0,
+      firstPrint: entry.firstPrint || null,
+      bestPrint: entry.bestPrint || entry.firstPrint || null,
+      shiny: Number(entry.shiny) || 0,
+      lastPrintAt: asDate(entry.lastPrintAt),
     });
   });
 }
@@ -160,9 +197,11 @@ function mergeUsers(users) {
 
   const primary = orderedUsers[0];
   const mergedInventory = [];
+  const mergedRelics = [];
   const mergedQuests = [];
   const mergedCrates = new Map();
   const mergedMemberships = new Map();
+  const mergedRelicHuntStreaks = new Map();
   const mergedStats = {};
 
   let aura = 0;
@@ -178,6 +217,7 @@ function mergeUsers(users) {
   let lastWorkAt = null;
   let lastRobAt = null;
   let lastMineAt = null;
+  let lastSummonAt = null;
   let lastAuthorityAt = null;
   let lastVaultInterestAt = null;
   let premiumExpiresAt = null;
@@ -185,6 +225,9 @@ function mergeUsers(users) {
   let premiumLifetime = false;
   let premiumGrantedBy = null;
   let premiumSource = null;
+  let premiumLastAnnouncementEventId = null;
+  let premiumLastWelcomeGrantEventId = null;
+  let premiumLastChestAt = null;
   let equippedGear = { ...(primary.equippedGear || {}) };
   let gardenPlots = Array.isArray(primary.gardenPlots) ? [...primary.gardenPlots] : [];
 
@@ -204,12 +247,15 @@ function mergeUsers(users) {
     lastWorkAt = latestDate(lastWorkAt, user.lastWorkAt);
     lastRobAt = latestDate(lastRobAt, user.lastRobAt);
     lastMineAt = latestDate(lastMineAt, user.lastMineAt);
+    lastSummonAt = latestDate(lastSummonAt, user.lastSummonAt);
     lastAuthorityAt = latestDate(lastAuthorityAt, user.lastAuthorityAt);
     lastVaultInterestAt = latestDate(lastVaultInterestAt, user.lastVaultInterestAt);
 
     mergeInventory(mergedInventory, user.inventory);
+    mergeRelics(mergedRelics, user.relics);
     mergeQuests(mergedQuests, user.quests);
     mergeCountMaps(mergedCrates, user.crates);
+    mergeMaxMaps(mergedRelicHuntStreaks, user.relicHuntStreaks);
     mergeClanMemberships(mergedMemberships, user);
     mergeStats(mergedStats, user.stats || {});
     gardenPlots = mergeGardenPlots(gardenPlots, user.gardenPlots);
@@ -229,6 +275,9 @@ function mergeUsers(users) {
     premiumExpiresAt = latestDate(premiumExpiresAt, user.premium?.expiresAt);
     premiumGrantedBy = premiumGrantedBy || user.premium?.grantedBy || null;
     premiumSource = premiumSource || user.premium?.source || null;
+    premiumLastAnnouncementEventId = premiumLastAnnouncementEventId || user.premium?.lastAnnouncementEventId || null;
+    premiumLastWelcomeGrantEventId = premiumLastWelcomeGrantEventId || user.premium?.lastWelcomeGrantEventId || null;
+    premiumLastChestAt = latestDate(premiumLastChestAt, user.premium?.lastChestAt);
   });
 
   primary.aura = aura;
@@ -243,9 +292,11 @@ function mergeUsers(users) {
   primary.lastWorkAt = lastWorkAt;
   primary.lastRobAt = lastRobAt;
   primary.lastMineAt = lastMineAt;
+  primary.lastSummonAt = lastSummonAt;
   primary.lastAuthorityAt = lastAuthorityAt;
   primary.lastVaultInterestAt = lastVaultInterestAt;
   primary.inventory = mergedInventory;
+  primary.relics = mergedRelics;
   primary.gardenPlots = gardenPlots;
   primary.ownedPerks = mergeStringArrays(...orderedUsers.map((user) => user.ownedPerks));
   primary.skills = mergeStringArrays(...orderedUsers.map((user) => user.skills));
@@ -263,13 +314,25 @@ function mergeUsers(users) {
     lifetime: premiumLifetime,
     grantedBy: premiumGrantedBy,
     source: premiumSource,
+    lastAnnouncementEventId: premiumLastAnnouncementEventId,
+    lastWelcomeGrantEventId: premiumLastWelcomeGrantEventId,
+    lastChestAt: premiumLastChestAt,
   };
   primary.billing = {
     provider: chooseBillingValue(orderedUsers, "provider"),
+    paddleCustomerId: chooseBillingValue(orderedUsers, "paddleCustomerId"),
+    paddleSubscriptionId: chooseBillingValue(orderedUsers, "paddleSubscriptionId"),
+    paddleTransactionId: chooseBillingValue(orderedUsers, "paddleTransactionId"),
+    paddlePriceId: chooseBillingValue(orderedUsers, "paddlePriceId"),
+    paddleLastEventId: chooseBillingValue(orderedUsers, "paddleLastEventId"),
+    paddlePlanId: chooseBillingValue(orderedUsers, "paddlePlanId"),
+    paddleStatus: chooseBillingValue(orderedUsers, "paddleStatus"),
+    paddleGrantedTransactionIds: mergeStringArrays(...orderedUsers.map((user) => user.billing?.paddleGrantedTransactionIds)),
   };
   primary.stats = mergedStats;
   primary.clanId = null;
   primary.clanMemberships = mergedMemberships;
+  primary.relicHuntStreaks = mergedRelicHuntStreaks;
 
   if (createdAt) {
     primary.createdAt = createdAt;
@@ -312,6 +375,7 @@ async function migrateToGlobalPlayerProfiles() {
 
     primary.guildId = undefined;
     primary.markModified("inventory");
+    primary.markModified("relics");
     primary.markModified("gardenPlots");
     primary.markModified("ownedPerks");
     primary.markModified("skills");
@@ -323,14 +387,47 @@ async function migrateToGlobalPlayerProfiles() {
     primary.markModified("billing");
     primary.markModified("stats");
     primary.markModified("clanMemberships");
+    primary.markModified("relicHuntStreaks");
     await primary.save();
 
     mergedUsers += 1;
   }
 
   const clanResult = await migrateToGlobalClanProfiles();
+  const settingsResult = await normalizeGuildChannelSettings();
 
-  return { ran: true, mergedUsers, removedProfiles, ...clanResult };
+  return { ran: true, mergedUsers, removedProfiles, ...clanResult, ...settingsResult };
+}
+
+async function normalizeGuildChannelSettings() {
+  const settingsRows = await GuildSettings.find({
+    aurixChannelId: { $ne: null },
+    $or: [
+      { commandChannelId: null },
+      { commandChannelId: { $exists: false } },
+      { dropsChannelId: null },
+      { dropsChannelId: { $exists: false } },
+    ],
+  });
+  let normalizedGuildSettings = 0;
+
+  for (const settings of settingsRows) {
+    let changed = false;
+    if (!settings.commandChannelId) {
+      settings.commandChannelId = settings.aurixChannelId;
+      changed = true;
+    }
+    if (!settings.dropsChannelId) {
+      settings.dropsChannelId = settings.aurixChannelId;
+      changed = true;
+    }
+    if (changed) {
+      await settings.save();
+      normalizedGuildSettings += 1;
+    }
+  }
+
+  return { normalizedGuildSettings };
 }
 
 async function migrateToGlobalClanProfiles() {

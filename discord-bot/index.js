@@ -9,13 +9,19 @@ const session = require("express-session");
 const mongoose = require("mongoose");
 const { GuildSettings, PaddleWebhookLog, User } = require("./src/data/models");
 const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigration");
-const { applyPaddleWebhookEvent, applyTopggVoteWebhookEvent, buildCommands, recentInteractions, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop } = require("./src/game/service");
+const { applyPaddleWebhookEvent, applyTopggVoteWebhookEvent, buildCommands, handleChatRelicSpawnMessage, recentInteractions, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop, startRelicSpawnLoop } = require("./src/game/service");
 const { buildEmbedPayload } = require("./src/utils/visuals");
 
 const APP_VERSION = "aurix-premium-buffs-v19";
 const startedAt = Date.now();
 let discordClient = null;
 const recentDiscordResponses = [];
+const recentTopggStatsPosts = [];
+let topggStatsTimer = null;
+let topggStatsDebounceTimer = null;
+let topggStatsPosting = false;
+const TOPGG_STATS_INTERVAL_MS = Number(process.env.TOPGG_STATS_INTERVAL_MS) || 30 * 60 * 1000;
+const TOPGG_STATS_DEBOUNCE_MS = 60 * 1000;
 
 const requiredEnv = [
   "DISCORD_TOKEN",
@@ -123,6 +129,143 @@ function verifySharedSecret(providedValue, expectedValue) {
   const providedBuffer = Buffer.from(String(providedValue));
   const expectedBuffer = Buffer.from(String(expectedValue));
   return providedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(providedBuffer, expectedBuffer);
+}
+
+function getBearerToken(headerValue) {
+  const match = String(headerValue || "").match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : null;
+}
+
+function getTopggApiToken() {
+  return process.env.TOPGG_TOKEN?.trim()
+    || process.env.TOPGG_API_TOKEN?.trim()
+    || process.env.TOPGG_STATS_TOKEN?.trim()
+    || null;
+}
+
+function rememberTopggStatsPost(entry) {
+  recentTopggStatsPosts.unshift({
+    at: new Date().toISOString(),
+    ...entry,
+  });
+  recentTopggStatsPosts.splice(20);
+}
+
+async function getDiscordGuildStats(client) {
+  if (client.shard) {
+    const shardGuildCounts = await client.shard.fetchClientValues("guilds.cache.size");
+    const shards = shardGuildCounts.map((count) => Number(count) || 0);
+    return {
+      serverCount: shards.reduce((sum, count) => sum + count, 0),
+      shards,
+      shardCount: shards.length,
+    };
+  }
+
+  return {
+    serverCount: client.guilds.cache.size,
+    shards: [],
+    shardCount: 1,
+  };
+}
+
+async function postTopggStats(client, reason = "scheduled") {
+  if (!client?.isReady?.() || topggStatsPosting) {
+    return null;
+  }
+
+  const token = getTopggApiToken();
+  const botId = process.env.TOPGG_BOT_ID?.trim() || process.env.DISCORD_CLIENT_ID?.trim();
+  if (!token || !botId) {
+    rememberTopggStatsPost({
+      ok: false,
+      reason,
+      skipped: true,
+      error: !token ? "missing_topgg_token" : "missing_bot_id",
+    });
+    return null;
+  }
+
+  topggStatsPosting = true;
+  try {
+    const stats = await getDiscordGuildStats(client);
+    const body = {
+      server_count: stats.shards.length ? stats.shards : stats.serverCount,
+      shard_count: stats.shardCount,
+    };
+
+    const response = await fetch(`https://top.gg/api/bots/${botId}/stats`, {
+      method: "POST",
+      headers: {
+        Authorization: token,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    const payload = await response.text().catch(() => "");
+    const entry = {
+      ok: response.ok,
+      reason,
+      status: response.status,
+      serverCount: stats.serverCount,
+      shardCount: stats.shardCount,
+      body,
+      response: payload.slice(0, 300) || null,
+    };
+    rememberTopggStatsPost(entry);
+    if (response.ok) {
+      console.log(`Top.gg stats posted: ${stats.serverCount} servers (${reason}).`);
+    } else {
+      console.warn("Top.gg stats post failed:", entry);
+    }
+    return entry;
+  } catch (error) {
+    const entry = {
+      ok: false,
+      reason,
+      error: error.message || String(error),
+    };
+    rememberTopggStatsPost(entry);
+    console.warn("Top.gg stats post failed:", entry);
+    return entry;
+  } finally {
+    topggStatsPosting = false;
+  }
+}
+
+function scheduleTopggStatsPost(client, reason = "guild_update") {
+  if (topggStatsDebounceTimer) {
+    clearTimeout(topggStatsDebounceTimer);
+  }
+  topggStatsDebounceTimer = setTimeout(() => {
+    topggStatsDebounceTimer = null;
+    postTopggStats(client, reason).catch((error) => {
+      console.warn("Top.gg debounced stats post failed:", error);
+    });
+  }, TOPGG_STATS_DEBOUNCE_MS);
+}
+
+function startTopggStatsLoop(client) {
+  if (topggStatsTimer) {
+    return;
+  }
+
+  postTopggStats(client, "ready").catch((error) => {
+    console.warn("Initial Top.gg stats post failed:", error);
+  });
+
+  topggStatsTimer = setInterval(() => {
+    postTopggStats(client, "scheduled").catch((error) => {
+      console.warn("Scheduled Top.gg stats post failed:", error);
+    });
+  }, TOPGG_STATS_INTERVAL_MS);
+  topggStatsTimer.unref?.();
+}
+
+function isLocalRequest(req) {
+  const ip = req.ip || req.socket?.remoteAddress || "";
+  return ip === "::1" || ip === "127.0.0.1" || ip === "::ffff:127.0.0.1";
 }
 
 function parseTopggSignatureHeader(headerValue) {
@@ -269,6 +412,7 @@ function startWebServer() {
       ? await GuildSettings.findOne({ guildId: result.announcementGuildId }).lean()
       : null;
     const channelIds = [
+      guildSettings?.commandChannelId,
       guildSettings?.aurixChannelId,
       process.env.PREMIUM_ANNOUNCEMENT_CHANNEL_ID,
       result.announcementChannelId,
@@ -446,6 +590,25 @@ function startWebServer() {
     }
   });
 
+  app.use("/debug", (req, res, next) => {
+    const debugToken = process.env.DEBUG_AUTH_TOKEN?.trim();
+
+    if (!debugToken && !isProduction && isLocalRequest(req)) {
+      return next();
+    }
+
+    if (!debugToken) {
+      return res.status(404).json({ ok: false, error: "not_found" });
+    }
+
+    const providedToken = getBearerToken(req.headers.authorization) || req.headers["x-debug-token"];
+    if (!verifySharedSecret(providedToken, debugToken)) {
+      return res.status(401).json({ ok: false, error: "unauthorized" });
+    }
+
+    return next();
+  });
+
   app.get("/debug/paddle-webhooks", async (_req, res) => {
     const persisted = await PaddleWebhookLog.find({}).sort({ createdAt: -1 }).limit(10).lean();
     return res.status(200).json({ ok: true, memory: recentPaddleWebhooks, persisted });
@@ -453,6 +616,16 @@ function startWebServer() {
 
   app.get("/debug/topgg-webhooks", (_req, res) => {
     return res.status(200).json({ ok: true, memory: recentTopggWebhooks });
+  });
+
+  app.get("/debug/topgg-stats", (_req, res) => {
+    return res.status(200).json({
+      ok: true,
+      configured: Boolean(getTopggApiToken()),
+      botId: process.env.TOPGG_BOT_ID?.trim() || process.env.DISCORD_CLIENT_ID?.trim() || null,
+      intervalMs: TOPGG_STATS_INTERVAL_MS,
+      recent: recentTopggStatsPosts,
+    });
   });
 
   app.get("/debug/premium/:userId", async (req, res) => {
@@ -667,6 +840,7 @@ async function prepareInteractionResponse(interaction) {
 
   const originalReply = interaction.reply.bind(interaction);
   const originalEditReply = interaction.editReply.bind(interaction);
+  const originalDeleteReply = interaction.deleteReply?.bind(interaction);
   const originalUpdate = interaction.update?.bind(interaction);
   const originalFollowUp = interaction.followUp.bind(interaction);
   const defer = canAutoDeferComponent ? interaction.deferUpdate.bind(interaction) : interaction.deferReply.bind(interaction);
@@ -683,6 +857,13 @@ async function prepareInteractionResponse(interaction) {
   interaction.reply = async (options) => {
     const normalizedOptions = enforceHudEmbedStyle(options);
     if (deferOk || interaction.deferred) {
+      if (isEphemeralResponse(normalizedOptions)) {
+        const response = await originalFollowUp(normalizedOptions);
+        if (canAutoDeferCommand && originalDeleteReply) {
+          await originalDeleteReply().catch(() => null);
+        }
+        return response;
+      }
       const { ephemeral, flags, ...editOptions } = normalizedOptions || {};
       return originalEditReply(editOptions);
     }
@@ -704,6 +885,14 @@ async function prepareInteractionResponse(interaction) {
   };
 
   return () => {};
+}
+
+function isEphemeralResponse(options) {
+  if (!options || typeof options === "string") {
+    return false;
+  }
+  const flags = Number(options.flags || 0);
+  return Boolean(options.ephemeral || (flags & 64));
 }
 
 function enforceHudEmbedStyle(options) {
@@ -760,7 +949,7 @@ async function main() {
   console.log("Starting Discord client...");
 
   const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildEmojisAndStickers],
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildEmojisAndStickers, GatewayIntentBits.GuildMessages],
   });
   discordClient = client;
 
@@ -795,9 +984,12 @@ async function main() {
   client.once("ready", () => {
     console.log(`Bot ready as ${client.user.tag}`);
     startReminderLoop(client);
+    startRelicSpawnLoop(client);
+    startTopggStatsLoop(client);
   });
 
   client.on("guildCreate", async (guild) => {
+    scheduleTopggStatsPost(client, "guild_create");
     try {
       const channel = await sendServerJoinMessage(guild);
       console.log(channel
@@ -806,6 +998,10 @@ async function main() {
     } catch (error) {
       console.error(`Failed to post setup guide in ${guild.name}:`, error);
     }
+  });
+
+  client.on("guildDelete", () => {
+    scheduleTopggStatsPost(client, "guild_delete");
   });
 
   client.on("interactionCreate", async (interaction) => {
@@ -822,6 +1018,14 @@ async function main() {
       }
     } finally {
       clearPreparedResponse();
+    }
+  });
+
+  client.on("messageCreate", async (message) => {
+    try {
+      await handleChatRelicSpawnMessage(message);
+    } catch (error) {
+      console.error("Relic chat spawn listener failed:", error);
     }
   });
 

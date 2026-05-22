@@ -1,14 +1,16 @@
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
+const { ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
 const crypto = require("crypto");
 const { BOSSES, COLORS, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
-const { BattleSession, Clan, GuildSettings, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TopggVoteLog, TradeOffer, User } = require("../data/models");
+const { BattleSession, Clan, CollectiblePrintCounter, GuildSettings, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TopggVoteLog, TradeOffer, User } = require("../data/models");
 const { buildClanCreateData, buildClanLeaderboardFilter, buildClanLookup, buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
-const { buildProfileCosmeticAttachment, FILE_NAME: PROFILE_COSMETIC_FILE } = require("../utils/cosmeticArt");
+const { buildProfileCosmeticAttachment, encodePng, FILE_NAME: PROFILE_COSMETIC_FILE } = require("../utils/cosmeticArt");
 const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 
 const activeBattles = new Map();
 const pendingRankUps = new Map();
 const reminderIntervals = new WeakMap();
+const relicSpawnIntervals = new WeakMap();
+const chatSpawnCounters = new Map();
 const recentInteractions = [];
 const COMMAND_BUILD_ID = "aurix-topgg-vote-rewards-v21";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
@@ -18,6 +20,15 @@ const PVP_MATCHMAKING_TIMEOUT_MS = 10 * 60 * 1000;
 const SERVER_EVENT_DURATION_MS = 20 * 60 * 1000;
 const SERVER_EVENT_SPAWN_COOLDOWN_MS = 35 * 60 * 1000;
 const TRADE_OFFER_TIMEOUT_MS = 15 * 60 * 1000;
+const SUMMON_COOLDOWN_MS = 60 * 1000;
+const SUMMON_COST = 2000;
+const SHINY_RELIC_CHANCE = 0.012;
+const CHAT_SPAWN_MULTI_USER_THRESHOLD = 24;
+const CHAT_SPAWN_SINGLE_USER_THRESHOLD = 36;
+const CHAT_SPAWN_USER_RATE_LIMIT_MS = 1500;
+const INCENSE_COST = 50000;
+const INCENSE_SPAWNS = 180;
+const INCENSE_TICK_MS = 20 * 1000;
 const TUTORIAL_STEPS = Object.freeze([
   { id: "daily", command: "daily", label: "Claim /daily", rewardAura: 250, rewardXp: 80 },
   { id: "work", command: "work", label: "Complete /work", rewardAura: 300, rewardXp: 90 },
@@ -48,7 +59,154 @@ const SERVER_EVENT_TEMPLATES = Object.freeze([
     rewardXp: 180,
   },
 ]);
-const ENGAGEMENT_COMMANDS = new Set(["start", "tutorial", "profile", "stats", "balance", "work", "mine", "spin", "coinflip", "rob", "daily", "vote", "vault", "shop", "buy", "gift", "trade", "inventory", "collection", "craft", "forge", "garden", "property", "expedition", "gear", "rank", "prestige", "achievements", "quests", "crate", "skills", "pvp", "boss", "leaderboard", "season", "serverquest", "premium-chest", "clan", "authority", "event"]);
+const RELIC_RARITIES = Object.freeze({
+  common: { label: "Common", weight: 520, burnAura: 260, burnXp: 35, value: 1 },
+  uncommon: { label: "Uncommon", weight: 290, burnAura: 520, burnXp: 70, value: 2 },
+  rare: { label: "Rare", weight: 135, burnAura: 1200, burnXp: 140, value: 4 },
+  epic: { label: "Epic", weight: 45, burnAura: 2800, burnXp: 320, value: 8 },
+  legendary: { label: "Legendary", weight: 9, burnAura: 7200, burnXp: 820, value: 18 },
+  mythic: { label: "Mythic", weight: 1, burnAura: 18000, burnXp: 2200, value: 42 },
+});
+const GENERATED_RELIC_COUNT = Number(process.env.AURIX_GENERATED_RELIC_COUNT) || 2500;
+const GENERATED_RELIC_RARITY_COUNTS = Object.freeze({
+  common: 1200,
+  uncommon: 700,
+  rare: 350,
+  epic: 180,
+  legendary: 60,
+  mythic: 10,
+});
+
+function slugifyRelicPart(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function pickGeneratedRelicRarity(index) {
+  let cursor = 0;
+  for (const [rarity, count] of Object.entries(GENERATED_RELIC_RARITY_COUNTS)) {
+    cursor += count;
+    if (index < cursor) {
+      return rarity;
+    }
+  }
+  return "common";
+}
+
+function buildGeneratedAurixRelics(count = GENERATED_RELIC_COUNT) {
+  const prefixes = ["Amber", "Ashen", "Astral", "Azure", "Black", "Bloom", "Brass", "Bright", "Broken", "Celestial", "Chrome", "Crimson", "Crystal", "Duskworn", "Echo", "Elder", "Ember", "Fabled", "Frost", "Gilded", "Glass", "Golden", "Hollow", "Iron", "Ivory", "Jade", "Lunar", "Mist", "Obsidian", "Onyx", "Oracle", "Pearl", "Prism", "Radiant", "Rift", "Ruby", "Runed", "Sable", "Scarlet", "Shadow", "Silver", "Solar", "Static", "Storm", "Sunken", "Verdant", "Violet", "Void", "Wild", "Woven"];
+  const cores = ["Anchor", "Anvil", "Bell", "Blade", "Bloom", "Button", "Candle", "Charm", "Chip", "Coin", "Compass", "Crown", "Dial", "Door", "Eye", "Feather", "Gear", "Glyph", "Halo", "Heart", "Hourglass", "Key", "Knot", "Lantern", "Leaf", "Lens", "Locket", "Mask", "Mirror", "Needle", "Orb", "Pearl", "Pin", "Prism", "Rune", "Scale", "Seal", "Seed", "Shard", "Shell", "Sigil", "Spark", "Spindle", "Sprout", "Star", "Stone", "Thread", "Ticket", "Token", "Tooth"];
+  const suffixes = ["of Dawn", "of Dusk", "of Static", "of Cinders", "of the Vault", "of the Rift", "of Old Seasons", "of Quiet Luck", "of Deep Channels", "of Wild Commands", "of Moonlight", "of Sunroot", "of Lost Prints", "of First Light", "of the Garden", "of the Market", "of the Oracle", "of the Warden", "of the Ember Court", "of Hidden Doors", "of Glass Rain", "of Silver Bells", "of Soft Thunder", "of Patient Hands", "of the Long Hunt", "of Hollow Echoes", "of the Night Bazaar", "of Golden Dust", "of Broken Crowns", "of Infinite Roots"];
+  const descriptions = {
+    common: "A small collectible relic from the outer Aurix archive.",
+    uncommon: "A tuned relic with enough aura residue to stand out in a busy channel.",
+    rare: "A scarce relic with a memorable silhouette and a stubborn glow.",
+    epic: "A high-value relic sought by collectors and late-night hunters.",
+    legendary: "A server-flex relic with old power folded into its shadow.",
+    mythic: "A near-impossible relic whispered about by the archive itself.",
+  };
+  const relics = [];
+  const targetCount = Math.max(0, Math.floor(count));
+
+  for (let index = 0; index < targetCount; index += 1) {
+    const prefix = prefixes[index % prefixes.length];
+    const core = cores[Math.floor(index / prefixes.length) % cores.length];
+    const suffix = suffixes[Math.floor(index / (prefixes.length * cores.length)) % suffixes.length];
+    const rarity = pickGeneratedRelicRarity(index);
+    const name = `${prefix} ${core} ${suffix}`;
+    relics.push({
+      id: `relic_${String(index + 1).padStart(4, "0")}_${slugifyRelicPart(prefix)}_${slugifyRelicPart(core)}`,
+      name,
+      rarity,
+      description: descriptions[rarity],
+      generated: true,
+    });
+  }
+
+  return relics;
+}
+
+const BASE_AURIX_RELICS = Object.freeze([
+  { id: "static_seed", name: "Static Seed", rarity: "common", description: "A starter spark that hums when commands land." },
+  { id: "copper_moon", name: "Copper Moon", rarity: "common", description: "A warm coin-shaped relic from old aura routes." },
+  { id: "garden_lens", name: "Garden Lens", rarity: "common", description: "A tiny glass charm that makes crop rows look endless." },
+  { id: "rusted_key", name: "Rusted Key", rarity: "common", description: "An old key with no lock, kept because it still vibrates near vault doors." },
+  { id: "threaded_leaf", name: "Threaded Leaf", rarity: "common", description: "A leaf stitched with faint auric veins." },
+  { id: "ash_button", name: "Ash Button", rarity: "common", description: "A blackened button from a coat worn too close to the Ember Tyrant." },
+  { id: "tin_star", name: "Tin Star", rarity: "common", description: "A dented star charm given to first-time relic hunters." },
+  { id: "mist_pebble", name: "Mist Pebble", rarity: "common", description: "A smooth stone that never fully dries." },
+  { id: "paper_sun", name: "Paper Sun", rarity: "common", description: "A folded charm that glows only at the edges." },
+  { id: "blue_cinder", name: "Blue Cinder", rarity: "common", description: "A cold ember that remembers being bright." },
+  { id: "hollow_coin", name: "Hollow Coin", rarity: "common", description: "A lightweight coin that rings like glass." },
+  { id: "market_pin", name: "Market Pin", rarity: "common", description: "A trading badge from a forgotten server bazaar." },
+  { id: "sleeping_sprout", name: "Sleeping Sprout", rarity: "common", description: "A tiny sprout sealed in a bead of amber." },
+  { id: "vault_sigil", name: "Vault Sigil", rarity: "uncommon", description: "A polished seal used by careful savers." },
+  { id: "ember_knot", name: "Ember Knot", rarity: "uncommon", description: "A loop of heat-resistant thread from the boss arenas." },
+  { id: "mirror_leaf", name: "Mirror Leaf", rarity: "uncommon", description: "A silver leaf that reflects nearby relic silhouettes." },
+  { id: "lucky_gear", name: "Lucky Gear", rarity: "uncommon", description: "A small brass gear that clicks once before good rolls." },
+  { id: "drift_shell", name: "Drift Shell", rarity: "uncommon", description: "A shell pulled from a sea that only appears during world events." },
+  { id: "lantern_moth", name: "Lantern Moth", rarity: "uncommon", description: "A preserved moth whose wings hold a small square of light." },
+  { id: "scarlet_token", name: "Scarlet Token", rarity: "uncommon", description: "A warm token stamped with a dueling mark." },
+  { id: "clockwork_seed", name: "Clockwork Seed", rarity: "uncommon", description: "A seed with small teeth where roots should be." },
+  { id: "silver_rune", name: "Silver Rune", rarity: "uncommon", description: "A thin rune that hums louder inside busy channels." },
+  { id: "tavern_chime", name: "Tavern Chime", rarity: "uncommon", description: "A bell charm that sounds like distant laughter." },
+  { id: "frosted_lens", name: "Frosted Lens", rarity: "uncommon", description: "A cloudy lens used to inspect impossible prints." },
+  { id: "ember_pinwheel", name: "Ember Pinwheel", rarity: "uncommon", description: "A tiny wheel that spins whenever a boss wakes." },
+  { id: "rift_compass", name: "Rift Compass", rarity: "rare", description: "Its needle points toward unopened chances." },
+  { id: "oracle_chip", name: "Oracle Chip", rarity: "rare", description: "A sliver of prediction etched with impossible timing." },
+  { id: "moonlit_anchor", name: "Moonlit Anchor", rarity: "rare", description: "A small anchor that holds drifting expeditions in place." },
+  { id: "glass_wyvern_scale", name: "Glass Wyvern Scale", rarity: "rare", description: "A transparent scale with a storm trapped inside." },
+  { id: "vault_hourglass", name: "Vault Hourglass", rarity: "rare", description: "An hourglass that counts interest instead of sand." },
+  { id: "songsteel_pick", name: "Songsteel Pick", rarity: "rare", description: "A mining pick that rings in perfect fifths." },
+  { id: "bloom_crownlet", name: "Bloom Crownlet", rarity: "rare", description: "A woven crownlet worn by patient gardeners." },
+  { id: "static_locket", name: "Static Locket", rarity: "rare", description: "A locket that stores one second of thunder." },
+  { id: "gilded_contract", name: "Gilded Contract", rarity: "rare", description: "A contract that refuses to reveal who signed it." },
+  { id: "phantom_ticket", name: "Phantom Ticket", rarity: "rare", description: "A ticket for a train that arrives in inactive channels." },
+  { id: "sable_flame", name: "Sable Flame", rarity: "rare", description: "A black flame that casts gold shadows." },
+  { id: "stormglass_orb", name: "Stormglass Orb", rarity: "rare", description: "A glass orb that fogs before a rare pull." },
+  { id: "duelist_mask", name: "Duelist Mask", rarity: "epic", description: "A lacquered faceplate carried by old PvP champions." },
+  { id: "sunforge_core", name: "Sunforge Core", rarity: "epic", description: "A radiant gear heart that refuses to cool." },
+  { id: "riftbreaker_halo", name: "Riftbreaker Halo", rarity: "epic", description: "A cracked halo used to stabilize wild spawns." },
+  { id: "oracle_eye", name: "Oracle Eye", rarity: "epic", description: "A polished eye that blinks one command ahead." },
+  { id: "deepvault_prism", name: "Deepvault Prism", rarity: "epic", description: "A prism that splits aura into visible ledgers." },
+  { id: "ember_tyrants_tooth", name: "Ember Tyrant's Tooth", rarity: "epic", description: "A huge tooth carved with victory marks." },
+  { id: "night_market_scale", name: "Night Market Scale", rarity: "epic", description: "A merchant scale that weighs luck against greed." },
+  { id: "astral_bloom", name: "Astral Bloom", rarity: "epic", description: "A flower that grows only in prestige resets." },
+  { id: "mirrorbound_blade", name: "Mirrorbound Blade", rarity: "epic", description: "A blade that shows the opponent's next mistake." },
+  { id: "chrono_satchel", name: "Chrono Satchel", rarity: "epic", description: "A small satchel filled with delayed rewards." },
+  { id: "warden_crown", name: "Warden Crown", rarity: "legendary", description: "The vault bends around whoever holds it." },
+  { id: "codex_heart", name: "Codex Heart", rarity: "legendary", description: "A living archive of wins, losses, and strange revisions." },
+  { id: "sovereign_spark", name: "Sovereign Spark", rarity: "legendary", description: "A spark that makes lesser relics orbit around it." },
+  { id: "eternal_vault_door", name: "Eternal Vault Door", rarity: "legendary", description: "A miniature door that opens into pure balance sheets." },
+  { id: "last_sun_dial", name: "Last Sun Dial", rarity: "legendary", description: "A dial that only casts a shadow at the end of a season." },
+  { id: "rift_phoenix_plume", name: "Rift Phoenix Plume", rarity: "legendary", description: "A reborn plume that glows brighter after every burn." },
+  { id: "crowned_oracle_chip", name: "Crowned Oracle Chip", rarity: "legendary", description: "An upgraded prophecy chip with a gold fracture down its center." },
+  { id: "dragonmint_seal", name: "Dragonmint Seal", rarity: "legendary", description: "A mint-green seal from the oldest treasury gardens." },
+  { id: "aurix_zero", name: "Aurix Zero", rarity: "mythic", description: "The first quiet note under the whole economy." },
+  { id: "first_print_sun", name: "First Print Sun", rarity: "mythic", description: "A mythic sun said to mark the first copy of every future relic." },
+  { id: "null_crown", name: "Null Crown", rarity: "mythic", description: "A crown-shaped absence that removes sound from the room." },
+  { id: "infinite_sprout", name: "Infinite Sprout", rarity: "mythic", description: "A sprout whose roots loop through every server it visits." },
+  { id: "adminium_star", name: "Adminium Star", rarity: "mythic", description: "A star forged from old permissions and impossible uptime." },
+]);
+const GENERATED_AURIX_RELICS = Object.freeze(buildGeneratedAurixRelics());
+const AURIX_RELICS = Object.freeze([...BASE_AURIX_RELICS, ...GENERATED_AURIX_RELICS]);
+const RELIC_VISUAL_MOTIFS = Object.freeze({
+  static_seed: { core: "seed", wings: 0, orbit: 3, spikes: 4 },
+  copper_moon: { core: "crescent", wings: 0, orbit: 2, spikes: 0 },
+  garden_lens: { core: "lens", wings: 2, orbit: 4, spikes: 0 },
+  vault_sigil: { core: "shield", wings: 0, orbit: 4, spikes: 6 },
+  ember_knot: { core: "knot", wings: 2, orbit: 3, spikes: 5 },
+  rift_compass: { core: "compass", wings: 0, orbit: 6, spikes: 8 },
+  oracle_chip: { core: "chip", wings: 4, orbit: 4, spikes: 4 },
+  duelist_mask: { core: "mask", wings: 2, orbit: 2, spikes: 6 },
+  sunforge_core: { core: "sun", wings: 0, orbit: 8, spikes: 10 },
+  warden_crown: { core: "crown", wings: 2, orbit: 5, spikes: 7 },
+  codex_heart: { core: "heart", wings: 4, orbit: 6, spikes: 4 },
+  aurix_zero: { core: "zero", wings: 6, orbit: 9, spikes: 12 },
+});
+const ENGAGEMENT_COMMANDS = new Set(["start", "tutorial", "profile", "stats", "balance", "work", "mine", "summon", "claim", "hint", "incense", "burn", "spin", "coinflip", "rob", "daily", "vote", "vault", "shop", "buy", "gift", "trade", "inventory", "collection", "craft", "forge", "garden", "property", "expedition", "gear", "rank", "prestige", "achievements", "quests", "crate", "skills", "pvp", "boss", "leaderboard", "season", "serverquest", "premium-chest", "clan", "authority", "event"]);
 const QUICK_ACTIONS = Object.freeze({
   achievements: { label: "Achievements", style: ButtonStyle.Secondary },
   balance: { label: "Balance", style: ButtonStyle.Secondary },
@@ -60,6 +218,7 @@ const QUICK_ACTIONS = Object.freeze({
   quests: { label: "Quests", style: ButtonStyle.Secondary },
   rank: { label: "Rank", style: ButtonStyle.Secondary },
   spin: { label: "Spin", style: ButtonStyle.Primary },
+  summon: { label: "Summon", style: ButtonStyle.Primary },
   tutorial: { label: "Tutorial", style: ButtonStyle.Success },
   work: { label: "Work", style: ButtonStyle.Primary },
 });
@@ -472,6 +631,18 @@ function pickFlavor(lines) {
     return "";
   }
   return lines[randInt(0, lines.length - 1)];
+}
+
+function pickWeighted(values, weightForValue) {
+  const totalWeight = values.reduce((sum, value) => sum + Math.max(0, weightForValue(value)), 0);
+  let roll = Math.random() * totalWeight;
+  for (const value of values) {
+    roll -= Math.max(0, weightForValue(value));
+    if (roll <= 0) {
+      return value;
+    }
+  }
+  return values[values.length - 1] || null;
 }
 
 function withFlavor(flavor, result) {
@@ -1299,6 +1470,397 @@ function getInventoryLabel(id) {
     return getCrateLabel(id);
   }
   return id;
+}
+
+function getRelic(relicId) {
+  return AURIX_RELICS.find((relic) => relic.id === relicId) || null;
+}
+
+function findRelicByInput(value) {
+  const normalized = normalizeGuess(value);
+  return AURIX_RELICS.find((relic) => relic.id === value || normalizeGuess(relic.id) === normalized || normalizeGuess(relic.name) === normalized) || null;
+}
+
+function getRelicRarity(relic) {
+  return RELIC_RARITIES[relic?.rarity] || RELIC_RARITIES.common;
+}
+
+function getRelicLabel(relicId) {
+  const relic = getRelic(relicId);
+  return formatEntityLabel("RELIC", relicId, relic?.name || relicId);
+}
+
+function getRelicEntry(user, relicId) {
+  user.relics ||= [];
+  return user.relics.find((entry) => entry.id === relicId) || null;
+}
+
+function ensureRelicEntry(user, relicId) {
+  let entry = getRelicEntry(user, relicId);
+  if (!entry) {
+    user.relics.push({ id: relicId, quantity: 0, firstPrint: null, bestPrint: null, shiny: 0, lastPrintAt: null });
+    entry = user.relics[user.relics.length - 1];
+  }
+  return entry;
+}
+
+function getRelicScore(entry) {
+  const relic = getRelic(entry?.id);
+  if (!relic || !entry?.quantity) {
+    return 0;
+  }
+  const rarity = getRelicRarity(relic);
+  const printBonus = entry.bestPrint ? Math.max(0, 120 - Math.min(entry.bestPrint, 120)) / 10 : 0;
+  return Math.floor((rarity.value * entry.quantity + (entry.shiny || 0) * rarity.value * 12 + printBonus) * 100);
+}
+
+function getRelicCollectionStats(user) {
+  user.relics ||= [];
+  const ownedEntries = user.relics.filter((entry) => entry.quantity > 0);
+  const shinyCount = ownedEntries.reduce((sum, entry) => sum + (entry.shiny || 0), 0);
+  const score = ownedEntries.reduce((sum, entry) => sum + getRelicScore(entry), 0);
+  const bestEntry = ownedEntries
+    .slice()
+    .sort((left, right) => getRelicScore(right) - getRelicScore(left))[0] || null;
+  return {
+    ownedCount: ownedEntries.length,
+    totalCount: AURIX_RELICS.length,
+    totalQuantity: ownedEntries.reduce((sum, entry) => sum + entry.quantity, 0),
+    shinyCount,
+    score,
+    bestEntry,
+  };
+}
+
+function rollRelicForUser(user) {
+  const effects = getCombinedEffects(user);
+  const rarityEntries = Object.entries(RELIC_RARITIES).map(([rarityId, rarity]) => {
+    const rareBoost = ["epic", "legendary", "mythic"].includes(rarityId) ? 1 + Math.min(0.35, effects.crateAuraBoost || 0) : 1;
+    return { rarityId, weight: rarity.weight * rareBoost };
+  });
+  const rarity = pickWeighted(rarityEntries, (entry) => entry.weight)?.rarityId || "common";
+  const relics = AURIX_RELICS.filter((relic) => relic.rarity === rarity);
+  return relics[randInt(0, relics.length - 1)] || AURIX_RELICS[0];
+}
+
+function rollRelicForSpawn() {
+  const rarity = pickWeighted(Object.entries(RELIC_RARITIES), ([, config]) => config.weight)?.[0] || "common";
+  const relics = AURIX_RELICS.filter((relic) => relic.rarity === rarity);
+  return relics[randInt(0, relics.length - 1)] || AURIX_RELICS[0];
+}
+
+async function nextRelicPrint(relicId) {
+  const counter = await CollectiblePrintCounter.findOneAndUpdate(
+    { itemId: relicId },
+    { $inc: { count: 1 } },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+  return counter.count;
+}
+
+function addRelicToUser(user, relic, printNumber, shiny = false) {
+  const entry = ensureRelicEntry(user, relic.id);
+  const isNew = entry.quantity <= 0;
+  entry.quantity += 1;
+  entry.firstPrint = entry.firstPrint || printNumber;
+  entry.bestPrint = entry.bestPrint ? Math.min(entry.bestPrint, printNumber) : printNumber;
+  entry.lastPrintAt = new Date();
+  if (shiny) {
+    entry.shiny = (entry.shiny || 0) + 1;
+  }
+  user.markModified("relics");
+  return { entry, isNew };
+}
+
+function formatRelicLine(entry) {
+  const relic = getRelic(entry.id);
+  const rarity = getRelicRarity(relic);
+  const shinyText = entry.shiny ? ` | shiny x${entry.shiny}` : "";
+  return `**${getRelicLabel(entry.id)}** [${rarity.label}] x${formatNumber(entry.quantity)} | \`${entry.id}\` | best print #${formatNumber(entry.bestPrint || entry.firstPrint || 0)}${shinyText}`;
+}
+
+function normalizeGuess(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function formatRelicHint(name, hintUses = 0) {
+  const revealEvery = Math.max(2, 4 - Math.min(2, hintUses));
+  return String(name || "")
+    .split("")
+    .map((char, index) => {
+      if (!/[a-z0-9]/i.test(char)) {
+        return char;
+      }
+      return index % revealEvery === 0 ? char : "_";
+    })
+    .join("");
+}
+
+function getSpecialRelicChance(streak) {
+  return (7 + Math.sqrt(Math.max(0, Number(streak) || 0))) / 28672;
+}
+
+function buildRelicSpawnAttachment(relic) {
+  const width = 960;
+  const height = 540;
+  const color = {
+    common: 0x9ca3af,
+    uncommon: 0x5ce1a1,
+    rare: 0x69c7ff,
+    epic: 0xa78bfa,
+    legendary: 0xffc857,
+    mythic: 0xff6b88,
+  }[relic.rarity] || COLORS.primary;
+  const pixels = Buffer.alloc(width * height * 4);
+  const toRgb = (hex) => [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255];
+  const put = (x, y, hex, alpha = 255) => {
+    if (x < 0 || y < 0 || x >= width || y >= height) {
+      return;
+    }
+    const [r, g, b] = toRgb(hex);
+    const index = (Math.floor(y) * width + Math.floor(x)) * 4;
+    const existingAlpha = pixels[index + 3] / 255;
+    const nextAlpha = alpha / 255;
+    const outAlpha = nextAlpha + existingAlpha * (1 - nextAlpha);
+    pixels[index] = Math.round((r * nextAlpha + pixels[index] * existingAlpha * (1 - nextAlpha)) / outAlpha);
+    pixels[index + 1] = Math.round((g * nextAlpha + pixels[index + 1] * existingAlpha * (1 - nextAlpha)) / outAlpha);
+    pixels[index + 2] = Math.round((b * nextAlpha + pixels[index + 2] * existingAlpha * (1 - nextAlpha)) / outAlpha);
+    pixels[index + 3] = Math.round(outAlpha * 255);
+  };
+  const fillRect = (x, y, w, h, hex, alpha = 255) => {
+    for (let yy = y; yy < y + h; yy += 1) {
+      for (let xx = x; xx < x + w; xx += 1) {
+        put(xx, yy, hex, alpha);
+      }
+    }
+  };
+  const strokeRect = (x, y, w, h, hex, thickness = 1) => {
+    fillRect(x, y, w, thickness, hex);
+    fillRect(x, y + h - thickness, w, thickness, hex);
+    fillRect(x, y, thickness, h, hex);
+    fillRect(x + w - thickness, y, thickness, h, hex);
+  };
+  const fillCircle = (cx, cy, radius, hex, alpha = 255) => {
+    for (let y = cy - radius; y <= cy + radius; y += 1) {
+      for (let x = cx - radius; x <= cx + radius; x += 1) {
+        if ((x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2) {
+          put(x, y, hex, alpha);
+        }
+      }
+    }
+  };
+  const drawDiamond = (cx, cy, radius, hex, alpha = 255) => {
+    for (let y = cy - radius; y <= cy + radius; y += 1) {
+      for (let x = cx - radius; x <= cx + radius; x += 1) {
+        if (Math.abs(x - cx) + Math.abs(y - cy) <= radius) {
+          put(x, y, hex, alpha);
+        }
+      }
+    }
+  };
+  const fillEllipse = (cx, cy, rx, ry, hex, alpha = 255) => {
+    for (let y = cy - ry; y <= cy + ry; y += 1) {
+      for (let x = cx - rx; x <= cx + rx; x += 1) {
+        if (((x - cx) ** 2) / (rx ** 2) + ((y - cy) ** 2) / (ry ** 2) <= 1) {
+          put(x, y, hex, alpha);
+        }
+      }
+    }
+  };
+  const drawLine = (x1, y1, x2, y2, thickness, hex, alpha = 255) => {
+    const steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
+    for (let step = 0; step <= steps; step += 1) {
+      const t = steps === 0 ? 0 : step / steps;
+      fillCircle(Math.round(x1 + (x2 - x1) * t), Math.round(y1 + (y2 - y1) * t), thickness, hex, alpha);
+    }
+  };
+  const fillTriangle = (ax, ay, bx, by, cx, cy, hex, alpha = 255) => {
+    const minX = Math.floor(Math.min(ax, bx, cx));
+    const maxX = Math.ceil(Math.max(ax, bx, cx));
+    const minY = Math.floor(Math.min(ay, by, cy));
+    const maxY = Math.ceil(Math.max(ay, by, cy));
+    const area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    if (area === 0) {
+      return;
+    }
+    for (let y = minY; y <= maxY; y += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        const w1 = ((bx - x) * (cy - y) - (by - y) * (cx - x)) / area;
+        const w2 = ((cx - x) * (ay - y) - (cy - y) * (ax - x)) / area;
+        const w3 = 1 - w1 - w2;
+        if ((w1 >= 0 && w2 >= 0 && w3 >= 0) || (w1 <= 0 && w2 <= 0 && w3 <= 0)) {
+          put(x, y, hex, alpha);
+        }
+      }
+    }
+  };
+  const hashRelic = (value) => String(value || "").split("").reduce((hash, char) => ((hash * 33) ^ char.charCodeAt(0)) >>> 0, 5381);
+  const relicSeed = hashRelic(relic.id);
+  const motif = RELIC_VISUAL_MOTIFS[relic.id] || { core: "lens", wings: relicSeed % 5, orbit: 3 + (relicSeed % 5), spikes: relicSeed % 8 };
+  const shadow = 0x03040a;
+  const relief = 0x111522;
+  const cx = 480;
+  const cy = 270;
+  const drawOrbitals = () => {
+    for (let index = 0; index < motif.orbit; index += 1) {
+      const angle = (Math.PI * 2 * index) / motif.orbit + (relicSeed % 17) / 17;
+      const radius = 150 + ((relicSeed + index * 13) % 34);
+      const size = 9 + ((relicSeed >> (index % 12)) % 10);
+      const x = Math.round(cx + Math.cos(angle) * radius);
+      const y = Math.round(cy + Math.sin(angle) * radius * 0.72);
+      index % 2 === 0 ? drawDiamond(x, y, size, shadow) : fillCircle(x, y, size, shadow);
+      fillCircle(x, y, Math.max(2, Math.floor(size / 3)), relief, 160);
+    }
+  };
+  const drawSpikes = () => {
+    for (let index = 0; index < motif.spikes; index += 1) {
+      const angle = (Math.PI * 2 * index) / Math.max(1, motif.spikes) - Math.PI / 2;
+      const inner = 92 + ((relicSeed + index * 7) % 20);
+      const outer = 152 + ((relicSeed + index * 11) % 26);
+      const widthAngle = 0.12 + ((relicSeed + index) % 5) * 0.01;
+      fillTriangle(
+        cx + Math.cos(angle - widthAngle) * inner,
+        cy + Math.sin(angle - widthAngle) * inner,
+        cx + Math.cos(angle + widthAngle) * inner,
+        cy + Math.sin(angle + widthAngle) * inner,
+        cx + Math.cos(angle) * outer,
+        cy + Math.sin(angle) * outer,
+        shadow
+      );
+    }
+  };
+  const drawWings = () => {
+    for (let index = 0; index < motif.wings; index += 1) {
+      const offset = 42 + index * 22;
+      fillEllipse(cx - 108 - offset / 2, cy - 36 + index * 18, 54 - index * 4, 18 + index * 2, shadow);
+      fillEllipse(cx + 108 + offset / 2, cy - 36 + index * 18, 54 - index * 4, 18 + index * 2, shadow);
+    }
+  };
+  const drawCore = () => {
+    switch (motif.core) {
+      case "seed":
+        fillEllipse(cx, cy, 52, 98, shadow);
+        drawLine(cx, cy - 78, cx + 42, cy - 132, 8, shadow);
+        fillEllipse(cx + 66, cy - 132, 38, 18, shadow);
+        break;
+      case "crescent":
+        fillCircle(cx - 22, cy, 96, shadow);
+        fillCircle(cx + 26, cy - 6, 92, 0x171b28);
+        fillCircle(cx - 20, cy, 28, shadow);
+        break;
+      case "shield":
+        fillTriangle(cx - 88, cy - 88, cx + 88, cy - 88, cx, cy + 122, shadow);
+        fillRect(cx - 78, cy - 98, 156, 80, shadow);
+        drawLine(cx, cy - 78, cx, cy + 82, 7, relief, 180);
+        break;
+      case "knot":
+        fillEllipse(cx - 46, cy, 62, 86, shadow);
+        fillEllipse(cx + 46, cy, 62, 86, shadow);
+        fillCircle(cx, cy, 42, relief, 210);
+        drawLine(cx - 98, cy - 72, cx + 98, cy + 72, 10, shadow);
+        drawLine(cx - 98, cy + 72, cx + 98, cy - 72, 10, shadow);
+        break;
+      case "compass":
+        fillCircle(cx, cy, 90, shadow);
+        fillTriangle(cx, cy - 136, cx - 32, cy + 18, cx + 32, cy + 18, relief, 210);
+        fillTriangle(cx, cy + 136, cx - 28, cy - 18, cx + 28, cy - 18, shadow);
+        drawLine(cx - 128, cy, cx + 128, cy, 8, shadow);
+        break;
+      case "chip":
+        fillRect(cx - 78, cy - 78, 156, 156, shadow);
+        for (let pin = -78; pin <= 78; pin += 26) {
+          fillRect(cx - 116, cy + pin, 36, 8, shadow);
+          fillRect(cx + 80, cy + pin, 36, 8, shadow);
+          fillRect(cx + pin, cy - 116, 8, 36, shadow);
+          fillRect(cx + pin, cy + 80, 8, 36, shadow);
+        }
+        fillRect(cx - 34, cy - 34, 68, 68, relief, 190);
+        break;
+      case "mask":
+        fillEllipse(cx, cy, 116, 78, shadow);
+        fillEllipse(cx - 42, cy - 8, 28, 16, relief, 230);
+        fillEllipse(cx + 42, cy - 8, 28, 16, relief, 230);
+        fillTriangle(cx - 22, cy + 22, cx + 22, cy + 22, cx, cy + 64, relief, 180);
+        break;
+      case "sun":
+        drawSpikes();
+        fillCircle(cx, cy, 86, shadow);
+        fillCircle(cx, cy, 36, relief, 190);
+        break;
+      case "crown":
+        fillRect(cx - 92, cy - 22, 184, 88, shadow);
+        fillTriangle(cx - 92, cy - 22, cx - 52, cy - 124, cx - 12, cy - 22, shadow);
+        fillTriangle(cx - 38, cy - 22, cx, cy - 142, cx + 38, cy - 22, shadow);
+        fillTriangle(cx + 12, cy - 22, cx + 52, cy - 124, cx + 92, cy - 22, shadow);
+        break;
+      case "heart":
+        fillCircle(cx - 44, cy - 32, 56, shadow);
+        fillCircle(cx + 44, cy - 32, 56, shadow);
+        fillTriangle(cx - 100, cy - 4, cx + 100, cy - 4, cx, cy + 126, shadow);
+        fillRect(cx - 18, cy - 70, 36, 136, relief, 180);
+        break;
+      case "zero":
+        fillCircle(cx, cy, 112, shadow);
+        fillCircle(cx, cy, 62, 0x171b28);
+        drawLine(cx - 74, cy + 74, cx + 74, cy - 74, 12, shadow);
+        break;
+      case "lens":
+      default:
+        fillEllipse(cx, cy, 112, 86, shadow);
+        fillCircle(cx, cy, 48, relief, 190);
+        drawLine(cx + 70, cy + 60, cx + 132, cy + 122, 12, shadow);
+        break;
+    }
+  };
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const t = (x / width) * 0.65 + (y / height) * 0.35;
+      const base = Math.floor(15 + t * 18);
+      const index = (y * width + x) * 4;
+      pixels[index] = base;
+      pixels[index + 1] = base + 4;
+      pixels[index + 2] = base + 14;
+      pixels[index + 3] = 255;
+    }
+  }
+  strokeRect(28, 28, 904, 484, color, 6);
+  strokeRect(48, 48, 864, 444, 0xffffff, 1);
+  fillCircle(480, 270, 138, color, 45);
+  drawOrbitals();
+  drawWings();
+  if (motif.core !== "sun") {
+    drawSpikes();
+  }
+  drawCore();
+  for (let x = 130; x <= 830; x += 70) {
+    drawDiamond(x, 94 + ((x / 70) % 2) * 340, 9, color, 220);
+  }
+  return new AttachmentBuilder(encodePng(width, height, pixels), { name: "aurix-relic-spawn.png" });
+}
+
+function buildRelicSpawnPayload(relic, source = "chat") {
+  const rarity = getRelicRarity(relic);
+  const attachment = buildRelicSpawnAttachment(relic);
+  const embed = new EmbedBuilder()
+    .setColor(COLORS.primary)
+    .setAuthor({ name: "Aurix" })
+    .setTitle("Relic Spawn")
+    .setDescription([
+      "A shadowed relic slipped into the channel.",
+      "First correct `/claim guess:<relic name>` wins it.",
+      "Use `/hint` if the server gets stuck.",
+    ].join("\n"))
+    .addFields(
+      { name: "Rarity Signal", value: rarity.label, inline: true },
+      { name: "Source", value: source === "incense" ? "Incense" : "Chat activity", inline: true }
+    )
+    .setImage("attachment://aurix-relic-spawn.png")
+    .setFooter({ text: "AURIX • Failed guesses do not despawn the relic." })
+    .setTimestamp();
+  return { embeds: [embed], files: [attachment] };
 }
 
 function getRankLabel(rank) {
@@ -2144,6 +2706,10 @@ async function getOrCreatePlayer(guildId, userId) {
     user.clanMemberships.set(guildId, user.clanId);
   }
   user.equippedGear = user.equippedGear || { tool: null, charm: null, relic: null };
+  user.relics ||= [];
+  user.stats ||= {};
+  user.stats.summons ||= 0;
+  user.stats.relicsBurned ||= 0;
   normalizeInventoryState(user);
   normalizeProgressionSystems(user);
   normalizeTutorialState(user);
@@ -2377,17 +2943,62 @@ async function getOrCreateGuildSettings(guildId) {
   );
 }
 
-async function setAurixChannel(guildId, channelId, configuredBy) {
+function normalizeRelicSpawnState(settings) {
+  settings.relicSpawn ||= { current: null, incenseRemaining: 0, lastIncenseSpawnAt: null };
+  settings.relicSpawn.incenseRemaining = Math.max(0, Number(settings.relicSpawn.incenseRemaining) || 0);
+  settings.relicSpawn.lastIncenseSpawnAt ||= null;
+  return settings.relicSpawn;
+}
+
+async function spawnRelicInChannel(channel, source = "chat") {
+  if (!channel?.guildId || !channel?.send) {
+    return null;
+  }
+  const settings = await getOrCreateGuildSettings(channel.guildId);
+  const spawnState = normalizeRelicSpawnState(settings);
+  const relic = rollRelicForSpawn();
+  const rarity = getRelicRarity(relic);
+  spawnState.current = {
+    relicId: relic.id,
+    relicName: relic.name,
+    rarity: relic.rarity,
+    spawnedAt: new Date(),
+    spawnedBy: source,
+    hintUses: 0,
+  };
+  settings.markModified("relicSpawn");
+  await settings.save();
+  await channel.send(buildRelicSpawnPayload(relic, source)).catch(() => null);
+  return { relic, rarity };
+}
+
+function getCommandChannelId(settings) {
+  return settings?.commandChannelId || settings?.aurixChannelId || null;
+}
+
+function getDropsChannelId(settings) {
+  return settings?.dropsChannelId || settings?.aurixChannelId || null;
+}
+
+async function setAurixChannel(guildId, channelId, configuredBy, mode = "commands") {
+  const set = {
+    guildId,
+    configuredBy,
+    configuredAt: new Date(),
+  };
+  if (mode === "drops") {
+    set.dropsChannelId = channelId;
+  } else if (mode === "both") {
+    set.aurixChannelId = channelId;
+    set.commandChannelId = channelId;
+    set.dropsChannelId = channelId;
+  } else {
+    set.commandChannelId = channelId;
+  }
+
   return GuildSettings.findOneAndUpdate(
     { guildId },
-    {
-      $set: {
-        guildId,
-        aurixChannelId: channelId,
-        configuredBy,
-        configuredAt: new Date(),
-      },
-    },
+    { $set: set },
     { new: true, upsert: true }
   );
 }
@@ -2577,6 +3188,78 @@ async function checkReminderQueue(client) {
   }
 }
 
+async function handleChatRelicSpawnMessage(message) {
+  if (!message?.guildId || message.author?.bot || !message.channel?.send) {
+    return null;
+  }
+  const settings = await getGuildSettings(message.guildId);
+  const dropsChannelId = getDropsChannelId(settings);
+  if (!dropsChannelId || dropsChannelId !== message.channelId) {
+    return null;
+  }
+
+  const now = Date.now();
+  const state = chatSpawnCounters.get(message.channelId) || {
+    count: 0,
+    lastUserId: null,
+    distinctUserIds: new Set(),
+    lastCountedByUser: new Map(),
+  };
+  const lastCountedAt = state.lastCountedByUser.get(message.author.id) || 0;
+  if (now - lastCountedAt < CHAT_SPAWN_USER_RATE_LIMIT_MS) {
+    chatSpawnCounters.set(message.channelId, state);
+    return null;
+  }
+
+  state.count += 1;
+  state.distinctUserIds.add(message.author.id);
+  state.lastCountedByUser.set(message.author.id, now);
+  const alternating = state.lastUserId && state.lastUserId !== message.author.id;
+  state.lastUserId = message.author.id;
+  const threshold = state.distinctUserIds.size >= 2 && alternating
+    ? CHAT_SPAWN_MULTI_USER_THRESHOLD
+    : CHAT_SPAWN_SINGLE_USER_THRESHOLD;
+
+  if (state.count < threshold) {
+    chatSpawnCounters.set(message.channelId, state);
+    return null;
+  }
+
+  chatSpawnCounters.set(message.channelId, {
+    count: 0,
+    lastUserId: null,
+    distinctUserIds: new Set(),
+    lastCountedByUser: new Map(),
+  });
+  return spawnRelicInChannel(message.channel, "chat");
+}
+
+async function checkIncenseSpawns(client) {
+  const settingsRows = await GuildSettings.find({
+    $or: [
+      { dropsChannelId: { $ne: null } },
+      { aurixChannelId: { $ne: null } },
+    ],
+    "relicSpawn.incenseRemaining": { $gt: 0 },
+  }).limit(50);
+
+  for (const settings of settingsRows) {
+    const channelId = getDropsChannelId(settings);
+    const channel = channelId ? await client.channels.fetch(channelId).catch(() => null) : null;
+    if (!channel?.send) {
+      continue;
+    }
+    await spawnRelicInChannel(channel, "incense");
+    await GuildSettings.updateOne(
+      { _id: settings._id, "relicSpawn.incenseRemaining": { $gt: 0 } },
+      {
+        $inc: { "relicSpawn.incenseRemaining": -1 },
+        $set: { "relicSpawn.lastIncenseSpawnAt": new Date() },
+      }
+    );
+  }
+}
+
 function startReminderLoop(client) {
   if (reminderIntervals.has(client)) {
     return;
@@ -2590,6 +3273,21 @@ function startReminderLoop(client) {
   const interval = setInterval(tick, REMINDER_POLL_MS);
   interval.unref?.();
   reminderIntervals.set(client, interval);
+}
+
+function startRelicSpawnLoop(client) {
+  if (relicSpawnIntervals.has(client)) {
+    return;
+  }
+
+  const tick = () => checkIncenseSpawns(client).catch((error) => {
+    console.error("Relic incense loop failed:", error);
+  });
+
+  tick();
+  const interval = setInterval(tick, INCENSE_TICK_MS);
+  interval.unref?.();
+  relicSpawnIntervals.set(client, interval);
 }
 
 function getEffectiveCooldownMs(user, durationMs) {
@@ -2705,6 +3403,11 @@ const HELP_SECTIONS = [
       { name: "/trade", description: "Offer aura or items to another player." },
       { name: "/inventory", description: "Review owned items, battle consumables, skills, and crates." },
       { name: "/collection", description: "View collection progress and trophies." },
+      { name: "/summon", description: "Spend aura to print a collectible Aurix relic." },
+      { name: "/claim guess:<name>", description: "Race to claim the active chat-spawned relic." },
+      { name: "/hint", description: "Reveal an obfuscated hint for the active relic spawn." },
+      { name: "/incense", description: "Buy or check channel relic incense for quiet servers." },
+      { name: "/burn relic:<id>", description: "Destroy duplicate relics for aura and XP." },
       { name: "/craft recipe:<id>", description: "Turn mined materials into useful rewards." },
       { name: "/forge", description: "Spend aura to upgrade or repair crafted gear." },
       { name: "/garden", description: "Plant and harvest real-time crops." },
@@ -2775,6 +3478,7 @@ const ACHIEVEMENTS = [
   { id: "vault_builder", name: "Vault Builder", description: "Store 10,000 aura in the vault.", metric: (user) => user.vaultAura, goal: 10000, rewardAura: 2500, rewardXp: 600 },
   { id: "shadow_winner", name: "Shadow Winner", description: "Win 5 robberies.", metric: (user) => user.stats.robWins, goal: 5, rewardAura: 2600, rewardXp: 650 },
   { id: "ore_runner", name: "Ore Runner", description: "Mine 10 times.", metric: (user) => user.stats.mines, goal: 10, rewardAura: 2100, rewardXp: 480 },
+  { id: "relic_hunter", name: "Relic Hunter", description: "Summon 10 relics.", metric: (user) => user.stats.summons || 0, goal: 10, rewardAura: 2600, rewardXp: 620 },
   { id: "artisan", name: "Artisan", description: "Craft 5 recipes.", metric: (user) => user.stats.crafts, goal: 5, rewardAura: 2800, rewardXp: 700 },
   { id: "boss_hunter", name: "Boss Hunter", description: "Defeat 5 bosses.", metric: (user) => user.stats.bossWins, goal: 5, rewardAura: 4300, rewardXp: 1050 },
   { id: "prestige_path", name: "Prestige Path", description: "Reach prestige 1.", metric: (user) => user.prestige, goal: 1, rewardAura: 5000, rewardXp: 1000 },
@@ -2838,15 +3542,16 @@ function buildPlayerStartPayload(user) {
 function buildServerSetupPayload(guildName) {
   return buildEmbedPayload({
     title: "Setup Completed",
-    description: `Aurix is ready in **${guildName}**. This is now the server's Aurix channel.`,
+    description: `Aurix is ready in **${guildName}**. Commands and drops can now use separate channels.`,
     visual: "help-core.svg",
     fields: [
       { name: "Player Onboarding", value: "Members should run `/start` to create their save and see the quick-start path." },
+      { name: "Recommended Split", value: "Use `/setup mode:commands channel:#economy` for economy commands and `/setup mode:drops channel:#aurix-drops` for relic chat spawns." },
       { name: "Best First Commands", value: "`/daily`, `/work`, `/spin`, `/mine`, `/profile`, `/help`" },
-      { name: "Changing Channels", value: "Admins can run `/setup` inside a different channel, or `/setup channel:#channel`, to move Aurix." },
+      { name: "Changing Channels", value: "Admins can rerun `/setup mode:commands`, `/setup mode:drops`, or `/setup mode:both` any time." },
       { name: "Official Server", value: buildOfficialServerValue() },
     ],
-    footer: "Aurix setup v2 - commands used outside this channel will point members back here.",
+    footer: "Aurix setup v4 - command and drops channels can be configured separately.",
   });
 }
 
@@ -2856,13 +3561,13 @@ function buildServerJoinPayload(guildName) {
     description: `Thanks for adding Aurix to **${guildName}**. An admin should choose the channel where Aurix is allowed to work before members start using commands.`,
     visual: "help-core.svg",
     fields: [
-      { name: "1. Create or Choose a Channel", value: "Use a channel like `#aurix`, `#bot-commands`, or `#economy`." },
-      { name: "2. Configure Aurix", value: "Run `/setup` in the channel you want Aurix to use. You can also run `/setup channel:#your-channel`." },
+      { name: "1. Create a Drops Channel", value: "Recommended: make a separate channel like `#aurix-drops`, `#relic-drops`, or `#bot-drops` for relic spawns, claims, hints, and economy commands." },
+      { name: "2. Configure Channels", value: "Run `/setup mode:commands channel:#economy` for commands, then `/setup mode:drops channel:#aurix-drops` for chat-spawn relic drops. Use `mode:both` if you want one channel for everything." },
       { name: "3. Player Start", value: "Members should run `/start`, then use `/daily`, `/work`, `/spin`, `/mine`, and `/profile`." },
       { name: "4. Premium and Support", value: "Use `/premium` to view membership status and `/help` to browse every command." },
       { name: "Official Server", value: buildOfficialServerValue() },
     ],
-    footer: "Aurix setup v2 - admins can rerun /setup any time to change the Aurix channel.",
+    footer: "Aurix setup v4 - admins can rerun /setup any time to change command or drops channels.",
   });
 }
 
@@ -3049,6 +3754,7 @@ async function handleStats(interaction) {
     visual: "help-summary.svg",
     fields: [
       { name: "Spins", value: `${formatNumber(user.stats.spins)}`, inline: true },
+      { name: "Relic Finds", value: `${formatNumber(user.stats.summons || 0)}`, inline: true },
       { name: "Coinflips", value: `${formatNumber(user.stats.coinflips)}`, inline: true },
       { name: "Shop Buys", value: `${formatNumber(user.stats.shopBuys)}`, inline: true },
       { name: "PvP Record", value: `${user.stats.pvpWins}W - ${user.stats.pvpLosses}L`, inline: true },
@@ -3278,11 +3984,221 @@ async function handleTrade(interaction) {
   return acceptTradeOffer(interaction, offerId);
 }
 
+async function handleSummon(interaction) {
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const remaining = getCooldownRemaining(user.lastSummonAt, SUMMON_COOLDOWN_MS, user);
+  if (remaining > 0) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Summon Cooling Down", description: `The relic gate can be opened again in **${humanizeMs(remaining)}**.`, visual: "emblem-help.svg" }), ephemeral: true });
+  }
+  if (user.aura < SUMMON_COST) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: `A relic summon costs ${formatNumber(SUMMON_COST)} aura.`, visual: "emblem-economy.svg" }), ephemeral: true });
+  }
+
+  const relic = rollRelicForUser(user);
+  const rarity = getRelicRarity(relic);
+  const printNumber = await nextRelicPrint(relic.id);
+  const shiny = Math.random() < SHINY_RELIC_CHANCE;
+  const { entry, isNew } = addRelicToUser(user, relic, printNumber, shiny);
+  const xpReward = 80 + rarity.value * 25 + (shiny ? 350 : 0);
+  user.aura -= SUMMON_COST;
+  user.xp += xpReward;
+  user.lastSummonAt = new Date();
+  user.stats.summons = (user.stats.summons || 0) + 1;
+  if (["legendary", "mythic"].includes(relic.rarity)) {
+    user.crates.set("rare", (user.crates.get("rare") || 0) + 1);
+  }
+  if (relic.rarity === "mythic") {
+    user.crates.set("epic", (user.crates.get("epic") || 0) + 1);
+  }
+  await syncRank(user);
+  await user.save();
+
+  const fields = [
+    { name: "Relic", value: `${getRelicLabel(relic.id)}\n${relic.description}` },
+    { name: "Rarity", value: `${rarity.label}${shiny ? " Shiny" : ""}`, inline: true },
+    { name: "Print", value: `#${formatNumber(printNumber)}`, inline: true },
+    { name: "Owned", value: `x${formatNumber(entry.quantity)}`, inline: true },
+    { name: "XP", value: `${formatNumber(xpReward)}`, inline: true },
+    { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+  ];
+
+  return interaction.reply(addQuickActions(buildEmbedPayload({
+    title: isNew ? "New Relic Summoned" : "Relic Duplicate Summoned",
+    description: shiny
+      ? "A brighter variant breaks through the gate. That one is going on the shelf."
+      : "The relic gate opens, prints the find, and seals again.",
+    visual: "emblem-success.svg",
+    fields,
+    footer: "Duplicates can be burned with /burn to recover aura and XP.",
+  }), interaction.user.id, ["collection", "summon", "inventory", "rank"]));
+}
+
+async function handleBurn(interaction) {
+  const relicInput = interaction.options.getString("relic", true).trim();
+  const matchedRelic = findRelicByInput(relicInput);
+  const relicId = matchedRelic?.id || relicInput;
+  const quantity = interaction.options.getInteger("quantity") || 1;
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const relic = matchedRelic || getRelic(relicId);
+  const entry = getRelicEntry(user, relicId);
+  if (!relic || !entry || entry.quantity <= 1) {
+    const ownedRelicIds = (user.relics || [])
+      .filter((owned) => owned.quantity > 1)
+      .slice(0, 10)
+      .map((owned) => `\`${owned.id}\``)
+      .join(", ");
+    return interaction.reply({ ...buildEmbedPayload({ title: "Burn Blocked", description: `You can only burn duplicate relics. Keep at least one copy in the collection.${ownedRelicIds ? `\nDuplicate relic ids: ${ownedRelicIds}` : ""}`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  const burnQuantity = Math.min(quantity, entry.quantity - 1);
+  const rarity = getRelicRarity(relic);
+  const auraReward = rarity.burnAura * burnQuantity;
+  const xpReward = rarity.burnXp * burnQuantity;
+  entry.quantity -= burnQuantity;
+  user.aura += auraReward;
+  user.xp += xpReward;
+  user.stats.relicsBurned = (user.stats.relicsBurned || 0) + burnQuantity;
+  user.markModified("relics");
+  await syncRank(user);
+  await user.save();
+
+  return interaction.reply(addQuickActions(buildEmbedPayload({
+    title: "Relic Burned",
+    description: `Converted **${formatNumber(burnQuantity)}** duplicate ${getRelicLabel(relicId)} into spendable progression.`,
+    visual: "emblem-economy.svg",
+    fields: [
+      { name: "Aura Recovered", value: `${formatNumber(auraReward)}`, inline: true },
+      { name: "XP Recovered", value: `${formatNumber(xpReward)}`, inline: true },
+      { name: "Remaining Copies", value: `x${formatNumber(entry.quantity)}`, inline: true },
+    ],
+  }), interaction.user.id, ["collection", "summon", "shop", "rank"]));
+}
+
+async function handleClaim(interaction) {
+  const guess = interaction.options.getString("guess", true);
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const spawnState = normalizeRelicSpawnState(settings);
+  const current = spawnState.current;
+  if (!current?.relicId) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Nothing To Claim", description: "No relic is currently spawned in this channel.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
+  if (normalizeGuess(guess) !== normalizeGuess(current.relicName)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Wrong Guess", description: "That was not the relic. The spawn stays active, so keep guessing.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  const claimLock = await GuildSettings.findOneAndUpdate(
+    {
+      guildId: interaction.guildId,
+      "relicSpawn.current.relicId": current.relicId,
+      "relicSpawn.current.spawnedAt": current.spawnedAt,
+    },
+    { $set: { "relicSpawn.current": null } },
+    { new: false }
+  );
+  if (!claimLock?.relicSpawn?.current) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Already Claimed", description: "Someone else claimed that relic first.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  if (!user.relicHuntStreaks?.get) {
+    user.relicHuntStreaks = new Map(Object.entries(user.relicHuntStreaks || {}));
+  }
+  const previousStreak = Number(user.relicHuntStreaks.get(current.relicId) || 0);
+  const specialChance = getSpecialRelicChance(previousStreak);
+  const shiny = Math.random() < specialChance;
+  const printNumber = await nextRelicPrint(current.relicId);
+  const relic = getRelic(current.relicId);
+  const rarity = getRelicRarity(relic);
+  const { entry, isNew } = addRelicToUser(user, relic, printNumber, shiny);
+  user.relicHuntStreaks = new Map([[current.relicId, previousStreak + 1]]);
+  user.stats.summons = (user.stats.summons || 0) + 1;
+  user.xp += 120 + rarity.value * 35 + (shiny ? 500 : 0);
+  user.markModified("relicHuntStreaks");
+  await syncRank(user);
+
+  await user.save();
+
+  return interaction.reply(addQuickActions(buildEmbedPayload({
+    title: "Relic Claimed",
+    description: `${interaction.user.username} correctly claimed **${getRelicLabel(current.relicId)}**.${shiny ? "\nA special variant sparked on capture." : ""}`,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Rarity", value: `${rarity.label}${shiny ? " Special" : ""}`, inline: true },
+      { name: "Print", value: `#${formatNumber(printNumber)}`, inline: true },
+      { name: "Streak", value: `${formatNumber(previousStreak + 1)} on this relic`, inline: true },
+      { name: "Owned", value: `x${formatNumber(entry.quantity)}${isNew ? " | new" : ""}`, inline: true },
+    ],
+    footer: "Chat spawns and /summon both feed the same relic collection.",
+  }), interaction.user.id, ["collection", "burn", "rank", "inventory"]));
+}
+
+async function handleHint(interaction) {
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const spawnState = normalizeRelicSpawnState(settings);
+  const current = spawnState.current;
+  if (!current?.relicName) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "No Hint Available", description: "No relic is currently spawned.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
+  current.hintUses = (Number(current.hintUses) || 0) + 1;
+  settings.markModified("relicSpawn");
+  await settings.save();
+  return interaction.reply(buildEmbedPayload({
+    title: "Relic Hint",
+    description: `Name pattern: \`${formatRelicHint(current.relicName, current.hintUses)}\``,
+    visual: "help-summary.svg",
+    footer: "Use /claim guess:<name> when you know it.",
+  }));
+}
+
+async function handleIncense(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const spawnState = normalizeRelicSpawnState(settings);
+
+  if (subcommand === "status") {
+    await settings.save();
+    return interaction.reply(buildEmbedPayload({
+      title: "Relic Incense",
+      description: spawnState.incenseRemaining > 0
+        ? `This channel has **${formatNumber(spawnState.incenseRemaining)}** incense spawns remaining.`
+        : "No incense is active in this channel.",
+      visual: "emblem-economy.svg",
+      fields: [
+        { name: "Buy Cost", value: `${formatNumber(INCENSE_COST)} aura`, inline: true },
+        { name: "Spawns", value: `${formatNumber(INCENSE_SPAWNS)}`, inline: true },
+        { name: "Pace", value: `1 spawn every ${humanizeMs(INCENSE_TICK_MS)}`, inline: true },
+      ],
+    }));
+  }
+
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  if (user.aura < INCENSE_COST) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: `Relic incense costs ${formatNumber(INCENSE_COST)} aura.`, visual: "emblem-economy.svg" }), ephemeral: true });
+  }
+  user.aura -= INCENSE_COST;
+  spawnState.incenseRemaining += INCENSE_SPAWNS;
+  settings.markModified("relicSpawn");
+  await user.save();
+  await settings.save();
+
+  return interaction.reply(buildEmbedPayload({
+    title: "Relic Incense Lit",
+    description: `${interaction.user.username} bought channel incense. Relic spawns will continue even if the bot restarts; the counter pauses while offline.`,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Added", value: `${formatNumber(INCENSE_SPAWNS)} spawns`, inline: true },
+      { name: "Remaining", value: `${formatNumber(spawnState.incenseRemaining)}`, inline: true },
+      { name: "Cost", value: `${formatNumber(INCENSE_COST)} aura`, inline: true },
+    ],
+  }));
+}
+
 async function handleCollection(interaction) {
   const target = interaction.options?.getUser?.("user") || interaction.user;
   const user = await getOrCreatePlayer(interaction.guildId, target.id);
+  user.relics ||= [];
   const perkTotal = SHOP_ITEMS.filter((item) => item.type === "perk").length;
   const skillUnlockTotal = SHOP_ITEMS.filter((item) => item.type === "skill_unlock").length;
+  const relicStats = getRelicCollectionStats(user);
   const materialCount = user.inventory.filter((entry) => MATERIALS[entry.id] && entry.quantity > 0).length;
   const perkCount = user.ownedPerks.length;
   const skillCount = user.skills.length;
@@ -3294,8 +4210,13 @@ async function handleCollection(interaction) {
     user.stats.pvpWins >= 5 ? "Duelist Mark" : null,
     user.prestige >= 1 ? "Prestige Sigil" : null,
   ].filter(Boolean);
-  const totalSlots = Object.keys(MATERIALS).length + perkTotal + skillUnlockTotal + Object.keys(CRATES).length + 4;
-  const ownedSlots = materialCount + Math.min(perkCount, perkTotal) + Math.min(unlockSkillCount, skillUnlockTotal) + crateTypes + bossTrophies.length;
+  const featuredRelics = user.relics
+    .filter((entry) => entry.quantity > 0)
+    .sort((left, right) => getRelicScore(right) - getRelicScore(left))
+    .slice(0, 5)
+    .map(formatRelicLine);
+  const totalSlots = Object.keys(MATERIALS).length + perkTotal + skillUnlockTotal + Object.keys(CRATES).length + 4 + AURIX_RELICS.length;
+  const ownedSlots = materialCount + Math.min(perkCount, perkTotal) + Math.min(unlockSkillCount, skillUnlockTotal) + crateTypes + bossTrophies.length + relicStats.ownedCount;
   return interaction.reply(buildEmbedPayload({
     title: `${target.username}'s Collection`,
     description: withFlavor(
@@ -3313,9 +4234,11 @@ async function handleCollection(interaction) {
       { name: "Skill Unlocks", value: `${Math.min(unlockSkillCount, skillUnlockTotal)} / ${skillUnlockTotal}`, inline: true },
       { name: "Crate Types", value: `${crateTypes} / ${Object.keys(CRATES).length}`, inline: true },
       { name: "Known Skills", value: `${skillCount}`, inline: true },
+      { name: "Aurix Relics", value: `${relicStats.ownedCount} / ${relicStats.totalCount} | score ${formatNumber(relicStats.score)} | shiny ${formatNumber(relicStats.shinyCount)}`, inline: true },
+      { name: "Featured Relics", value: featuredRelics.join("\n") || "No relics yet. Use `/summon` to open the gate." },
       { name: "Trophies", value: bossTrophies.join("\n") || "No trophies yet." },
     ],
-    footer: "Collection marks are earned from materials, perks, crates, prestige, PvP, and bosses.",
+    footer: "Collection marks are earned from relics, materials, perks, crates, prestige, PvP, and bosses.",
   }));
 }
 
@@ -6453,6 +7376,7 @@ async function handleQuickActionButton(interaction) {
     daily: handleDaily,
     work: handleWork,
     mine: handleMine,
+    summon: handleSummon,
     spin: handleSpin,
     balance: handleBalance,
     profile: handleProfile,
@@ -6541,7 +7465,6 @@ async function showPvpQueueStatus(interaction) {
 }
 
 async function startMatchedPvp(interaction, queuedEntry, currentUser) {
-  await interaction.deferReply();
   const first = await getOrCreatePlayer(queuedEntry.guildId, queuedEntry.userId);
   const second = await getOrCreatePlayer(interaction.guildId, currentUser.id);
   if (isOnActiveExpedition(first) || isOnActiveExpedition(second)) {
@@ -6840,7 +7763,7 @@ async function handleSetup(interaction) {
     return interaction.reply({
       ...buildEmbedPayload({
         title: "Setup Locked",
-        description: "Only admins or moderators can use `/setup` to choose the Aurix channel.",
+        description: "Only admins or moderators can use `/setup` to choose Aurix channels.",
         visual: "emblem-alert.svg",
       }),
       ephemeral: true,
@@ -6848,6 +7771,7 @@ async function handleSetup(interaction) {
   }
 
   const optionChannel = interaction.options.getChannel("channel");
+  const mode = interaction.options.getString("mode") || "commands";
   let selectedChannel = optionChannel || interaction.channel;
   if (!selectedChannel?.isTextBased?.()) {
     selectedChannel = await interaction.guild.channels.fetch(optionChannel?.id || interaction.channelId).catch(() => null);
@@ -6880,17 +7804,18 @@ async function handleSetup(interaction) {
     });
   }
 
-  await setAurixChannel(interaction.guildId, selectedChannel.id, interaction.user.id);
+  await setAurixChannel(interaction.guildId, selectedChannel.id, interaction.user.id, mode);
   const payload = buildServerSetupPayload(interaction.guild?.name || "this server");
   if (selectedChannel.id === interaction.channelId) {
     return interaction.reply(payload);
   }
 
   await selectedChannel.send(payload);
+  const modeLabel = mode === "both" ? "commands and drops" : mode === "drops" ? "relic drops" : "economy commands";
   return interaction.reply({
     ...buildEmbedPayload({
       title: "Setup Completed",
-      description: `Aurix is now configured to use ${selectedChannel}. I posted the short starter guide there. Commands used elsewhere will point members back here.`,
+      description: `Aurix is now configured to use ${selectedChannel} for **${modeLabel}**. I posted the short starter guide there.`,
       visual: "emblem-success.svg",
     }),
     ephemeral: true,
@@ -7489,7 +8414,9 @@ function buildCommands() {
   return [
     new SlashCommandBuilder().setName("help").setDescription("Browse game commands by category.").addStringOption((option) => option.setName("category").setDescription("Open one help category").addChoices(...HELP_SECTIONS.map((section) => ({ name: section.name, value: section.id })))),
     new SlashCommandBuilder().setName("event").setDescription("View or claim current events.").addStringOption((option) => option.setName("action").setDescription("Event action").addChoices({ name: "status", value: "status" }, { name: "claim", value: "claim" })),
-    new SlashCommandBuilder().setName("setup").setDescription("Set this or another channel as the Aurix bot channel.").addChannelOption((option) => option.setName("channel").setDescription("Optional channel; leave empty to use this channel").addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
+    new SlashCommandBuilder().setName("setup").setDescription("Configure Aurix command and drops channels.")
+      .addStringOption((option) => option.setName("mode").setDescription("What this channel should handle").addChoices({ name: "commands", value: "commands" }, { name: "drops", value: "drops" }, { name: "both", value: "both" }))
+      .addChannelOption((option) => option.setName("channel").setDescription("Optional channel; leave empty to use this channel").addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)),
     new SlashCommandBuilder().setName("start").setDescription("Create your save and open the quick-start guide."),
     new SlashCommandBuilder().setName("tutorial").setDescription("Follow the guided first-session reward path."),
     new SlashCommandBuilder().setName("profile").setDescription("View your or another player's profile.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
@@ -7497,6 +8424,16 @@ function buildCommands() {
     new SlashCommandBuilder().setName("balance").setDescription("Check wallet and vault balance.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
     new SlashCommandBuilder().setName("work").setDescription("Complete a shift for steady aura and XP."),
     new SlashCommandBuilder().setName("mine").setDescription("Gather crafting materials on a cooldown."),
+    new SlashCommandBuilder().setName("summon").setDescription("Spend aura to print a collectible Aurix relic."),
+    new SlashCommandBuilder().setName("claim").setDescription("Claim the active chat-spawned relic by name.")
+      .addStringOption((option) => option.setName("guess").setDescription("Relic name").setRequired(true)),
+    new SlashCommandBuilder().setName("hint").setDescription("Show a hint for the active chat-spawned relic."),
+    new SlashCommandBuilder().setName("incense").setDescription("Buy or check channel relic incense.")
+      .addSubcommand((sub) => sub.setName("buy").setDescription(`Buy ${INCENSE_SPAWNS} channel relic spawns for ${INCENSE_COST} aura.`))
+      .addSubcommand((sub) => sub.setName("status").setDescription("Check remaining channel incense spawns.")),
+    new SlashCommandBuilder().setName("burn").setDescription("Burn duplicate relics into aura and XP.")
+      .addStringOption((option) => option.setName("relic").setDescription("Relic id or exact relic name").setRequired(true))
+      .addIntegerOption((option) => option.setName("quantity").setDescription("Duplicate copies to burn").setMinValue(1)),
     new SlashCommandBuilder().setName("spin").setDescription("Spin for aura on a cooldown."),
     new SlashCommandBuilder().setName("coinflip").setDescription("Bet aura on heads or tails on a cooldown.").addIntegerOption((option) => option.setName("amount").setDescription("Aura to bet").setRequired(true).setMinValue(1)).addStringOption((option) => option.setName("choice").setDescription("Choose heads or tails").setRequired(true).addChoices({ name: "heads", value: "heads" }, { name: "tails", value: "tails" })),
     new SlashCommandBuilder().setName("rob").setDescription("Attempt to steal aura from another player.").addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true)),
@@ -7605,7 +8542,7 @@ async function routeInteraction(interaction) {
     return null;
   }
 
-  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, tutorial: handleTutorial, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, vote: handleVote, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, trade: handleTrade, inventory: handleInventory, collection: handleCollection, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, season: handleSeason, serverquest: handleServerQuest, premium: handlePremium, clan: handleClan, authority: handleAuthority };
+  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, tutorial: handleTutorial, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, summon: handleSummon, claim: handleClaim, hint: handleHint, incense: handleIncense, burn: handleBurn, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, vote: handleVote, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, trade: handleTrade, inventory: handleInventory, collection: handleCollection, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, season: handleSeason, serverquest: handleServerQuest, premium: handlePremium, clan: handleClan, authority: handleAuthority };
   const handler = handlers[interaction.commandName];
   if (!handler) {
     return interaction.reply({ content: "Unknown command.", ephemeral: true });
@@ -7613,11 +8550,12 @@ async function routeInteraction(interaction) {
 
   if (interaction.guildId && interaction.commandName !== "setup") {
     const settings = await getGuildSettings(interaction.guildId);
-    if (settings?.aurixChannelId && settings.aurixChannelId !== interaction.channelId) {
+    const commandChannelId = getCommandChannelId(settings);
+    if (commandChannelId && commandChannelId !== interaction.channelId) {
       return interaction.reply({
         ...buildEmbedPayload({
           title: "Aurix Channel",
-          description: `Aurix is configured to work in <#${settings.aurixChannelId}> for this server.`,
+          description: `Aurix commands are configured to work in <#${commandChannelId}> for this server.`,
           visual: "emblem-help.svg",
         }),
         ephemeral: true,
@@ -7641,8 +8579,10 @@ module.exports = {
   applyPaddleWebhookEvent,
   buildCommands,
   recentInteractions,
+  handleChatRelicSpawnMessage,
   routeInteraction,
   sendServerJoinMessage,
   sendServerSetupMessage,
   startReminderLoop,
+  startRelicSpawnLoop,
 };
