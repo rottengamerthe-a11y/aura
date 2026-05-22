@@ -20,6 +20,7 @@ const recentTopggStatsPosts = [];
 let topggStatsTimer = null;
 let topggStatsDebounceTimer = null;
 let topggStatsPosting = false;
+let topggStatsConfigWarningShown = false;
 const TOPGG_STATS_INTERVAL_MS = Number(process.env.TOPGG_STATS_INTERVAL_MS) || 30 * 60 * 1000;
 const TOPGG_STATS_DEBOUNCE_MS = 60 * 1000;
 
@@ -177,6 +178,12 @@ async function postTopggStats(client, reason = "scheduled") {
   const token = getTopggApiToken();
   const botId = process.env.TOPGG_BOT_ID?.trim() || process.env.DISCORD_CLIENT_ID?.trim();
   if (!token || !botId) {
+    if (!topggStatsConfigWarningShown) {
+      topggStatsConfigWarningShown = true;
+      console.warn(
+        `Top.gg stats posting is disabled: ${!token ? "missing TOPGG_TOKEN/TOPGG_API_TOKEN/TOPGG_STATS_TOKEN" : "missing TOPGG_BOT_ID/DISCORD_CLIENT_ID"}.`
+      );
+    }
     rememberTopggStatsPost({
       ok: false,
       reason,
