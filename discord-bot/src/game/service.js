@@ -22,6 +22,7 @@ const SERVER_EVENT_SPAWN_COOLDOWN_MS = 35 * 60 * 1000;
 const TRADE_OFFER_TIMEOUT_MS = 15 * 60 * 1000;
 const SUMMON_COOLDOWN_MS = 60 * 1000;
 const SUMMON_COST = 2000;
+const RELIC_SPAWN_TTL_MS = Number(process.env.AURIX_RELIC_SPAWN_TTL_MS) || 10 * 60 * 1000;
 const SHINY_RELIC_CHANCE = 0.012;
 const CHAT_SPAWN_MULTI_USER_THRESHOLD = 24;
 const CHAT_SPAWN_SINGLE_USER_THRESHOLD = 36;
@@ -1600,7 +1601,30 @@ function isCorrectRelicGuess(guess, relicName) {
   return normalizedGuess === normalizedName || normalizedGuess === normalizedShortGuess;
 }
 
+function getRelicSpawnRemainingMs(current) {
+  const spawnedAt = current?.spawnedAt ? new Date(current.spawnedAt).getTime() : 0;
+  if (!spawnedAt || Number.isNaN(spawnedAt)) {
+    return 0;
+  }
+  return Math.max(0, spawnedAt + RELIC_SPAWN_TTL_MS - Date.now());
+}
+
+async function clearExpiredRelicSpawn(settings, spawnState) {
+  const current = spawnState?.current;
+  if (!current?.relicId || getRelicSpawnRemainingMs(current) > 0) {
+    return false;
+  }
+  spawnState.current = null;
+  settings.markModified("relicSpawn");
+  await settings.save();
+  return true;
+}
+
 function formatRelicHint(name, hintUses = 0) {
+  const shortGuess = getRelicShortGuess(name);
+  if (hintUses >= 3 && shortGuess) {
+    return `Short claim: ${shortGuess}`;
+  }
   const revealEvery = Math.max(2, 4 - Math.min(2, hintUses));
   return String(name || "")
     .split("")
@@ -1617,7 +1641,322 @@ function getSpecialRelicChance(streak) {
   return (7 + Math.sqrt(Math.max(0, Number(streak) || 0))) / 28672;
 }
 
+function buildPixelArtRelicSpawnAttachment(relic) {
+  const sourceWidth = 240;
+  const sourceHeight = 135;
+  const scale = 4;
+  const width = sourceWidth * scale;
+  const height = sourceHeight * scale;
+  const source = Buffer.alloc(sourceWidth * sourceHeight * 4);
+  const pixels = Buffer.alloc(width * height * 4);
+  const rarityColor = {
+    common: 0x9ca3af,
+    uncommon: 0x5ce1a1,
+    rare: 0x69c7ff,
+    epic: 0xa78bfa,
+    legendary: 0xffc857,
+    mythic: 0xff6b88,
+  }[relic.rarity] || COLORS.primary;
+  const toRgb = (hex) => [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255];
+  const put = (x, y, hex, alpha = 255) => {
+    if (x < 0 || y < 0 || x >= sourceWidth || y >= sourceHeight) return;
+    const index = (Math.floor(y) * sourceWidth + Math.floor(x)) * 4;
+    const [r, g, b] = toRgb(hex);
+    const existingAlpha = source[index + 3] / 255;
+    const nextAlpha = alpha / 255;
+    const outAlpha = nextAlpha + existingAlpha * (1 - nextAlpha);
+    if (outAlpha <= 0) return;
+    source[index] = Math.round((r * nextAlpha + source[index] * existingAlpha * (1 - nextAlpha)) / outAlpha);
+    source[index + 1] = Math.round((g * nextAlpha + source[index + 1] * existingAlpha * (1 - nextAlpha)) / outAlpha);
+    source[index + 2] = Math.round((b * nextAlpha + source[index + 2] * existingAlpha * (1 - nextAlpha)) / outAlpha);
+    source[index + 3] = Math.round(outAlpha * 255);
+  };
+  const fill = (x, y, w, h, hex, alpha = 255) => {
+    for (let yy = Math.floor(y); yy < Math.floor(y + h); yy += 1) {
+      for (let xx = Math.floor(x); xx < Math.floor(x + w); xx += 1) put(xx, yy, hex, alpha);
+    }
+  };
+  const stroke = (x, y, w, h, hex, thickness = 1) => {
+    fill(x, y, w, thickness, hex);
+    fill(x, y + h - thickness, w, thickness, hex);
+    fill(x, y, thickness, h, hex);
+    fill(x + w - thickness, y, thickness, h, hex);
+  };
+  const line = (x1, y1, x2, y2, hex, thickness = 1, alpha = 255) => {
+    const steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
+    for (let step = 0; step <= steps; step += 1) {
+      const t = steps === 0 ? 0 : step / steps;
+      fill(Math.round(x1 + (x2 - x1) * t), Math.round(y1 + (y2 - y1) * t), thickness, thickness, hex, alpha);
+    }
+  };
+  const circle = (cx, cy, radius, hex, alpha = 255) => {
+    for (let y = cy - radius; y <= cy + radius; y += 1) {
+      for (let x = cx - radius; x <= cx + radius; x += 1) {
+        if ((x - cx) ** 2 + (y - cy) ** 2 <= radius ** 2) put(x, y, hex, alpha);
+      }
+    }
+  };
+  const triangle = (ax, ay, bx, by, cx, cy, hex, alpha = 255) => {
+    const minX = Math.floor(Math.min(ax, bx, cx));
+    const maxX = Math.ceil(Math.max(ax, bx, cx));
+    const minY = Math.floor(Math.min(ay, by, cy));
+    const maxY = Math.ceil(Math.max(ay, by, cy));
+    const area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    if (!area) return;
+    for (let y = minY; y <= maxY; y += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        const w1 = ((bx - x) * (cy - y) - (by - y) * (cx - x)) / area;
+        const w2 = ((cx - x) * (ay - y) - (cy - y) * (ax - x)) / area;
+        const w3 = 1 - w1 - w2;
+        if ((w1 >= 0 && w2 >= 0 && w3 >= 0) || (w1 <= 0 && w2 <= 0 && w3 <= 0)) put(x, y, hex, alpha);
+      }
+    }
+  };
+  const diamond = (cx, cy, radius, hex, alpha = 255) => {
+    for (let y = cy - radius; y <= cy + radius; y += 1) {
+      for (let x = cx - radius; x <= cx + radius; x += 1) {
+        if (Math.abs(x - cx) + Math.abs(y - cy) <= radius) put(x, y, hex, alpha);
+      }
+    }
+  };
+  const hashRelic = (value) => String(value || "").split("").reduce((hash, char) => ((hash * 33) ^ char.charCodeAt(0)) >>> 0, 5381);
+  const seed = hashRelic(relic.id);
+  const relicIndexMatch = String(relic.id || "").match(/^relic_(\d+)/);
+  const visualSerial = relicIndexMatch ? Number(relicIndexMatch[1]) : seed;
+  let state = seed || 1;
+  const rand = () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return (state >>> 0) / 4294967296;
+  };
+  const themes = [
+    { sky: 0x9be7ef, sky2: 0x5fb3ce, ground: 0x3f8f3b, ground2: 0x286b35, dark: 0x17324b, mid: 0x315f7d, light: 0xbff8ff, accent: 0xffd166 },
+    { sky: 0x06091f, sky2: 0x15104a, ground: 0x101827, ground2: 0x020617, dark: 0x000814, mid: 0x1d4ed8, light: 0xe0f2fe, accent: 0xffe066 },
+    { sky: 0x6ee7d8, sky2: 0xa7f3d0, ground: 0x14b8a6, ground2: 0x0f766e, dark: 0x0f172a, mid: 0x2dd4bf, light: 0xecfeff, accent: 0xfacc15 },
+    { sky: 0x1f1635, sky2: 0x432874, ground: 0x111827, ground2: 0x09090b, dark: 0x030712, mid: 0x7c3aed, light: 0xf5d0fe, accent: 0xff6b88 },
+    { sky: 0xfbd38d, sky2: 0xfb923c, ground: 0x7f1d1d, ground2: 0x450a0a, dark: 0x1c0804, mid: 0xdc2626, light: 0xffedd5, accent: 0xffc857 },
+    { sky: 0xc7d2fe, sky2: 0x818cf8, ground: 0x334155, ground2: 0x0f172a, dark: 0x020617, mid: 0x64748b, light: 0xf8fafc, accent: 0x93c5fd },
+    { sky: 0x0d1b2a, sky2: 0x1b263b, ground: 0x133c55, ground2: 0x061826, dark: 0x030712, mid: 0x2dd4bf, light: 0xccfbf1, accent: 0xf0abfc },
+    { sky: 0x072c24, sky2: 0x14532d, ground: 0x052e16, ground2: 0x022c22, dark: 0x02130d, mid: 0x22c55e, light: 0xdcfce7, accent: 0xfef08a },
+  ];
+  const theme = themes[seed % themes.length];
+  const scene = (seed >> 5) % 8;
+
+  for (let y = 0; y < sourceHeight; y += 1) {
+    const hex = y < sourceHeight / 2 ? theme.sky : theme.sky2;
+    fill(0, y, sourceWidth, 1, hex);
+  }
+  if (scene === 0) {
+    triangle(18, 95, 66, 30, 112, 95, theme.mid);
+    triangle(78, 95, 135, 18, 197, 95, theme.dark);
+    triangle(122, 95, 183, 38, 238, 95, theme.mid);
+    triangle(56, 52, 66, 30, 77, 52, theme.light);
+    triangle(124, 44, 135, 18, 150, 44, theme.light);
+    fill(0, 92, sourceWidth, 43, theme.ground);
+    for (let x = -20; x < sourceWidth; x += 24) triangle(x, 135, x + 18, 94, x + 48, 135, theme.ground2, 210);
+    line(118, 135, 142, 92, 0xf7e6a4, 3, 190);
+  } else if (scene === 1) {
+    fill(0, 0, sourceWidth, sourceHeight, theme.dark);
+    for (let i = 0; i < 55; i += 1) {
+      const x = Math.floor(rand() * sourceWidth);
+      const y = Math.floor(rand() * 82);
+      fill(x, y, 1 + Math.floor(rand() * 2), 1 + Math.floor(rand() * 2), rand() > 0.82 ? theme.accent : theme.light);
+    }
+    for (let x = 4; x < sourceWidth; x += 18 + Math.floor(rand() * 16)) {
+      const h = 24 + Math.floor(rand() * 42);
+      fill(x, sourceHeight - h, 12 + Math.floor(rand() * 14), h, theme.ground2);
+      for (let y = sourceHeight - h + 6; y < sourceHeight - 6; y += 8) fill(x + 4, y, 2, 2, theme.mid);
+    }
+  } else if (scene === 2) {
+    for (let y = 0; y < sourceHeight; y += 8) {
+      for (let x = 0; x < sourceWidth; x += 8) fill(x, y, 8, 8, ((x + y) / 8) % 2 ? theme.sky : theme.sky2);
+    }
+    for (let i = 0; i < 18; i += 1) diamond(Math.floor(rand() * sourceWidth), Math.floor(rand() * sourceHeight), 3 + Math.floor(rand() * 3), theme.accent, 210);
+  } else if (scene === 3) {
+    fill(0, 0, sourceWidth, sourceHeight, theme.sky);
+    fill(0, 70, sourceWidth, 65, theme.ground2);
+    for (let x = -8; x < sourceWidth; x += 18) {
+      fill(x + 7, 64, 5, 38, 0x4a2c16);
+      triangle(x, 72, x + 10, 30 + Math.floor(rand() * 18), x + 24, 72, theme.ground);
+      triangle(x - 2, 58, x + 10, 25, x + 22, 58, theme.mid);
+    }
+    fill(98, 72, 44, 44, 0x1f2937);
+    triangle(90, 73, 120, 48, 150, 73, theme.accent);
+    fill(113, 90, 14, 26, theme.dark);
+  } else if (scene === 4) {
+    fill(0, 0, sourceWidth, 66, theme.sky);
+    fill(0, 66, sourceWidth, 69, theme.mid);
+    for (let y = 74; y < sourceHeight; y += 12) {
+      for (let x = -12; x < sourceWidth; x += 30) line(x, y, x + 18, y - 4, theme.light, 2, 150);
+    }
+    circle(42, 24, 12, theme.accent, 210);
+    fill(0, 105, sourceWidth, 30, theme.ground);
+  } else if (scene === 5) {
+    fill(0, 0, sourceWidth, sourceHeight, theme.dark);
+    triangle(0, 118, 54, 42, 114, 118, theme.ground2);
+    triangle(92, 118, 154, 35, 230, 118, theme.ground2);
+    fill(0, 106, sourceWidth, 29, theme.ground);
+    for (let x = 0; x < sourceWidth; x += 20) line(x, 132, x + 12, 108, theme.accent, 3, 230);
+  } else if (scene === 6) {
+    fill(0, 0, sourceWidth, sourceHeight, theme.dark);
+    for (let i = 0; i < 80; i += 1) put(Math.floor(rand() * sourceWidth), Math.floor(rand() * sourceHeight), rand() > 0.5 ? theme.light : theme.mid);
+    circle(188, 42, 15, theme.mid, 230);
+    circle(195, 36, 15, theme.dark, 230);
+    for (let i = 0; i < 4; i += 1) line(30 + i * 26, 95 - i * 9, 106 + i * 23, 64 + i * 6, theme.mid, 3, 95);
+  } else {
+    fill(0, 0, sourceWidth, sourceHeight, theme.sky);
+    fill(0, 72, sourceWidth, 63, theme.ground);
+    for (let y = 82; y < sourceHeight; y += 14) {
+      for (let x = 0; x < sourceWidth; x += 18) {
+        fill(x, y, 10, 3, theme.ground2);
+        fill(x + 5, y - 5, 3, 8, theme.mid);
+      }
+    }
+    for (let i = 0; i < 12; i += 1) circle(Math.floor(rand() * sourceWidth), 80 + Math.floor(rand() * 48), 2, theme.accent, 220);
+  }
+
+  fill(66, 12, 108, 108, theme.dark, 95);
+  stroke(63, 9, 114, 114, rarityColor, 2);
+  stroke(68, 14, 104, 104, theme.light, 1);
+
+  const spriteGrid = 31;
+  const spriteCell = 3;
+  const spriteStartX = 120 - Math.floor((spriteGrid * spriteCell) / 2);
+  const spriteStartY = 68 - Math.floor((spriteGrid * spriteCell) / 2);
+  const spriteCellFill = (gx, gy, hex, alpha = 255, inset = 0) => fill(spriteStartX + gx * spriteCell + inset, spriteStartY + gy * spriteCell + inset, spriteCell - inset * 2, spriteCell - inset * 2, hex, alpha);
+  const body = new Set();
+  const add = (x, y) => {
+    if (x >= 0 && y >= 0 && x < spriteGrid && y < spriteGrid) body.add(`${x},${y}`);
+  };
+  const archetype = seed % 48;
+  const family = archetype % 16;
+  const profile = Math.floor(archetype / 16);
+  for (let y = 2; y < spriteGrid - 2; y += 1) {
+    for (let x = 0; x <= 15; x += 1) {
+      const dx = Math.abs(x - 15);
+      const dy = y - 15;
+      const ady = Math.abs(dy);
+      let inside = false;
+      const pinch = profile === 0 ? 0.42 : profile === 1 ? 0.65 : 0.25;
+      const wide = profile === 1 ? 2 : profile === 2 ? -1 : 0;
+      if (family === 0) inside = (dx * dx) / (56 + wide * 8) + (dy * dy) / 86 <= 1;
+      else if (family === 1) inside = dx + ady * (0.72 + pinch * 0.18) <= 10 + wide;
+      else if (family === 2) inside = y >= 5 && y <= 24 && dx <= Math.max(2, 10 + wide - Math.floor(ady * pinch));
+      else if (family === 3) inside = dx <= 3 || (ady <= 4 && dx <= 11 + wide) || (ady <= 9 && dx <= 6 + wide);
+      else if (family === 4) inside = (y >= 7 && y <= 23 && dx <= 8 + wide) || (y >= 3 && y < 7 && dx <= y - 1 + wide);
+      else if (family === 5) inside = (dx * dx) / (70 + wide * 8) + (dy * dy) / 70 <= 1 && !(dx < 4 && ady < 4);
+      else if (family === 6) inside = y >= 5 && y <= 25 && dx <= Math.max(1, Math.floor((y < 15 ? y - 2 : 28 - y) * (0.62 + pinch * 0.25)));
+      else if (family === 7) inside = dx <= 4 || (y >= 11 && y <= 19 && dx <= 11 + wide) || (y >= 6 && y <= 10 && dx <= 3 + (y - 6));
+      else if (family === 8) inside = dx <= 7 + wide && ady <= 9 && !(dx <= 3 && ady <= 4);
+      else if (family === 9) inside = (dx <= 2 && y >= 4 && y <= 26) || (ady <= 2 && dx <= 11) || (dx + ady <= 8);
+      else if (family === 10) inside = (dx * dx) / 45 + (dy * dy) / 100 <= 1 || (y >= 18 && dx <= 9 - Math.floor((y - 18) * 0.9));
+      else if (family === 11) inside = (y >= 4 && y <= 22 && dx <= 5 + Math.floor(Math.sin(y * 0.9) * 2)) || (ady <= 2 && dx <= 11);
+      else if (family === 12) inside = (dx <= 8 && ady <= 8 && (dx + ady > 3)) || (dx <= 2 && ady <= 12);
+      else if (family === 13) inside = (dx * dx) / 88 + (dy * dy) / 48 <= 1 || (dx <= 2 && y >= 4 && y <= 26);
+      else if (family === 14) inside = y >= 5 && y <= 25 && dx <= Math.max(2, Math.floor(3 + Math.abs(Math.sin(y * 0.55 + profile)) * 8));
+      else inside = (dx * dx) / 72 + (dy * dy) / 90 <= 1 || dx + ady <= 9 || (y >= 8 && y <= 22 && dx <= 3);
+      if (profile === 2 && dx <= 2 && ady <= 3) inside = false;
+      if (inside) {
+        add(x, y);
+        add(30 - x, y);
+      }
+    }
+  }
+  const addMirror = (x, y) => {
+    add(x, y);
+    add(30 - x, y);
+  };
+  const ornament = (seed >> 9) % 16;
+  if (ornament === 0 || ((seed >> 3) & 1)) for (let i = 0; i < 7; i += 1) { addMirror(15 - i, 4 + i); }
+  if (ornament === 1 || ((seed >> 7) & 1)) for (let y = 12; y < 22; y += 1) { addMirror(3, y); if (y % 2) addMirror(2, y); }
+  if (ornament === 2 || ((seed >> 11) & 1)) for (let y = 23; y < 30; y += 1) { add(15, y); if (y < 27) { add(14, y); add(16, y); } }
+  if (ornament === 3 || ((seed >> 14) & 1)) for (let x = 9; x <= 21; x += 1) add(x, 2 + Math.abs(15 - x) % 3);
+  if (ornament === 4) for (let i = 0; i < 8; i += 1) { addMirror(6 - Math.floor(i / 3), 7 + i); }
+  if (ornament === 5) for (let i = 0; i < 9; i += 1) { addMirror(4 + i, 3); addMirror(5 + i, 4); }
+  if (ornament === 6) for (let y = 7; y <= 24; y += 1) { add(15, y); if (y % 3 === 0) { add(14, y); add(16, y); } }
+  if (ornament === 7) for (let i = 0; i < 7; i += 1) { addMirror(10 - i, 22 + Math.floor(i / 2)); }
+  if (ornament === 8) for (let i = 0; i < 8; i += 1) { addMirror(5, 8 + i); addMirror(4, 9 + i); }
+  if (ornament === 9) for (let x = 8; x <= 22; x += 1) { if (x % 2 === 0) add(x, 28); }
+  if (ornament === 10) for (let i = 0; i < 6; i += 1) { addMirror(2 + i, 13 - i); }
+  if (ornament === 11) for (let i = 0; i < 8; i += 1) { addMirror(8 + Math.floor(i / 2), 5 + i); }
+  if (ornament === 12) for (let y = 6; y <= 24; y += 1) { if (y % 2 === 0) addMirror(1 + (y % 4), y); }
+  if (ornament === 13) for (let i = 0; i < 6; i += 1) { add(15 - i, 2 + i); add(15 + i, 2 + i); add(15, 2 + i); }
+  if (ornament === 14) for (let y = 9; y <= 21; y += 1) { addMirror(25 - Math.floor(y / 3), y); }
+  if (ornament === 15) for (let i = 0; i < 10; i += 1) { addMirror(7 + (i % 3), 25 + Math.floor(i / 3)); }
+
+  for (let ring = 0; ring < 5 + (seed % 4); ring += 1) {
+    const angle = (Math.PI * 2 * ring) / (5 + (seed % 4)) + (seed % 19) / 19;
+    spriteCellFill(Math.round(15 + Math.cos(angle) * 14), Math.round(15 + Math.sin(angle) * 11), ring % 2 ? theme.accent : theme.light, 220, 1);
+  }
+
+  for (const cell of body) {
+    const [x, y] = cell.split(",").map(Number);
+    const edge = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => !body.has(`${x + dx},${y + dy}`));
+    const lit = x < 15 && y < 17;
+    spriteCellFill(x, y, edge ? theme.dark : lit ? theme.light : theme.mid, edge ? 255 : 235);
+    if (!edge && (x === 15 || y === 15 || (x + y + seed) % 7 === 0)) spriteCellFill(x, y, rarityColor, 220, 1);
+  }
+  const gemPattern = (seed >> 17) % 4;
+  const gemCells = gemPattern === 0
+    ? [[15, 15], [14, 15], [16, 15], [15, 14], [15, 16]]
+    : gemPattern === 1
+      ? [[15, 8], [15, 12], [15, 16], [15, 20]]
+      : gemPattern === 2
+        ? [[11, 10], [19, 10], [15, 15], [12, 21], [18, 21]]
+        : [[10, 15], [13, 15], [16, 15], [19, 15], [15, 11], [15, 19]];
+  gemCells.forEach(([x, y]) => {
+    if (body.has(`${x},${y}`)) spriteCellFill(x, y, theme.accent, 255, 0);
+  });
+
+  const signatureBits = visualSerial.toString(2).padStart(24, "0").slice(-24);
+  for (let bit = 0; bit < signatureBits.length; bit += 1) {
+    const row = Math.floor(bit / 12);
+    const col = bit % 12;
+    const hex = signatureBits[bit] === "1" ? theme.accent : theme.mid;
+    fill(28 + col * 4, 119 + row * 4, 2, 2, hex, 235);
+    fill(210 - col * 4, 119 + row * 4, 2, 2, signatureBits[bit] === "1" ? theme.light : theme.dark, 215);
+  }
+  for (let bit = 0; bit < 12; bit += 1) {
+    const active = (visualSerial >> bit) & 1;
+    const x = 6 + bit * 2;
+    const y = active ? 6 : 9;
+    fill(x, y, 1, 2, active ? theme.accent : theme.mid, 225);
+    fill(sourceWidth - x - 1, y, 1, 2, active ? theme.light : theme.dark, 205);
+  }
+  const serialRuneCells = [
+    [8, 8], [22, 8], [7, 15], [23, 15], [9, 22], [21, 22],
+    [12, 6], [18, 6], [12, 24], [18, 24], [15, 5], [15, 25],
+  ];
+  serialRuneCells.forEach(([x, y], index) => {
+    if (body.has(`${x},${y}`)) {
+      spriteCellFill(x, y, ((visualSerial >> index) & 1) ? theme.accent : rarityColor, 245, 1);
+    }
+  });
+
+  stroke(4, 4, sourceWidth - 8, sourceHeight - 8, rarityColor, 2);
+  stroke(8, 8, sourceWidth - 16, sourceHeight - 16, theme.dark, 1);
+
+  for (let sy = 0; sy < sourceHeight; sy += 1) {
+    for (let sx = 0; sx < sourceWidth; sx += 1) {
+      const sourceIndex = (sy * sourceWidth + sx) * 4;
+      for (let yy = 0; yy < scale; yy += 1) {
+        for (let xx = 0; xx < scale; xx += 1) {
+          const targetIndex = ((sy * scale + yy) * width + (sx * scale + xx)) * 4;
+          pixels[targetIndex] = source[sourceIndex];
+          pixels[targetIndex + 1] = source[sourceIndex + 1];
+          pixels[targetIndex + 2] = source[sourceIndex + 2];
+          pixels[targetIndex + 3] = source[sourceIndex + 3];
+        }
+      }
+    }
+  }
+  return new AttachmentBuilder(encodePng(width, height, pixels), { name: "aurix-relic-spawn.png" });
+}
+
 function buildRelicSpawnAttachment(relic) {
+  return buildPixelArtRelicSpawnAttachment(relic);
+
   const width = 960;
   const height = 540;
   const color = {
@@ -1713,7 +2052,13 @@ function buildRelicSpawnAttachment(relic) {
   };
   const hashRelic = (value) => String(value || "").split("").reduce((hash, char) => ((hash * 33) ^ char.charCodeAt(0)) >>> 0, 5381);
   const relicSeed = hashRelic(relic.id);
-  const motif = RELIC_VISUAL_MOTIFS[relic.id] || { core: "lens", wings: relicSeed % 5, orbit: 3 + (relicSeed % 5), spikes: relicSeed % 8 };
+  const generatedCores = ["seed", "crescent", "shield", "knot", "compass", "chip", "mask", "sun", "crown", "heart", "zero", "lens"];
+  const motif = RELIC_VISUAL_MOTIFS[relic.id] || {
+    core: generatedCores[relicSeed % generatedCores.length],
+    wings: (relicSeed >> 3) % 6,
+    orbit: 2 + ((relicSeed >> 7) % 8),
+    spikes: (relicSeed >> 11) % 13,
+  };
   const shadow = 0x03040a;
   const relief = 0x111522;
   const cx = 480;
@@ -1867,113 +2212,144 @@ function buildRelicSpawnAttachment(relic) {
     }
   };
   const drawPixelRelicSprite = () => {
-    const cell = 18;
-    const gridSize = 17;
+    const cell = 14;
+    const gridSize = 23;
     const mid = Math.floor(gridSize / 2);
     const startX = cx - Math.floor((gridSize * cell) / 2);
     const startY = cy - Math.floor((gridSize * cell) / 2);
-    const accent = color;
-    const highlight = 0xf8fafc;
-    const panel = 0x0b0f1d;
+    const themes = [
+      { panel: 0x10151f, body: 0x4a1d16, shade: 0x1d0b09, trim: 0xff7a1a, glow: 0xffd166, gem: 0xfff1a8 },
+      { panel: 0x0c1720, body: 0x123d52, shade: 0x061520, trim: 0x53d8ff, glow: 0xc7f9ff, gem: 0xffffff },
+      { panel: 0x11131d, body: 0x2b2359, shade: 0x0b0920, trim: 0xa78bfa, glow: 0xf0d5ff, gem: 0xffd6e7 },
+      { panel: 0x0e1912, body: 0x164b34, shade: 0x06140d, trim: 0x5ce1a1, glow: 0xd8ffcf, gem: 0xffffba },
+      { panel: 0x17120b, body: 0x5a3a12, shade: 0x1c1004, trim: 0xffc857, glow: 0xfff7cc, gem: 0xffffff },
+      { panel: 0x10151c, body: 0x314158, shade: 0x0a111a, trim: 0x9ca3af, glow: 0xe5eefb, gem: 0xc7f9ff },
+      { panel: 0x170d17, body: 0x5b1837, shade: 0x190711, trim: 0xff6b88, glow: 0xffc3d4, gem: 0xfff1f6 },
+      { panel: 0x080b12, body: 0x151a2f, shade: 0x03040a, trim: 0x69c7ff, glow: 0xc7d2fe, gem: 0xffffff },
+      { panel: 0x15120f, body: 0x3b3025, shade: 0x0f0a07, trim: 0xd8b56d, glow: 0xf4e2b8, gem: 0xfff7cc },
+      { panel: 0x111015, body: 0x36323f, shade: 0x09080d, trim: 0xf0abfc, glow: 0xfae8ff, gem: 0xfef3c7 },
+      { panel: 0x091313, body: 0x15464a, shade: 0x031010, trim: 0x2dd4bf, glow: 0xccfbf1, gem: 0xffffff },
+      { panel: 0x17110f, body: 0x6b2f1a, shade: 0x1c0804, trim: 0xfb923c, glow: 0xfde68a, gem: 0xffedd5 },
+    ];
+    const theme = themes[relicSeed % themes.length];
+    let randomState = relicSeed || 1;
+    const rand = () => {
+      randomState ^= randomState << 13;
+      randomState ^= randomState >>> 17;
+      randomState ^= randomState << 5;
+      return (randomState >>> 0) / 4294967296;
+    };
     const drawCell = (gridX, gridY, hex, alpha = 255, inset = 1) => {
       fillRect(startX + gridX * cell + inset, startY + gridY * cell + inset, cell - inset * 2, cell - inset * 2, hex, alpha);
     };
-    const insideEllipse = (gridX, gridY, radiusX, radiusY, offsetX = 0, offsetY = 0) => (
-      ((gridX - mid - offsetX) ** 2) / (radiusX ** 2) + ((gridY - mid - offsetY) ** 2) / (radiusY ** 2) <= 1
-    );
-    const insideDiamond = (gridX, gridY, radius, offsetX = 0, offsetY = 0) => (
-      Math.abs(gridX - mid - offsetX) + Math.abs(gridY - mid - offsetY) <= radius
-    );
+    const key = (x, y) => `${x},${y}`;
+    const mask = new Set();
+    const trim = new Set();
+    const gems = new Set();
+    const runes = new Set();
+    const shape = relicSeed % 9;
+    const rx = 5.2 + rand() * 2.8;
+    const ry = 6.2 + rand() * 3.3;
+    const waist = 0.55 + rand() * 0.3;
+    const heightShift = Math.floor(rand() * 3) - 1;
+    const bodyTest = (x, y) => {
+      const dx = Math.abs(x - mid);
+      const dy = y - mid - heightShift;
+      const absDy = Math.abs(dy);
+      if (shape === 0) return (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) <= 1;
+      if (shape === 1) return dx / rx + absDy / ry <= 1;
+      if (shape === 2) return y >= 4 && y <= 18 && dx <= Math.max(2, 7 - Math.floor(absDy * waist));
+      if (shape === 3) return (y >= 5 && y <= 16 && dx <= 5) || (y >= 15 && dx <= 7 - Math.floor((y - 15) * 1.2));
+      if (shape === 4) return dx <= 2 || (absDy <= 3 && dx <= 7) || (absDy <= 6 && dx <= 4);
+      if (shape === 5) return (dx * dx) / ((rx - 1) ** 2) + (dy * dy) / (ry ** 2) <= 1 && !(dx <= 2 && absDy <= 2 && rand() > 0.35);
+      if (shape === 6) return y >= 4 && y <= 18 && dx <= Math.max(1, Math.floor((y < mid ? y - 2 : 20 - y) * 0.65));
+      if (shape === 7) return dx <= 3 || (y >= 7 && y <= 15 && dx <= 7) || (y >= 3 && y <= 6 && dx <= 1 + (y - 3));
+      return (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) <= 1 || dx + absDy <= 7;
+    };
 
-    fillRect(cx - 178, cy - 178, 356, 356, panel, 235);
-    strokeRect(cx - 178, cy - 178, 356, 356, accent, 4);
-
-    for (let y = 0; y < gridSize; y += 1) {
-      for (let x = 0; x < gridSize; x += 1) {
-        let body = false;
-        let lit = false;
-        let shine = false;
-
-        switch (motif.core) {
-          case "seed":
-            body = insideEllipse(x, y, 3.4, 5.9, 0, 1);
-            body ||= x === mid + 2 && y >= 2 && y <= 5;
-            body ||= y === 3 && x >= mid + 2 && x <= mid + 5;
-            lit = insideEllipse(x, y, 1.4, 3.2, -1, 1);
-            shine = x === mid - 1 && y >= 4 && y <= 6;
-            break;
-          case "crescent":
-            body = insideEllipse(x, y, 5.4, 6.2, -1, 0) && !insideEllipse(x, y, 4.7, 5.8, 1.6, -0.2);
-            lit = body && x <= mid - 2 && y >= 4 && y <= 12;
-            shine = body && x === mid - 4 && y >= 6 && y <= 9;
-            break;
-          case "shield":
-            body = (y >= 3 && y <= 7 && x >= 4 && x <= 12) || (y > 7 && insideDiamond(x, y, 6, 0, -1));
-            lit = x === mid && y >= 4 && y <= 12;
-            shine = y === 4 && x >= 5 && x <= 7;
-            break;
-          case "knot":
-            body = insideEllipse(x, y, 3.7, 5.1, -2.5, 0) || insideEllipse(x, y, 3.7, 5.1, 2.5, 0) || Math.abs(x - y) <= 1 || Math.abs(x + y - 16) <= 1;
-            lit = insideEllipse(x, y, 2.1, 2.1);
-            shine = y === 6 && x >= 6 && x <= 10;
-            break;
-          case "compass":
-            body = insideDiamond(x, y, 7);
-            lit = x === mid || y === mid || insideDiamond(x, y, 2);
-            shine = x === mid && y >= 2 && y <= 5;
-            break;
-          case "chip":
-            body = x >= 4 && x <= 12 && y >= 4 && y <= 12;
-            body ||= (x === 2 || x === 14) && y >= 5 && y <= 11 && y % 2 === 1;
-            body ||= (y === 2 || y === 14) && x >= 5 && x <= 11 && x % 2 === 1;
-            lit = x >= 6 && x <= 10 && y >= 6 && y <= 10;
-            shine = y === 5 && x >= 5 && x <= 8;
-            break;
-          case "mask":
-            body = insideEllipse(x, y, 6.1, 4.4);
-            lit = (y === 7 && (x === 6 || x === 10)) || (y === 11 && x >= 7 && x <= 9);
-            shine = y === 5 && x >= 5 && x <= 11;
-            break;
-          case "sun":
-            body = insideEllipse(x, y, 4.3, 4.3) || x === mid || y === mid || Math.abs(x - y) <= 1 || Math.abs(x + y - 16) <= 1;
-            lit = insideEllipse(x, y, 2.2, 2.2);
-            shine = y === 6 && x >= 7 && x <= 9;
-            break;
-          case "crown":
-            body = y >= 8 && y <= 12 && x >= 3 && x <= 13;
-            body ||= y >= 5 && y <= 8 && (Math.abs(x - 4) <= y - 5 || Math.abs(x - 8) <= y - 5 || Math.abs(x - 12) <= y - 5);
-            lit = y === 9 && x >= 5 && x <= 11;
-            shine = y === 5 && (x === 4 || x === 8 || x === 12);
-            break;
-          case "heart":
-            body = insideEllipse(x, y, 3.5, 3.2, -2.4, -2) || insideEllipse(x, y, 3.5, 3.2, 2.4, -2) || (y >= 7 && insideDiamond(x, y, 6, 0, -2));
-            lit = x === mid && y >= 5 && y <= 12;
-            shine = y === 4 && x >= 5 && x <= 6;
-            break;
-          case "zero":
-            body = insideEllipse(x, y, 5.7, 6.5) && !insideEllipse(x, y, 2.8, 3.7);
-            body ||= Math.abs(x + y - 16) <= 1 && x >= 5 && x <= 11;
-            lit = body && x <= mid - 2;
-            shine = body && y === 4 && x >= 6 && x <= 8;
-            break;
-          case "lens":
-          default:
-            body = insideEllipse(x, y, 6.5, 4.7) || (x >= 11 && y >= 11 && x - y <= 2 && x - y >= -1);
-            lit = insideEllipse(x, y, 2.4, 2.4);
-            shine = y === 5 && x >= 5 && x <= 9;
-            break;
-        }
-
-        if (body) {
-          drawCell(x, y, shadow, 255, 1);
-        }
-        if (lit) {
-          drawCell(x, y, accent, 235, 3);
-        }
-        if (shine) {
-          drawCell(x, y, highlight, 210, 5);
+    for (let y = 2; y < gridSize - 2; y += 1) {
+      for (let x = 0; x <= mid; x += 1) {
+        if (bodyTest(x, y)) {
+          mask.add(key(x, y));
+          mask.add(key(gridSize - 1 - x, y));
         }
       }
+    }
+
+    if ((relicSeed >> 4) & 1) {
+      for (let i = 0; i < 4; i += 1) {
+        mask.add(key(mid - i, 3 + i));
+        mask.add(key(mid + i, 3 + i));
+      }
+    }
+    if ((relicSeed >> 6) & 1) {
+      for (let y = 8; y <= 14; y += 1) {
+        mask.add(key(2, y));
+        mask.add(key(20, y));
+        if (y % 2 === 0) {
+          mask.add(key(1, y));
+          mask.add(key(21, y));
+        }
+      }
+    }
+    if ((relicSeed >> 8) & 1) {
+      for (let y = 16; y <= 20; y += 1) {
+        mask.add(key(mid, y));
+        if (y < 19) {
+          mask.add(key(mid - 1, y));
+          mask.add(key(mid + 1, y));
+        }
+      }
+    }
+
+    for (const cellKey of mask) {
+      const [x, y] = cellKey.split(",").map(Number);
+      const edge = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => !mask.has(key(x + dx, y + dy)));
+      if (edge) trim.add(cellKey);
+      if (!edge && (x === mid || y === mid || (x + y + relicSeed) % (4 + (relicSeed % 3)) === 0)) runes.add(cellKey);
+    }
+
+    const gemStyle = (relicSeed >> 10) % 4;
+    const addGem = (x, y) => {
+      if (mask.has(key(x, y))) gems.add(key(x, y));
+    };
+    if (gemStyle === 0) {
+      [[mid, mid], [mid - 1, mid], [mid + 1, mid], [mid, mid - 1], [mid, mid + 1]].forEach(([x, y]) => addGem(x, y));
+    } else if (gemStyle === 1) {
+      for (let y = 6; y <= 16; y += 2) addGem(mid, y);
+    } else if (gemStyle === 2) {
+      [[mid - 3, 8], [mid + 3, 8], [mid, 12], [mid - 2, 15], [mid + 2, 15]].forEach(([x, y]) => addGem(x, y));
+    } else {
+      for (let x = mid - 4; x <= mid + 4; x += 2) addGem(x, mid);
+      for (let y = mid - 4; y <= mid + 4; y += 2) addGem(mid, y);
+    }
+
+    fillRect(cx - 184, cy - 184, 368, 368, theme.panel, 242);
+    strokeRect(cx - 184, cy - 184, 368, 368, color, 5);
+    strokeRect(cx - 166, cy - 166, 332, 332, theme.trim, 2);
+
+    for (let orbit = 0; orbit < motif.orbit; orbit += 1) {
+      const angle = (Math.PI * 2 * orbit) / Math.max(1, motif.orbit) + (relicSeed % 31) / 31;
+      const gridX = Math.round(mid + Math.cos(angle) * (9 + (orbit % 2)));
+      const gridY = Math.round(mid + Math.sin(angle) * (8 + (orbit % 3)));
+      drawCell(gridX, gridY, orbit % 3 === 0 ? theme.gem : theme.trim, 220, 3);
+    }
+
+    for (const cellKey of mask) {
+      const [x, y] = cellKey.split(",").map(Number);
+      const edge = trim.has(cellKey);
+      const upperLight = y < mid && x <= mid;
+      const lowerShade = y > mid + 3;
+      drawCell(x, y, edge ? theme.shade : lowerShade ? theme.body : upperLight ? theme.glow : theme.body, edge ? 255 : 235, edge ? 0 : 1);
+      if (runes.has(cellKey) && !edge) drawCell(x, y, theme.trim, 215, 5);
+      if (gems.has(cellKey)) drawCell(x, y, theme.gem, 245, 3);
+    }
+
+    for (let corner = 0; corner < 4; corner += 1) {
+      const x = corner % 2 === 0 ? 1 : 21;
+      const y = corner < 2 ? 1 : 21;
+      drawCell(x, y, theme.trim, 190, 4);
+      drawCell(corner % 2 === 0 ? x + 1 : x - 1, y, theme.glow, 150, 5);
     }
   };
 
@@ -2025,7 +2401,8 @@ function buildRelicSpawnPayload(relic, source = "chat") {
     ].join("\n"))
     .addFields(
       { name: "Rarity Signal", value: rarity.label, inline: true },
-      { name: "Source", value: sourceLabels[source] || sourceLabels.chat, inline: true }
+      { name: "Source", value: sourceLabels[source] || sourceLabels.chat, inline: true },
+      { name: "Expires", value: humanizeMs(RELIC_SPAWN_TTL_MS), inline: true }
     )
     .setImage("attachment://aurix-relic-spawn.png")
     .setFooter({ text: "AURIX • Failed guesses do not despawn the relic." })
@@ -3405,6 +3782,11 @@ async function handleChatRelicSpawnMessage(message) {
 }
 
 async function checkIncenseSpawns(client) {
+  await GuildSettings.updateMany(
+    { "relicSpawn.current.spawnedAt": { $lte: new Date(Date.now() - RELIC_SPAWN_TTL_MS) } },
+    { $set: { "relicSpawn.current": null } }
+  );
+
   const settingsRows = await GuildSettings.find({
     $or: [
       { dropsChannelId: { $ne: null } },
@@ -4241,8 +4623,20 @@ async function handleClaim(interaction) {
   if (!current?.relicId) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Nothing To Claim", description: "No relic is currently spawned in this channel.", visual: "emblem-help.svg" }), ephemeral: true });
   }
+  if (await clearExpiredRelicSpawn(settings, spawnState)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Relic Faded", description: "That relic spawn expired before it was claimed. Wait for the next chat spawn or use `/summon`.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
   if (!isCorrectRelicGuess(guess, current.relicName)) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Wrong Guess", description: "That was not the relic. Try the full name, or the first two main words from the hint.", visual: "emblem-alert.svg" }), ephemeral: true });
+    const hintUses = Number(current.hintUses) || 0;
+    return interaction.reply({ ...buildEmbedPayload({
+      title: "Wrong Guess",
+      description: [
+        "That was not the relic.",
+        `Current hint: \`${formatRelicHint(current.relicName, hintUses)}\``,
+        "Try the full name, or the first two main words.",
+      ].join("\n"),
+      visual: "emblem-alert.svg",
+    }), ephemeral: true });
   }
 
   const claimLock = await GuildSettings.findOneAndUpdate(
@@ -4298,14 +4692,20 @@ async function handleHint(interaction) {
   if (!current?.relicName) {
     return interaction.reply({ ...buildEmbedPayload({ title: "No Hint Available", description: "No relic is currently spawned.", visual: "emblem-help.svg" }), ephemeral: true });
   }
+  if (await clearExpiredRelicSpawn(settings, spawnState)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Relic Faded", description: "That relic spawn expired before anyone claimed it.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
   current.hintUses = (Number(current.hintUses) || 0) + 1;
   settings.markModified("relicSpawn");
   await settings.save();
   return interaction.reply(buildEmbedPayload({
     title: "Relic Hint",
-    description: `Name pattern: \`${formatRelicHint(current.relicName, current.hintUses)}\``,
+    description: [
+      `Name pattern: \`${formatRelicHint(current.relicName, current.hintUses)}\``,
+      "You can claim generated relics with the first two main words.",
+    ].join("\n"),
     visual: "help-summary.svg",
-    footer: "Use /claim guess:<name> when you know it.",
+    footer: `Use /claim guess:<name> when you know it. Fades in ${humanizeMs(getRelicSpawnRemainingMs(current))}.`,
   }));
 }
 
