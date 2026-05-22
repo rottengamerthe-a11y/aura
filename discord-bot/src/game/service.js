@@ -67,14 +67,14 @@ const RELIC_RARITIES = Object.freeze({
   legendary: { label: "Legendary", weight: 9, burnAura: 7200, burnXp: 820, value: 18 },
   mythic: { label: "Mythic", weight: 1, burnAura: 18000, burnXp: 2200, value: 42 },
 });
-const GENERATED_RELIC_COUNT = Number(process.env.AURIX_GENERATED_RELIC_COUNT) || 2500;
+const GENERATED_RELIC_COUNT = Number(process.env.AURIX_GENERATED_RELIC_COUNT) || 90000;
 const GENERATED_RELIC_RARITY_COUNTS = Object.freeze({
-  common: 1200,
-  uncommon: 700,
-  rare: 350,
-  epic: 180,
-  legendary: 60,
-  mythic: 10,
+  common: 43200,
+  uncommon: 25200,
+  rare: 12600,
+  epic: 6480,
+  legendary: 2160,
+  mythic: 360,
 });
 
 function slugifyRelicPart(value) {
