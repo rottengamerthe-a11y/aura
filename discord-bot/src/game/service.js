@@ -1585,6 +1585,21 @@ function normalizeGuess(value) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
+function getRelicShortGuess(name) {
+  return String(name || "")
+    .split(/\s+/)
+    .filter((part) => !["of", "the"].includes(part.toLowerCase()))
+    .slice(0, 2)
+    .join(" ");
+}
+
+function isCorrectRelicGuess(guess, relicName) {
+  const normalizedGuess = normalizeGuess(guess);
+  const normalizedName = normalizeGuess(relicName);
+  const normalizedShortGuess = normalizeGuess(getRelicShortGuess(relicName));
+  return normalizedGuess === normalizedName || normalizedGuess === normalizedShortGuess;
+}
+
 function formatRelicHint(name, hintUses = 0) {
   const revealEvery = Math.max(2, 4 - Math.min(2, hintUses));
   return String(name || "")
@@ -1851,6 +1866,116 @@ function buildRelicSpawnAttachment(relic) {
       }
     }
   };
+  const drawPixelRelicSprite = () => {
+    const cell = 18;
+    const gridSize = 17;
+    const mid = Math.floor(gridSize / 2);
+    const startX = cx - Math.floor((gridSize * cell) / 2);
+    const startY = cy - Math.floor((gridSize * cell) / 2);
+    const accent = color;
+    const highlight = 0xf8fafc;
+    const panel = 0x0b0f1d;
+    const drawCell = (gridX, gridY, hex, alpha = 255, inset = 1) => {
+      fillRect(startX + gridX * cell + inset, startY + gridY * cell + inset, cell - inset * 2, cell - inset * 2, hex, alpha);
+    };
+    const insideEllipse = (gridX, gridY, radiusX, radiusY, offsetX = 0, offsetY = 0) => (
+      ((gridX - mid - offsetX) ** 2) / (radiusX ** 2) + ((gridY - mid - offsetY) ** 2) / (radiusY ** 2) <= 1
+    );
+    const insideDiamond = (gridX, gridY, radius, offsetX = 0, offsetY = 0) => (
+      Math.abs(gridX - mid - offsetX) + Math.abs(gridY - mid - offsetY) <= radius
+    );
+
+    fillRect(cx - 178, cy - 178, 356, 356, panel, 235);
+    strokeRect(cx - 178, cy - 178, 356, 356, accent, 4);
+
+    for (let y = 0; y < gridSize; y += 1) {
+      for (let x = 0; x < gridSize; x += 1) {
+        let body = false;
+        let lit = false;
+        let shine = false;
+
+        switch (motif.core) {
+          case "seed":
+            body = insideEllipse(x, y, 3.4, 5.9, 0, 1);
+            body ||= x === mid + 2 && y >= 2 && y <= 5;
+            body ||= y === 3 && x >= mid + 2 && x <= mid + 5;
+            lit = insideEllipse(x, y, 1.4, 3.2, -1, 1);
+            shine = x === mid - 1 && y >= 4 && y <= 6;
+            break;
+          case "crescent":
+            body = insideEllipse(x, y, 5.4, 6.2, -1, 0) && !insideEllipse(x, y, 4.7, 5.8, 1.6, -0.2);
+            lit = body && x <= mid - 2 && y >= 4 && y <= 12;
+            shine = body && x === mid - 4 && y >= 6 && y <= 9;
+            break;
+          case "shield":
+            body = (y >= 3 && y <= 7 && x >= 4 && x <= 12) || (y > 7 && insideDiamond(x, y, 6, 0, -1));
+            lit = x === mid && y >= 4 && y <= 12;
+            shine = y === 4 && x >= 5 && x <= 7;
+            break;
+          case "knot":
+            body = insideEllipse(x, y, 3.7, 5.1, -2.5, 0) || insideEllipse(x, y, 3.7, 5.1, 2.5, 0) || Math.abs(x - y) <= 1 || Math.abs(x + y - 16) <= 1;
+            lit = insideEllipse(x, y, 2.1, 2.1);
+            shine = y === 6 && x >= 6 && x <= 10;
+            break;
+          case "compass":
+            body = insideDiamond(x, y, 7);
+            lit = x === mid || y === mid || insideDiamond(x, y, 2);
+            shine = x === mid && y >= 2 && y <= 5;
+            break;
+          case "chip":
+            body = x >= 4 && x <= 12 && y >= 4 && y <= 12;
+            body ||= (x === 2 || x === 14) && y >= 5 && y <= 11 && y % 2 === 1;
+            body ||= (y === 2 || y === 14) && x >= 5 && x <= 11 && x % 2 === 1;
+            lit = x >= 6 && x <= 10 && y >= 6 && y <= 10;
+            shine = y === 5 && x >= 5 && x <= 8;
+            break;
+          case "mask":
+            body = insideEllipse(x, y, 6.1, 4.4);
+            lit = (y === 7 && (x === 6 || x === 10)) || (y === 11 && x >= 7 && x <= 9);
+            shine = y === 5 && x >= 5 && x <= 11;
+            break;
+          case "sun":
+            body = insideEllipse(x, y, 4.3, 4.3) || x === mid || y === mid || Math.abs(x - y) <= 1 || Math.abs(x + y - 16) <= 1;
+            lit = insideEllipse(x, y, 2.2, 2.2);
+            shine = y === 6 && x >= 7 && x <= 9;
+            break;
+          case "crown":
+            body = y >= 8 && y <= 12 && x >= 3 && x <= 13;
+            body ||= y >= 5 && y <= 8 && (Math.abs(x - 4) <= y - 5 || Math.abs(x - 8) <= y - 5 || Math.abs(x - 12) <= y - 5);
+            lit = y === 9 && x >= 5 && x <= 11;
+            shine = y === 5 && (x === 4 || x === 8 || x === 12);
+            break;
+          case "heart":
+            body = insideEllipse(x, y, 3.5, 3.2, -2.4, -2) || insideEllipse(x, y, 3.5, 3.2, 2.4, -2) || (y >= 7 && insideDiamond(x, y, 6, 0, -2));
+            lit = x === mid && y >= 5 && y <= 12;
+            shine = y === 4 && x >= 5 && x <= 6;
+            break;
+          case "zero":
+            body = insideEllipse(x, y, 5.7, 6.5) && !insideEllipse(x, y, 2.8, 3.7);
+            body ||= Math.abs(x + y - 16) <= 1 && x >= 5 && x <= 11;
+            lit = body && x <= mid - 2;
+            shine = body && y === 4 && x >= 6 && x <= 8;
+            break;
+          case "lens":
+          default:
+            body = insideEllipse(x, y, 6.5, 4.7) || (x >= 11 && y >= 11 && x - y <= 2 && x - y >= -1);
+            lit = insideEllipse(x, y, 2.4, 2.4);
+            shine = y === 5 && x >= 5 && x <= 9;
+            break;
+        }
+
+        if (body) {
+          drawCell(x, y, shadow, 255, 1);
+        }
+        if (lit) {
+          drawCell(x, y, accent, 235, 3);
+        }
+        if (shine) {
+          drawCell(x, y, highlight, 210, 5);
+        }
+      }
+    }
+  };
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
@@ -1875,7 +2000,8 @@ function buildRelicSpawnAttachment(relic) {
   for (let x = 130; x <= 830; x += 70) {
     drawDiamond(x, 94 + ((x / 70) % 2) * 340, 9, color, 220);
   }
-  applyPixelArtPass();
+  applyPixelArtPass(18);
+  drawPixelRelicSprite();
   return new AttachmentBuilder(encodePng(width, height, pixels), { name: "aurix-relic-spawn.png" });
 }
 
@@ -1894,6 +2020,7 @@ function buildRelicSpawnPayload(relic, source = "chat") {
     .setDescription([
       "A shadowed relic slipped into the channel.",
       "First correct `/claim guess:<relic name>` wins it.",
+      "Generated relics can be claimed with the first two main words.",
       "Use `/hint` if the server gets stuck.",
     ].join("\n"))
     .addFields(
@@ -4109,8 +4236,8 @@ async function handleClaim(interaction) {
   if (!current?.relicId) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Nothing To Claim", description: "No relic is currently spawned in this channel.", visual: "emblem-help.svg" }), ephemeral: true });
   }
-  if (normalizeGuess(guess) !== normalizeGuess(current.relicName)) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Wrong Guess", description: "That was not the relic. The spawn stays active, so keep guessing.", visual: "emblem-alert.svg" }), ephemeral: true });
+  if (!isCorrectRelicGuess(guess, current.relicName)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Wrong Guess", description: "That was not the relic. Try the full name, or the first two main words from the hint.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
   const claimLock = await GuildSettings.findOneAndUpdate(
