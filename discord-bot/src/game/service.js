@@ -19,6 +19,7 @@ const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
 const PVP_MATCHMAKING_TIMEOUT_MS = 10 * 60 * 1000;
 const SERVER_EVENT_DURATION_MS = 20 * 60 * 1000;
 const SERVER_EVENT_SPAWN_COOLDOWN_MS = 35 * 60 * 1000;
+const SERVER_EVENT_RECENT_HISTORY_LIMIT = 4;
 const TRADE_OFFER_TIMEOUT_MS = 15 * 60 * 1000;
 const SUMMON_COOLDOWN_MS = 60 * 1000;
 const SUMMON_COST = 2000;
@@ -42,22 +43,163 @@ const SERVER_EVENT_TEMPLATES = Object.freeze([
     id: "rift_cache",
     name: "Rift Cache",
     description: "A small cache breaks through the channel static. Claim it before the signal collapses.",
-    rewardAura: 700,
-    rewardXp: 120,
+    rewardAura: 5000,
+    rewardXp: 850,
+    bonus: { crates: { rare: 1 } },
+    activity: {
+      prompt: "Stabilize the rift cache by tuning the cleanest signal.",
+      choices: [
+        { id: "static", label: "Cut Static" },
+        { id: "pulse", label: "Match Pulse", correct: true },
+        { id: "surge", label: "Force Surge" },
+      ],
+      success: "You matched the pulse and the cache snapped open.",
+      failure: "That tuning made the cache flicker out of reach. Try another event next time.",
+    },
   },
   {
     id: "vault_surge",
     name: "Vault Surge",
     description: "The vault network flashes gold. A quick claim banks the overflow safely.",
-    rewardAura: 950,
-    rewardXp: 90,
+    rewardAura: 6500,
+    rewardXp: 700,
+    bonus: { vaultAura: 2500 },
+    activity: {
+      prompt: "Route the vault surge before the overflow leaks away.",
+      choices: [
+        { id: "spend", label: "Open Market" },
+        { id: "seal", label: "Seal Vault", correct: true },
+        { id: "split", label: "Split Flow" },
+      ],
+      success: "You sealed the vault route and captured the overflow.",
+      failure: "The vault route destabilized and the surge moved on.",
+    },
   },
   {
     id: "battle_omen",
     name: "Battle Omen",
     description: "A combat omen rolls through the server and rewards anyone alert enough to catch it.",
-    rewardAura: 550,
-    rewardXp: 180,
+    rewardAura: 4200,
+    rewardXp: 1100,
+    bonus: { items: { health_vial: 1, smoke_bomb: 1 } },
+    activity: {
+      prompt: "Read the combat omen and choose the counter stance.",
+      choices: [
+        { id: "rush", label: "Rush" },
+        { id: "guard", label: "Guard" },
+        { id: "parry", label: "Parry", correct: true },
+      ],
+      success: "You caught the omen with a clean parry.",
+      failure: "The omen slipped past that stance.",
+    },
+  },
+  {
+    id: "golden_downpour",
+    name: "Golden Downpour",
+    description: "A bright aura shower opens above the channel. Anyone quick enough can scoop up the falling shine.",
+    rewardAura: 7200,
+    rewardXp: 620,
+    bonus: { auraMultiplier: 0.35 },
+    activity: {
+      prompt: "Catch the brightest fall before it hits the floor.",
+      choices: [
+        { id: "left", label: "Left Arc" },
+        { id: "center", label: "Center Drop", correct: true },
+        { id: "right", label: "Right Spark" },
+      ],
+      success: "You caught the center drop at peak shine.",
+      failure: "That arc scattered into harmless glitter.",
+    },
+  },
+  {
+    id: "archive_breach",
+    name: "Archive Breach",
+    description: "The Aurix archive cracks open and spills old progression data into the server feed.",
+    rewardAura: 3900,
+    rewardXp: 1350,
+    bonus: { xpMultiplier: 0.4 },
+    activity: {
+      prompt: "Patch the archive breach by selecting the valid checksum.",
+      choices: [
+        { id: "a13", label: "A13" },
+        { id: "x09", label: "X09", correct: true },
+        { id: "k77", label: "K77" },
+      ],
+      success: "The checksum locked and the archive paid out cleanly.",
+      failure: "That checksum failed and the breach sealed itself.",
+    },
+  },
+  {
+    id: "market_frenzy",
+    name: "Market Frenzy",
+    description: "The night market flashes a server-only discount signal, then pays out whoever catches the ping.",
+    rewardAura: 5800,
+    rewardXp: 780,
+    bonus: { crates: { common: 2, rare: 1 } },
+    activity: {
+      prompt: "Pick the real night-market bargain from the noisy offers.",
+      choices: [
+        { id: "flash", label: "Flash Deal" },
+        { id: "bundle", label: "Crate Bundle", correct: true },
+        { id: "mystery", label: "Mystery Tab" },
+      ],
+      success: "You grabbed the real bundle before the market blinked.",
+      failure: "That listing was just market noise.",
+    },
+  },
+  {
+    id: "garden_bloom",
+    name: "Garden Bloom",
+    description: "A server-wide bloom rolls through the garden grid and leaves fresh aura in its roots.",
+    rewardAura: 4600,
+    rewardXp: 980,
+    bonus: { materials: { bloom_fiber: 6, sun_resin: 2 } },
+    activity: {
+      prompt: "Harvest the bloom without bruising the rare roots.",
+      choices: [
+        { id: "pull", label: "Pull Hard" },
+        { id: "prune", label: "Prune Tips" },
+        { id: "lift", label: "Lift Roots", correct: true },
+      ],
+      success: "You lifted the roots cleanly and kept the bloom intact.",
+      failure: "The bloom folded before the harvest landed.",
+    },
+  },
+  {
+    id: "relic_echo",
+    name: "Relic Echo",
+    description: "A relic echo pulses through the channel, rewarding sharp collectors before the sound fades.",
+    rewardAura: 5400,
+    rewardXp: 920,
+    bonus: { crates: { epic: 1 } },
+    activity: {
+      prompt: "Follow the true relic echo through the channel noise.",
+      choices: [
+        { id: "first", label: "First Echo" },
+        { id: "second", label: "Second Echo" },
+        { id: "third", label: "Third Echo", correct: true },
+      ],
+      success: "You followed the true echo to the relic cache.",
+      failure: "That echo was only a reflection.",
+    },
+  },
+  {
+    id: "champion_signal",
+    name: "Champion Signal",
+    description: "A combat signal locks onto the server and pays out players who answer before it expires.",
+    rewardAura: 6200,
+    rewardXp: 1250,
+    bonus: { items: { adrenaline_tonic: 1 }, crates: { rare: 1 } },
+    activity: {
+      prompt: "Answer the champion signal with the right opener.",
+      choices: [
+        { id: "feint", label: "Feint" },
+        { id: "focus", label: "Focus", correct: true },
+        { id: "taunt", label: "Taunt" },
+      ],
+      success: "You focused at the right moment and the signal recognized you.",
+      failure: "The champion signal ignored that opener.",
+    },
   },
 ]);
 const RELIC_RARITIES = Object.freeze({
@@ -736,7 +878,123 @@ function getActiveServerEvent(settings) {
 }
 
 function formatServerEvent(event) {
-  return `**${event.name}**\n${event.description}\nReward: ${formatNumber(event.rewardAura)} aura, ${formatNumber(event.rewardXp)} XP\nExpires in ${humanizeMs(new Date(event.expiresAt).getTime() - Date.now())}`;
+  const activityLine = event.activity?.prompt ? `\nActivity: ${event.activity.prompt}` : "";
+  return `**${event.name}**\n${event.description}${activityLine}\nReward: ${formatNumber(event.rewardAura)} aura, ${formatNumber(event.rewardXp)} XP\nExpires in ${humanizeMs(new Date(event.expiresAt).getTime() - Date.now())}`;
+}
+
+function normalizeRecentServerEventIds(settings) {
+  if (!Array.isArray(settings.recentEventIds)) {
+    settings.recentEventIds = [];
+  }
+  settings.recentEventIds = settings.recentEventIds
+    .filter(Boolean)
+    .slice(-SERVER_EVENT_RECENT_HISTORY_LIMIT);
+  return settings.recentEventIds;
+}
+
+function pickServerEventTemplate(settings) {
+  const recentEventIds = normalizeRecentServerEventIds(settings);
+  const availableTemplates = SERVER_EVENT_TEMPLATES.filter((template) => !recentEventIds.includes(template.id));
+  return pickFlavor(availableTemplates.length ? availableTemplates : SERVER_EVENT_TEMPLATES);
+}
+
+function rememberServerEventId(settings, eventId) {
+  const recentEventIds = normalizeRecentServerEventIds(settings);
+  settings.recentEventIds = [...recentEventIds.filter((id) => id !== eventId), eventId]
+    .slice(-SERVER_EVENT_RECENT_HISTORY_LIMIT);
+}
+
+function buildServerEventActivity(template) {
+  const activity = template?.activity;
+  if (!activity?.choices?.length) {
+    return null;
+  }
+  const correctChoice = activity.choices.find((choice) => choice.correct) || activity.choices[0];
+  return {
+    prompt: activity.prompt,
+    choices: activity.choices.map(({ id, label }) => ({ id, label })),
+    answer: correctChoice.id,
+    success: activity.success,
+    failure: activity.failure,
+  };
+}
+
+function buildServerEventActivityRows(guildId, activity) {
+  const choices = activity?.choices || [];
+  if (!guildId || !choices.length) {
+    return [];
+  }
+  return [
+    new ActionRowBuilder().addComponents(
+      ...choices.slice(0, 5).map((choice) => new ButtonBuilder()
+        .setCustomId(`event:activity:${guildId}:${choice.id}`)
+        .setLabel(choice.label)
+        .setStyle(ButtonStyle.Primary))
+    ),
+  ];
+}
+
+function formatServerEventBonus(event) {
+  const bonus = event?.bonus || {};
+  const lines = [];
+
+  if (bonus.auraMultiplier) {
+    lines.push(`+${formatNumber(Math.floor((Number(event.rewardAura) || 0) * bonus.auraMultiplier))} bonus aura`);
+  }
+  if (bonus.xpMultiplier) {
+    lines.push(`+${formatNumber(Math.floor((Number(event.rewardXp) || 0) * bonus.xpMultiplier))} bonus XP`);
+  }
+  if (bonus.vaultAura) {
+    lines.push(`${formatNumber(bonus.vaultAura)} aura deposited into your vault`);
+  }
+  Object.entries(bonus.crates || {}).forEach(([crateId, quantity]) => {
+    if (CRATES[crateId] && quantity > 0) {
+      lines.push(`${getCrateLabel(crateId)} x${formatNumber(quantity)}`);
+    }
+  });
+  Object.entries(bonus.materials || {}).forEach(([materialId, quantity]) => {
+    if (MATERIALS[materialId] && quantity > 0) {
+      lines.push(`${getInventoryLabel(materialId)} x${formatNumber(quantity)}`);
+    }
+  });
+  Object.entries(bonus.items || {}).forEach(([itemId, quantity]) => {
+    if (getItem(itemId) && quantity > 0) {
+      lines.push(`${getInventoryLabel(itemId)} x${formatNumber(quantity)}`);
+    }
+  });
+
+  return lines;
+}
+
+function applyServerEventRewards(user, event) {
+  const bonus = event?.bonus || {};
+  const auraReward = (Number(event.rewardAura) || 0) + Math.floor((Number(event.rewardAura) || 0) * (Number(bonus.auraMultiplier) || 0));
+  const xpReward = (Number(event.rewardXp) || 0) + Math.floor((Number(event.rewardXp) || 0) * (Number(bonus.xpMultiplier) || 0));
+  const bonusLines = formatServerEventBonus(event);
+
+  user.aura += auraReward;
+  user.xp += xpReward;
+
+  if (bonus.vaultAura > 0) {
+    user.vaultAura += bonus.vaultAura;
+  }
+  Object.entries(bonus.crates || {}).forEach(([crateId, quantity]) => {
+    if (CRATES[crateId] && quantity > 0) {
+      user.crates.set(crateId, (user.crates.get(crateId) || 0) + quantity);
+    }
+  });
+  Object.entries(bonus.materials || {}).forEach(([materialId, quantity]) => {
+    if (MATERIALS[materialId] && quantity > 0) {
+      addInventoryItem(user, materialId, quantity);
+    }
+  });
+  Object.entries(bonus.items || {}).forEach(([itemId, quantity]) => {
+    if (getItem(itemId) && quantity > 0) {
+      addInventoryItem(user, itemId, quantity);
+    }
+  });
+
+  return { auraReward, xpReward, bonusLines };
 }
 
 async function claimServerEvent(interaction) {
@@ -748,9 +1006,11 @@ async function claimServerEvent(interaction) {
   if (activeServerEvent.claimedUserIds?.includes(interaction.user.id)) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Already Claimed", description: "You already claimed this server event.", visual: "emblem-help.svg" }), ephemeral: true });
   }
+  if (activeServerEvent.activity?.answer) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Activity Required", description: activeServerEvent.activity.prompt || "Use the event buttons to complete this server event.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  user.aura += activeServerEvent.rewardAura;
-  user.xp += activeServerEvent.rewardXp;
+  const reward = applyServerEventRewards(user, activeServerEvent);
   settings.activeEvent.claimedUserIds.push(interaction.user.id);
   await syncRank(user);
   await user.save();
@@ -760,9 +1020,49 @@ async function claimServerEvent(interaction) {
     description: "You caught the server event before it faded.",
     visual: "emblem-success.svg",
     fields: [
-      { name: "Aura", value: `${formatNumber(activeServerEvent.rewardAura)}`, inline: true },
-      { name: "XP", value: `${formatNumber(activeServerEvent.rewardXp)}`, inline: true },
+      { name: "Aura", value: `${formatNumber(reward.auraReward)}`, inline: true },
+      { name: "XP", value: `${formatNumber(reward.xpReward)}`, inline: true },
       { name: "Claimed By", value: `${settings.activeEvent.claimedUserIds.length} player(s)`, inline: true },
+      { name: "Unique Bonus", value: reward.bonusLines.join("\n") || "Base event payout only." },
+    ],
+  }));
+}
+
+async function completeServerEventActivity(interaction, selectedChoiceId) {
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const activeServerEvent = getActiveServerEvent(settings);
+  if (!activeServerEvent) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "No Server Event", description: "That activity is no longer active.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  if (activeServerEvent.claimedUserIds?.includes(interaction.user.id)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Already Claimed", description: "You already completed this server event.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
+  if (!activeServerEvent.activity?.answer || selectedChoiceId !== activeServerEvent.activity.answer) {
+    return interaction.reply({
+      ...buildEmbedPayload({
+        title: `${activeServerEvent.name} Missed`,
+        description: activeServerEvent.activity?.failure || "That activity choice did not work.",
+        visual: "emblem-alert.svg",
+      }),
+      ephemeral: true,
+    });
+  }
+
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const reward = applyServerEventRewards(user, activeServerEvent);
+  settings.activeEvent.claimedUserIds.push(interaction.user.id);
+  await syncRank(user);
+  await user.save();
+  await settings.save();
+  return interaction.reply(buildEmbedPayload({
+    title: `${activeServerEvent.name} Completed`,
+    description: activeServerEvent.activity?.success || "You completed the server event activity.",
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Aura", value: `${formatNumber(reward.auraReward)}`, inline: true },
+      { name: "XP", value: `${formatNumber(reward.xpReward)}`, inline: true },
+      { name: "Claimed By", value: `${settings.activeEvent.claimedUserIds.length} player(s)`, inline: true },
+      { name: "Unique Bonus", value: reward.bonusLines.join("\n") || "Base event payout only." },
     ],
   }));
 }
@@ -779,12 +1079,14 @@ async function maybeSpawnServerEvent(interaction) {
   if (Date.now() - lastSpawn < SERVER_EVENT_SPAWN_COOLDOWN_MS || Math.random() > 0.12) {
     return null;
   }
-  const template = pickFlavor(SERVER_EVENT_TEMPLATES);
+  const template = pickServerEventTemplate(settings);
   settings.activeEvent = {
     ...template,
+    activity: buildServerEventActivity(template),
     expiresAt: new Date(Date.now() + SERVER_EVENT_DURATION_MS),
     claimedUserIds: [],
   };
+  rememberServerEventId(settings, template.id);
   settings.lastEventSpawnAt = new Date();
   await settings.save();
   const payload = buildEmbedPayload({
@@ -792,15 +1094,13 @@ async function maybeSpawnServerEvent(interaction) {
     description: `${template.description}\nUse \`/event action:claim\` before it fades.`,
     visual: "help-summary.svg",
     fields: [
+      { name: "Activity", value: settings.activeEvent.activity?.prompt || "Use the event controls to complete it." },
       { name: "Reward", value: `${formatNumber(template.rewardAura)} aura + ${formatNumber(template.rewardXp)} XP`, inline: true },
+      { name: "Unique Bonus", value: formatServerEventBonus(template).join("\n") || "Base event payout only.", inline: true },
       { name: "Window", value: humanizeMs(SERVER_EVENT_DURATION_MS), inline: true },
     ],
   });
-  await interaction.channel.send(withExtraComponents(payload, [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`event:claim:${interaction.guildId}`).setLabel("Claim Event").setStyle(ButtonStyle.Success)
-    ),
-  ])).catch(() => null);
+  await interaction.channel.send(withExtraComponents(payload, buildServerEventActivityRows(interaction.guildId, settings.activeEvent.activity))).catch(() => null);
   return template;
 }
 
@@ -7978,8 +8278,14 @@ async function handleTradeButton(interaction) {
 }
 
 async function handleEventButton(interaction) {
-  const [, action, guildId] = interaction.customId.split(":");
-  if (action !== "claim" || guildId !== interaction.guildId) {
+  const [, action, guildId, choiceId] = interaction.customId.split(":");
+  if (guildId !== interaction.guildId) {
+    return interaction.reply({ content: "That event action is no longer available here.", ephemeral: true });
+  }
+  if (action === "activity") {
+    return completeServerEventActivity(interaction, choiceId);
+  }
+  if (action !== "claim") {
     return interaction.reply({ content: "That event action is no longer available here.", ephemeral: true });
   }
   return claimServerEvent(interaction);
