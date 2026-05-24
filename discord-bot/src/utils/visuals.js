@@ -7,6 +7,14 @@ const { buildThemeBannerAttachment } = require("./cosmeticArt");
 const DIVIDER = "\u2501".repeat(20);
 const FOOTER_PREFIX = "AURIX";
 const HUD_VERSION = "Live";
+const EMBED_LIMITS = Object.freeze({
+  title: 256,
+  description: 4096,
+  fieldName: 256,
+  fieldValue: 1024,
+  footer: 2048,
+  fields: 25,
+});
 
 const EMBED_THEMES = [
   { match: /alert|invalid|failed|locked|cooling down|missing|blocked|not enough/i, emoji: "\u26A0\uFE0F", color: COLORS.warning, label: "ALERT", iconEnv: "AURIX_ICON_ALERT" },
@@ -103,15 +111,26 @@ function decorateText(text, mark) {
   return hasLeadingEmoji(text) ? text : `${mark} ${text}`;
 }
 
+function truncateText(value, limit) {
+  const text = String(value || "");
+  if (text.length <= limit) {
+    return text;
+  }
+
+  const suffix = "\n... trimmed";
+  return `${text.slice(0, Math.max(0, limit - suffix.length)).trimEnd()}${suffix}`;
+}
+
 function formatTitle(title, theme, options) {
   if (!title) {
     return `${getThemeIcon(theme, options)} AURIX`;
   }
 
   const cleanTitle = title.replace(/\s+/g, " ").trim();
-  return hasLeadingEmoji(cleanTitle)
+  const decoratedTitle = hasLeadingEmoji(cleanTitle)
     ? cleanTitle
     : `${getThemeIcon(theme, options)} ${cleanTitle}`;
+  return truncateText(decoratedTitle, EMBED_LIMITS.title);
 }
 
 function isPreformattedLine(line) {
@@ -145,10 +164,10 @@ function decorateDescription(description, theme, options) {
 }
 
 function decorateFields(fields) {
-  return fields.map((field, index) => ({
+  return fields.slice(0, EMBED_LIMITS.fields).map((field, index) => ({
     ...field,
-    name: decorateText(field.name, pickMark(index)),
-    value: field.value || "No data.",
+    name: truncateText(decorateText(field.name, pickMark(index)), EMBED_LIMITS.fieldName),
+    value: truncateText(field.value || "No data.", EMBED_LIMITS.fieldValue),
   }));
 }
 
@@ -159,8 +178,8 @@ function createGameEmbed({ title, description, color = COLORS.primary, fields = 
     .setColor(color === COLORS.primary ? theme.color : color)
     .setAuthor({ name: "Aurix" })
     .setTitle(formatTitle(title, theme, options))
-    .setDescription(decorateDescription(description, theme, options))
-    .setFooter({ text: footer ? `${FOOTER_PREFIX} \u2022 ${footer}` : `${FOOTER_PREFIX} \u2022 ${theme.label}` })
+    .setDescription(truncateText(decorateDescription(description, theme, options), EMBED_LIMITS.description))
+    .setFooter({ text: truncateText(footer ? `${FOOTER_PREFIX} \u2022 ${footer}` : `${FOOTER_PREFIX} \u2022 ${theme.label}`, EMBED_LIMITS.footer) })
     .setTimestamp();
 
   if (fields.length) {

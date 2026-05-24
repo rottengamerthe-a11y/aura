@@ -9102,6 +9102,17 @@ async function routeInteraction(interaction) {
     return null;
   }
 
+  if (!interaction.guildId) {
+    return interaction.reply({
+      ...buildEmbedPayload({
+        title: "Server Only",
+        description: "Aurix commands need to be used inside a Discord server.",
+        visual: "emblem-alert.svg",
+      }),
+      ephemeral: true,
+    });
+  }
+
   const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, tutorial: handleTutorial, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, summon: handleSummon, claim: handleClaim, hint: handleHint, incense: handleIncense, burn: handleBurn, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, vote: handleVote, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, trade: handleTrade, inventory: handleInventory, collection: handleCollection, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, season: handleSeason, serverquest: handleServerQuest, premium: handlePremium, clan: handleClan, authority: handleAuthority };
   const handler = handlers[interaction.commandName];
   if (!handler) {
