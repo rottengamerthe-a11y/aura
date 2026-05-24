@@ -952,17 +952,37 @@ async function prepareInteractionResponse(interaction) {
   const originalFollowUp = interaction.followUp.bind(interaction);
   const defer = canAutoDeferComponent ? interaction.deferUpdate.bind(interaction) : interaction.deferReply.bind(interaction);
   let deferOk = false;
-  const deferPromise = defer()
-    .then(() => {
-      deferOk = true;
-    })
-    .catch((error) => {
-      console.warn("Failed to defer interaction:", error?.code || error?.message || error);
-    });
-  await deferPromise;
+  let deferStarted = false;
+  let deferPromise = null;
+  let responseStarted = false;
+
+  const startDeferredResponse = () => {
+    if (responseStarted || deferStarted || interaction.deferred || interaction.replied) {
+      return;
+    }
+    deferStarted = true;
+    deferPromise = defer()
+      .then(() => {
+        deferOk = true;
+      })
+      .catch((error) => {
+        console.warn("Failed to defer interaction:", error?.code || error?.message || error);
+      });
+  };
+
+  const deferTimer = setTimeout(startDeferredResponse, 1800);
+  const clearDeferredResponseTimer = () => clearTimeout(deferTimer);
+  const waitForDeferredResponse = async () => {
+    if (deferPromise) {
+      await deferPromise;
+    }
+  };
 
   interaction.reply = async (options) => {
+    responseStarted = true;
+    clearDeferredResponseTimer();
     const normalizedOptions = enforceHudEmbedStyle(options);
+    await waitForDeferredResponse();
     if (deferOk || interaction.deferred) {
       if (isEphemeralResponse(normalizedOptions)) {
         const response = await originalFollowUp(normalizedOptions);
@@ -979,7 +999,10 @@ async function prepareInteractionResponse(interaction) {
 
   if (originalUpdate) {
     interaction.update = async (options) => {
+      responseStarted = true;
+      clearDeferredResponseTimer();
       const normalizedOptions = enforceHudEmbedStyle(options);
+      await waitForDeferredResponse();
       if (deferOk || interaction.deferred) {
         return originalEditReply(normalizedOptions);
       }
@@ -988,10 +1011,11 @@ async function prepareInteractionResponse(interaction) {
   }
 
   interaction.followUp = async (options) => {
+    clearDeferredResponseTimer();
     return originalFollowUp(enforceHudEmbedStyle(options));
   };
 
-  return () => {};
+  return clearDeferredResponseTimer;
 }
 
 function isEphemeralResponse(options) {
