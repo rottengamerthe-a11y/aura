@@ -31,6 +31,22 @@ const relicEntrySchema = new mongoose.Schema(
     bestPrint: { type: Number, default: null },
     shiny: { type: Number, default: 0 },
     lastPrintAt: { type: Date, default: null },
+    level: { type: Number, default: 1 },
+    essence: { type: Number, default: 0 },
+    corruption: { type: Number, default: 0 },
+    factionId: { type: String, default: null },
+    origin: { type: String, default: null },
+    traits: { type: [String], default: [] },
+    history: {
+      type: [{
+        type: { type: String, default: "claim" },
+        userId: { type: String, default: null },
+        guildId: { type: String, default: null },
+        detail: { type: String, default: null },
+        createdAt: { type: Date, default: Date.now },
+      }],
+      default: [],
+    },
   },
   { _id: false }
 );
@@ -315,6 +331,7 @@ const activeRelicSpawnSchema = new mongoose.Schema(
     rarity: { type: String, default: null },
     spawnedAt: { type: Date, default: null },
     spawnedBy: { type: String, default: null },
+    source: { type: String, default: "chat" },
     hintUses: { type: Number, default: 0 },
   },
   { _id: false }

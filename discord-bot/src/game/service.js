@@ -266,6 +266,24 @@ const RELIC_RARITIES = Object.freeze({
   legendary: { label: "Legendary", weight: 9, burnAura: 7200, burnXp: 820, value: 18 },
   mythic: { label: "Mythic", weight: 1, burnAura: 18000, burnXp: 2200, value: 42 },
 });
+const RELIC_EVOLVE_COST = Object.freeze({ aura: 4500, essence: 3 });
+const RELIC_PURIFY_COST = Object.freeze({ aura: 3200, essence: 2 });
+const RELIC_TRAITS = Object.freeze({
+  common: ["warm", "etched"],
+  uncommon: ["resonant", "moonlit", "restless"],
+  rare: ["oathbound", "storm-cut", "market-marked", "vault-tuned"],
+  epic: ["hungry", "mirrorborn", "fate-heavy", "choir-lit"],
+  legendary: ["sovereign", "world-bending", "history-drunk"],
+  mythic: ["impossible", "server-crowned", "zero-born"],
+});
+const RELIC_ORIGIN_LABELS = Object.freeze({
+  chat: "Chat Spawn",
+  summon: "Aura Summon",
+  incense: "Incense Drift",
+  event: "World Event",
+  bounty: "Bounty Echo",
+  faction: "Faction Surge",
+});
 const GENERATED_RELIC_COUNT = Number(process.env.AURIX_GENERATED_RELIC_COUNT) || 90000;
 const GENERATED_RELIC_RARITY_COUNTS = Object.freeze({
   common: 43200,
@@ -328,6 +346,11 @@ function buildGeneratedAurixRelics(count = GENERATED_RELIC_COUNT) {
 }
 
 const BASE_AURIX_RELICS = Object.freeze([
+  { id: "warden_trial_crown", name: "Warden Trial Crown", rarity: "legendary", description: "A faction relic that appears when the Vault Wardens dominate the server story.", eventExclusive: true, factionId: "wardens" },
+  { id: "bloom_accord_seed", name: "Bloom Accord Seed", rarity: "legendary", description: "A faction relic grown from impossible generosity and public bargains.", eventExclusive: true, factionId: "bloom" },
+  { id: "storm_choir_splinter", name: "Storm Choir Splinter", rarity: "legendary", description: "A faction relic that sings louder after duels, heists, and world tension.", eventExclusive: true, factionId: "storm" },
+  { id: "eclipse_bounty_coin", name: "Eclipse Bounty Coin", rarity: "epic", description: "A dangerous relic minted when public grudges reshape the market.", eventExclusive: true },
+  { id: "corrupted_zero_shard", name: "Corrupted Zero Shard", rarity: "mythic", description: "A mythic shard that stains the story log whenever it changes hands.", eventExclusive: true },
   { id: "static_seed", name: "Static Seed", rarity: "common", description: "A starter spark that hums when commands land." },
   { id: "copper_moon", name: "Copper Moon", rarity: "common", description: "A warm coin-shaped relic from old aura routes." },
   { id: "garden_lens", name: "Garden Lens", rarity: "common", description: "A tiny glass charm that makes crop rows look endless." },
@@ -392,6 +415,11 @@ const BASE_AURIX_RELICS = Object.freeze([
 const GENERATED_AURIX_RELICS = Object.freeze(buildGeneratedAurixRelics());
 const AURIX_RELICS = Object.freeze([...BASE_AURIX_RELICS, ...GENERATED_AURIX_RELICS]);
 const RELIC_VISUAL_MOTIFS = Object.freeze({
+  warden_trial_crown: { core: "crown", wings: 4, orbit: 7, spikes: 10 },
+  bloom_accord_seed: { core: "seed", wings: 6, orbit: 8, spikes: 4 },
+  storm_choir_splinter: { core: "shard", wings: 6, orbit: 9, spikes: 12 },
+  eclipse_bounty_coin: { core: "coin", wings: 2, orbit: 6, spikes: 8 },
+  corrupted_zero_shard: { core: "zero", wings: 8, orbit: 10, spikes: 14 },
   static_seed: { core: "seed", wings: 0, orbit: 3, spikes: 4 },
   copper_moon: { core: "crescent", wings: 0, orbit: 2, spikes: 0 },
   garden_lens: { core: "lens", wings: 2, orbit: 4, spikes: 0 },
@@ -405,7 +433,7 @@ const RELIC_VISUAL_MOTIFS = Object.freeze({
   codex_heart: { core: "heart", wings: 4, orbit: 6, spikes: 4 },
   aurix_zero: { core: "zero", wings: 6, orbit: 9, spikes: 12 },
 });
-const ENGAGEMENT_COMMANDS = new Set(["start", "tutorial", "profile", "stats", "balance", "work", "mine", "summon", "claim", "hint", "incense", "burn", "spin", "coinflip", "rob", "bounty", "daily", "vote", "vault", "shop", "buy", "gift", "trade", "inventory", "collection", "craft", "forge", "garden", "property", "expedition", "partyquest", "weather", "letter", "shrine", "appreciate", "campfire", "identity", "faction", "flex", "blackmarket", "gear", "rank", "prestige", "achievements", "quests", "crate", "skills", "pvp", "boss", "leaderboard", "season", "serverquest", "project", "community", "world", "yearbook", "challenge", "memoryquest", "social", "gallery", "ask", "premium-chest", "clan", "authority", "event"]);
+const ENGAGEMENT_COMMANDS = new Set(["start", "tutorial", "profile", "stats", "balance", "work", "mine", "summon", "claim", "hint", "incense", "burn", "relic", "spin", "coinflip", "rob", "bounty", "daily", "vote", "vault", "shop", "buy", "gift", "trade", "inventory", "collection", "craft", "forge", "garden", "property", "expedition", "partyquest", "weather", "letter", "shrine", "appreciate", "campfire", "identity", "faction", "flex", "blackmarket", "gear", "rank", "prestige", "achievements", "quests", "crate", "skills", "pvp", "boss", "leaderboard", "season", "serverquest", "project", "community", "world", "yearbook", "challenge", "memoryquest", "social", "gallery", "ask", "premium-chest", "clan", "authority", "event"]);
 const QUICK_ACTIONS = Object.freeze({
   achievements: { label: "Achievements", style: ButtonStyle.Secondary },
   balance: { label: "Balance", style: ButtonStyle.Secondary },
@@ -427,24 +455,24 @@ const PREMIUM_PLANS = Object.freeze({
     label: "Monthly",
     priceLabel: "$4.99/month",
     durationDays: 30,
-    dailyMultiplier: 1.25,
-    dailyRareCrates: 2,
+    dailyMultiplier: 1.08,
+    dailyRareCrates: 0,
     cooldownReduction: 0,
     gardenPlots: 3,
-    chestCooldownHours: 16,
-    welcome: Object.freeze({ aura: 6000, rareCrates: 3, epicCrates: 1, legendaryCrates: 0 }),
-    battle: Object.freeze({ maxHpBonus: 14, critChanceBonus: 0.05 }),
-    chest: Object.freeze({ aura: [1800, 3200], xp: [420, 760], rareCrates: 2, epicChance: 0.18, legendaryChance: 0.02, materials: 4 }),
+    chestCooldownHours: 24,
+    welcome: Object.freeze({ aura: 2000, rareCrates: 1, epicCrates: 0, legendaryCrates: 0 }),
+    battle: Object.freeze({ maxHpBonus: 0, critChanceBonus: 0 }),
+    chest: Object.freeze({ aura: [700, 1400], xp: [220, 420], rareCrates: 1, epicChance: 0.08, legendaryChance: 0, materials: 3 }),
     effects: Object.freeze({
-      spinRewardBoost: 0.35,
-      vaultInterestBoost: 0.06,
-      workAuraBoost: 0.35,
-      workXpBoost: 0.25,
-      mineYieldBoost: 0.35,
-      mineXpBoost: 0.22,
-      bossRewardBoost: 0.3,
-      pvpRewardBoost: 0.25,
-      crateAuraBoost: 0.25,
+      spinRewardBoost: 0.08,
+      vaultInterestBoost: 0.015,
+      workAuraBoost: 0.08,
+      workXpBoost: 0.08,
+      mineYieldBoost: 0.08,
+      mineXpBoost: 0.08,
+      bossRewardBoost: 0.06,
+      pvpRewardBoost: 0,
+      crateAuraBoost: 0.05,
     }),
   },
   yearly: {
@@ -452,24 +480,24 @@ const PREMIUM_PLANS = Object.freeze({
     label: "Yearly",
     priceLabel: "$19.99/year",
     durationDays: 365,
-    dailyMultiplier: 1.35,
-    dailyRareCrates: 3,
+    dailyMultiplier: 1.12,
+    dailyRareCrates: 1,
     cooldownReduction: 0,
     gardenPlots: 4,
-    chestCooldownHours: 12,
-    welcome: Object.freeze({ aura: 18000, rareCrates: 5, epicCrates: 2, legendaryCrates: 1 }),
-    battle: Object.freeze({ maxHpBonus: 24, critChanceBonus: 0.08 }),
-    chest: Object.freeze({ aura: [4200, 7200], xp: [900, 1500], rareCrates: 3, epicChance: 0.38, legendaryChance: 0.08, materials: 7 }),
+    chestCooldownHours: 22,
+    welcome: Object.freeze({ aura: 5000, rareCrates: 2, epicCrates: 1, legendaryCrates: 0 }),
+    battle: Object.freeze({ maxHpBonus: 0, critChanceBonus: 0 }),
+    chest: Object.freeze({ aura: [1200, 2600], xp: [360, 720], rareCrates: 1, epicChance: 0.14, legendaryChance: 0, materials: 4 }),
     effects: Object.freeze({
-      spinRewardBoost: 0.55,
-      vaultInterestBoost: 0.1,
-      workAuraBoost: 0.55,
-      workXpBoost: 0.45,
-      mineYieldBoost: 0.55,
-      mineXpBoost: 0.35,
-      bossRewardBoost: 0.5,
-      pvpRewardBoost: 0.4,
-      crateAuraBoost: 0.45,
+      spinRewardBoost: 0.12,
+      vaultInterestBoost: 0.025,
+      workAuraBoost: 0.12,
+      workXpBoost: 0.12,
+      mineYieldBoost: 0.12,
+      mineXpBoost: 0.12,
+      bossRewardBoost: 0.08,
+      pvpRewardBoost: 0,
+      crateAuraBoost: 0.08,
     }),
   },
   lifetime: {
@@ -477,24 +505,24 @@ const PREMIUM_PLANS = Object.freeze({
     label: "Lifetime",
     priceLabel: "$49.99 one-time",
     durationDays: null,
-    dailyMultiplier: 1.5,
-    dailyRareCrates: 5,
+    dailyMultiplier: 1.15,
+    dailyRareCrates: 1,
     cooldownReduction: 0,
     gardenPlots: 4,
-    chestCooldownHours: 8,
-    welcome: Object.freeze({ aura: 45000, rareCrates: 8, epicCrates: 4, legendaryCrates: 2 }),
-    battle: Object.freeze({ maxHpBonus: 36, critChanceBonus: 0.12 }),
-    chest: Object.freeze({ aura: [9000, 15000], xp: [1900, 3200], rareCrates: 5, epicChance: 0.65, legendaryChance: 0.18, materials: 12 }),
+    chestCooldownHours: 20,
+    welcome: Object.freeze({ aura: 10000, rareCrates: 3, epicCrates: 1, legendaryCrates: 0 }),
+    battle: Object.freeze({ maxHpBonus: 0, critChanceBonus: 0 }),
+    chest: Object.freeze({ aura: [2200, 4200], xp: [650, 1100], rareCrates: 2, epicChance: 0.2, legendaryChance: 0.01, materials: 5 }),
     effects: Object.freeze({
-      spinRewardBoost: 0.85,
-      vaultInterestBoost: 0.14,
-      workAuraBoost: 0.85,
-      workXpBoost: 0.7,
-      mineYieldBoost: 0.85,
-      mineXpBoost: 0.55,
-      bossRewardBoost: 0.75,
-      pvpRewardBoost: 0.6,
-      crateAuraBoost: 0.65,
+      spinRewardBoost: 0.15,
+      vaultInterestBoost: 0.03,
+      workAuraBoost: 0.15,
+      workXpBoost: 0.15,
+      mineYieldBoost: 0.15,
+      mineXpBoost: 0.15,
+      bossRewardBoost: 0.1,
+      pvpRewardBoost: 0,
+      crateAuraBoost: 0.1,
     }),
   },
 });
@@ -683,39 +711,43 @@ const PADDLE_PRICE_PLAN_ENV = Object.freeze({
 const MICROTRANSACTION_PRODUCTS = Object.freeze({
   starter_crate_bundle: Object.freeze({
     id: "starter_crate_bundle",
-    label: "Starter Crate Bundle",
+    label: "Starter Style Bundle",
     priceEnv: "PADDLE_STARTER_CRATE_BUNDLE_PRICE_ID",
     grants: Object.freeze({
-      crates: Object.freeze({ common: 8, rare: 2 }),
-      aura: 12500,
+      crates: Object.freeze({ common: 3, rare: 1 }),
+      aura: 1500,
+      cosmetics: Object.freeze([{ slot: "title", value: "First Spark" }]),
     }),
   }),
   rare_crate_stack: Object.freeze({
     id: "rare_crate_stack",
-    label: "Rare Crate Stack",
+    label: "Rivalry Style Stack",
     priceEnv: "PADDLE_RARE_CRATE_STACK_PRICE_ID",
     grants: Object.freeze({
-      crates: Object.freeze({ rare: 8, epic: 2 }),
-      aura: 30000,
+      crates: Object.freeze({ rare: 2, epic: 1 }),
+      aura: 3000,
+      cosmetics: Object.freeze([{ slot: "frame", value: "Rival Frame" }]),
     }),
   }),
   legendary_vault_drop: Object.freeze({
     id: "legendary_vault_drop",
-    label: "Legendary Vault Drop",
+    label: "Legendary Prestige Drop",
     priceEnv: "PADDLE_LEGENDARY_VAULT_DROP_PRICE_ID",
     grants: Object.freeze({
-      crates: Object.freeze({ rare: 6, epic: 3, legendary: 1 }),
-      aura: 90000,
-      inventory: Object.freeze({ adrenaline_tonic: 3, health_vial: 4 }),
+      crates: Object.freeze({ rare: 3, epic: 1 }),
+      aura: 7500,
+      inventory: Object.freeze({ adrenaline_tonic: 1, health_vial: 2 }),
+      cosmetics: Object.freeze([{ slot: "title", value: "Vault Legend" }, { slot: "frame", value: "Legend Frame" }]),
     }),
   }),
   boost_supply_pack: Object.freeze({
     id: "boost_supply_pack",
-    label: "Boost Supply Pack",
+    label: "Utility Supply Pack",
     priceEnv: "PADDLE_BOOST_SUPPLY_PACK_PRICE_ID",
     grants: Object.freeze({
-      inventory: Object.freeze({ lucky_charm: 1, vault_key: 1, coinflip_gloves: 1, adrenaline_tonic: 2 }),
-      aura: 20000,
+      inventory: Object.freeze({ health_vial: 3, smoke_bomb: 2, adrenaline_tonic: 1 }),
+      aura: 2500,
+      cosmetics: Object.freeze([{ slot: "title", value: "Supply Runner" }]),
     }),
   }),
 });
@@ -2766,14 +2798,14 @@ function formatPremiumPlanLabel(planId) {
 
 function buildPremiumFeatureSummary() {
   return [
-    "Premium welcome bundle on purchase: aura, crates, and profile cosmetics",
-    "Premium Chest command: recurring aura, XP, crates, and crafting materials",
-    "Extra garden plots for faster material farming",
-    "Battle edge in PvP and bosses: extra HP and passive crit chance",
-    "Premium-only shop items: Premium Supply Drop, Executive Badge, Storm Pass",
+    "Premium welcome bundle on purchase: modest aura, crates, and profile cosmetics",
+    "Premium Chest command: recurring prestige cache with capped progression loot",
+    "Extra garden plots for relaxed material convenience",
+    "PvP integrity: no premium HP, crit, or PvP reward advantage",
+    "Premium-only shop items focus on prestige and light convenience",
     "Gentle garden reminders remain opt-in and low-pressure",
     "Profile membership status shown in /profile and /premium",
-    "Premium-only profile cosmetics: Aurix VIP Title, Gold Profile Frame, Storm Nameplate",
+    "Premium profile cosmetics: Aurix VIP Title, Gold Profile Frame, Storm Nameplate, and paid style drops",
   ].join("\n");
 }
 
@@ -2786,17 +2818,17 @@ function formatPremiumPlanSummary(plan) {
   const effects = plan.effects;
   return [
     `${plan.priceLabel}`,
-    `+${formatPercent(effects.spinRewardBoost)} spin rewards`,
+    `Prestige cosmetics and premium profile status`,
     `+${formatPercent(effects.workAuraBoost)} work aura, +${formatPercent(effects.workXpBoost)} work XP`,
     `+${formatPercent(effects.mineYieldBoost)} mining yield, +${formatPercent(effects.mineXpBoost)} mining XP`,
     `+${formatPercent(plan.dailyMultiplier - 1)} relaxed daily check-in aura and XP`,
-    `+${plan.dailyRareCrates} rare ${plan.dailyRareCrates === 1 ? "crate" : "crates"} from /daily`,
+    plan.dailyRareCrates > 0 ? `+${plan.dailyRareCrates} rare ${plan.dailyRareCrates === 1 ? "crate" : "crates"} from /daily` : "No daily crate flood",
     `${plan.gardenPlots} garden plots total`,
     `/premium-chest every ${plan.chestCooldownHours}h`,
-    `Battle edge: +${plan.battle.maxHpBonus} HP, +${formatPercent(plan.battle.critChanceBonus)} crit`,
-    "No premium cooldown pressure",
+    "No premium combat stats in PvP",
+    "No premium cooldown pressure or cap expansion",
     `+${formatPercent(effects.vaultInterestBoost)}/hr vault interest`,
-    `+${formatPercent(effects.bossRewardBoost)} boss rewards, +${formatPercent(effects.pvpRewardBoost)} PvP rewards`,
+    `+${formatPercent(effects.bossRewardBoost)} boss rewards, +0% PvP rewards`,
     `+${formatPercent(effects.crateAuraBoost)} crate aura rewards`,
   ].join("\n");
 }
@@ -2845,6 +2877,24 @@ function getProfileCosmeticStyle(user, targetUser) {
       color: 0x4cc9f0,
       description: "Storm nameplate active",
     },
+    "First Spark": {
+      label: "\u2726 FIRST SPARK",
+      badge: "\u2726 SPARK",
+      color: 0x5ce1a1,
+      description: "Starter supporter nameplate active",
+    },
+    "Vault Legend": {
+      label: "\u265B VAULT LEGEND",
+      badge: "\u265B LEGEND",
+      color: 0xffc857,
+      description: "Legendary prestige nameplate active",
+    },
+    "Supply Runner": {
+      label: "\u25C6 SUPPLY RUNNER",
+      badge: "\u25C6 RUNNER",
+      color: 0x69c7ff,
+      description: "Utility supporter nameplate active",
+    },
   };
   const frameStyles = {
     "Gold Frame": {
@@ -2854,6 +2904,22 @@ function getProfileCosmeticStyle(user, targetUser) {
       color: 0xffc857,
       divider: "\u2550".repeat(18),
       description: "Gold profile frame active",
+    },
+    "Rival Frame": {
+      label: "RIVAL FRAME",
+      left: "[[ ",
+      right: " ]]",
+      color: 0xff6b88,
+      divider: "=".repeat(18),
+      description: "Rivalry profile frame active",
+    },
+    "Legend Frame": {
+      label: "LEGEND FRAME",
+      left: "<< ",
+      right: " >>",
+      color: 0xffd166,
+      divider: "#".repeat(18),
+      description: "Legendary supporter frame active",
     },
   };
   const titleStyle = titleStyles[title] || null;
@@ -3003,9 +3069,14 @@ function getRelicEntry(user, relicId) {
 function ensureRelicEntry(user, relicId) {
   let entry = getRelicEntry(user, relicId);
   if (!entry) {
-    user.relics.push({ id: relicId, quantity: 0, firstPrint: null, bestPrint: null, shiny: 0, lastPrintAt: null });
+    user.relics.push({ id: relicId, quantity: 0, firstPrint: null, bestPrint: null, shiny: 0, lastPrintAt: null, level: 1, essence: 0, corruption: 0, factionId: null, origin: null, traits: [], history: [] });
     entry = user.relics[user.relics.length - 1];
   }
+  entry.level = Math.max(1, Number(entry.level) || 1);
+  entry.essence = Math.max(0, Number(entry.essence) || 0);
+  entry.corruption = clamp(Number(entry.corruption) || 0, 0, 100);
+  entry.traits = Array.isArray(entry.traits) ? entry.traits.slice(0, 6) : [];
+  entry.history = Array.isArray(entry.history) ? entry.history.slice(0, 8) : [];
   return entry;
 }
 
@@ -3054,6 +3125,31 @@ function rollRelicForSpawn() {
   return relics[randInt(0, relics.length - 1)] || AURIX_RELICS[0];
 }
 
+function rollRelicForWorld(settings, source = "chat") {
+  const world = settings ? normalizeWorldState(settings) : null;
+  const dominant = world ? getDominantWorldFaction(world) : null;
+  const eventChance = source === "summon" ? 0.025 : source === "incense" ? 0.012 : 0.008;
+  if (Math.random() < eventChance) {
+    const eventRelics = AURIX_RELICS.filter((relic) => relic.eventExclusive && (!relic.factionId || relic.factionId === dominant?.id));
+    if (eventRelics.length) {
+      return eventRelics[randInt(0, eventRelics.length - 1)];
+    }
+  }
+  return rollRelicForSpawn();
+}
+
+function getRelicTrait(relic, printNumber, slot = 0) {
+  const rarityTraits = RELIC_TRAITS[relic?.rarity] || RELIC_TRAITS.common;
+  const seed = Math.abs(hashString(`${relic?.id}:${printNumber}:${slot}`));
+  return rarityTraits[seed % rarityTraits.length] || "etched";
+}
+
+function addRelicHistory(entry, type, userId, guildId, detail) {
+  entry.history ||= [];
+  entry.history.unshift({ type, userId, guildId, detail, createdAt: new Date() });
+  entry.history = entry.history.slice(0, 8);
+}
+
 async function nextRelicPrint(relicId) {
   const counter = await CollectiblePrintCounter.findOneAndUpdate(
     { itemId: relicId },
@@ -3063,16 +3159,36 @@ async function nextRelicPrint(relicId) {
   return counter.count;
 }
 
-function addRelicToUser(user, relic, printNumber, shiny = false) {
+function addRelicToUser(user, relic, printNumber, shiny = false, context = {}) {
   const entry = ensureRelicEntry(user, relic.id);
   const isNew = entry.quantity <= 0;
   entry.quantity += 1;
   entry.firstPrint = entry.firstPrint || printNumber;
   entry.bestPrint = entry.bestPrint ? Math.min(entry.bestPrint, printNumber) : printNumber;
   entry.lastPrintAt = new Date();
+  entry.origin ||= context.source || "chat";
+  if (context.factionId && !entry.factionId) {
+    entry.factionId = context.factionId;
+  }
+  const rarity = getRelicRarity(relic);
+  entry.essence += Math.max(1, rarity.value || 1);
+  const trait = getRelicTrait(relic, printNumber, entry.traits.length);
+  if (!entry.traits.includes(trait) && entry.traits.length < 6) {
+    entry.traits.push(trait);
+  }
+  if (relic.eventExclusive && !entry.traits.includes("event-forged")) {
+    entry.traits.unshift("event-forged");
+  }
+  if (["epic", "legendary", "mythic"].includes(relic.rarity) && Math.random() < (relic.rarity === "mythic" ? 0.35 : relic.rarity === "legendary" ? 0.22 : 0.1)) {
+    entry.corruption = clamp(entry.corruption + randInt(6, 18), 0, 100);
+    if (!entry.traits.includes("corrupted")) {
+      entry.traits.push("corrupted");
+    }
+  }
   if (shiny) {
     entry.shiny = (entry.shiny || 0) + 1;
   }
+  addRelicHistory(entry, "claim", context.userId || user.userId, context.guildId || user.guildId, `${RELIC_ORIGIN_LABELS[context.source] || "Relic Drop"} print #${printNumber}`);
   user.markModified("relics");
   return { entry, isNew };
 }
@@ -3081,7 +3197,8 @@ function formatRelicLine(entry) {
   const relic = getRelic(entry.id);
   const rarity = getRelicRarity(relic);
   const shinyText = entry.shiny ? ` | shiny x${entry.shiny}` : "";
-  return `**${getRelicLabel(entry.id)}** [${rarity.label}] x${formatNumber(entry.quantity)} | \`${entry.id}\` | best print #${formatNumber(entry.bestPrint || entry.firstPrint || 0)}${shinyText}`;
+  const mythicText = entry.level > 1 || entry.corruption ? ` | lvl ${formatNumber(entry.level || 1)} | corruption ${formatNumber(entry.corruption || 0)}` : "";
+  return `**${getRelicLabel(entry.id)}** [${rarity.label}] x${formatNumber(entry.quantity)} | \`${entry.id}\` | best print #${formatNumber(entry.bestPrint || entry.firstPrint || 0)}${shinyText}${mythicText}`;
 }
 
 function normalizeGuess(value) {
@@ -3892,17 +4009,21 @@ function buildRelicSpawnPayload(relic, source = "chat") {
     chat: "Chat activity",
     incense: "Incense",
     summon: "Aura summon",
+    event: "World event",
+    faction: "Faction surge",
   };
+  const eventLine = relic.eventExclusive ? "Event-exclusive signal detected. If claimed, this relic will scar the server story." : null;
   const embed = new EmbedBuilder()
     .setColor(COLORS.primary)
     .setAuthor({ name: "Aurix" })
     .setTitle("Relic Spawn")
     .setDescription([
       "A shadowed relic slipped into the channel.",
+      eventLine,
       "First correct `/claim guess:<relic name>` wins it.",
       "Generated relics can be claimed with the first two main words.",
       "Use `/hint` if the server gets stuck.",
-    ].join("\n"))
+    ].filter(Boolean).join("\n"))
     .addFields(
       { name: "Rarity Signal", value: rarity.label, inline: true },
       { name: "Source", value: sourceLabels[source] || sourceLabels.chat, inline: true },
@@ -4399,14 +4520,7 @@ function formatEffectValue(value) {
 }
 
 function getEffectCapsForUser(user = null) {
-  const caps = { ...EFFECT_CAPS };
-  const premiumEffects = getPremiumEffects(user);
-  Object.entries(premiumEffects).forEach(([effectId, value]) => {
-    if (typeof caps[effectId] === "number") {
-      caps[effectId] += value;
-    }
-  });
-  return caps;
+  return { ...EFFECT_CAPS };
 }
 
 function formatEffectCapValue(effectId, caps = EFFECT_CAPS) {
@@ -4649,6 +4763,16 @@ function grantMicrotransactionProduct(user, product, quantity = 1) {
       user.ownedPerks.push(itemId);
     }
     summary.push(`${totalQuantity} ${getInventoryLabel(itemId)}`);
+  });
+
+  (grants.cosmetics || []).forEach((cosmetic) => {
+    if (!cosmetic?.slot || !cosmetic?.value) {
+      return;
+    }
+    const granted = grantCosmetic(user, { grantsCosmetic: cosmetic });
+    if (granted) {
+      summary.push(`${cosmetic.value} ${cosmetic.slot}`);
+    }
   });
 
   return summary;
@@ -5083,7 +5207,7 @@ async function spawnRelicInChannel(channel, source = "chat") {
   }
   const settings = await getOrCreateGuildSettings(channel.guildId);
   const spawnState = normalizeRelicSpawnState(settings);
-  const relic = rollRelicForSpawn();
+  const relic = rollRelicForWorld(settings, source);
   const rarity = getRelicRarity(relic);
   spawnState.current = {
     relicId: relic.id,
@@ -5091,6 +5215,7 @@ async function spawnRelicInChannel(channel, source = "chat") {
     rarity: relic.rarity,
     spawnedAt: new Date(),
     spawnedBy: source,
+    source,
     hintUses: 0,
   };
   settings.markModified("relicSpawn");
@@ -5646,6 +5771,7 @@ const HELP_SECTIONS = [
       { name: "/summon", description: "Spend aura to print a collectible Aurix relic." },
       { name: "/claim guess:<name>", description: "Race to claim the active chat-spawned relic." },
       { name: "/hint", description: "Reveal an obfuscated hint for the active relic spawn." },
+      { name: "/relic", description: "Inspect, evolve, purify, or faction-bind owned relics." },
       { name: "/incense", description: "Buy or check channel relic incense for quiet servers." },
       { name: "/burn relic:<id>", description: "Destroy duplicate relics for aura and XP." },
       { name: "/craft recipe:<id>", description: "Turn mined materials into useful rewards." },
@@ -6315,6 +6441,126 @@ async function handleBurn(interaction) {
   }), interaction.user.id, ["collection", "summon", "shop", "rank"]));
 }
 
+function buildRelicInspectPayload(user, entry) {
+  const relic = getRelic(entry.id);
+  const rarity = getRelicRarity(relic);
+  const history = (entry.history || []).length
+    ? entry.history.slice(0, 5).map((item) => `**${item.type}** - ${item.detail || "No detail"}${item.userId ? ` by <@${item.userId}>` : ""}`).join("\n")
+    : "No recorded history yet.";
+  const faction = entry.factionId ? getWorldFaction(entry.factionId).name : relic?.factionId ? getWorldFaction(relic.factionId).name : "Unbound";
+  return buildEmbedPayload({
+    title: `${relic?.name || entry.id} Relic Record`,
+    description: relic?.description || "A procedurally archived Aurix relic.",
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Rarity", value: rarity.label, inline: true },
+      { name: "Copies", value: `${formatNumber(entry.quantity || 0)}`, inline: true },
+      { name: "Best Print", value: `#${formatNumber(entry.bestPrint || entry.firstPrint || 0)}`, inline: true },
+      { name: "Level", value: `${formatNumber(entry.level || 1)}`, inline: true },
+      { name: "Essence", value: `${formatNumber(entry.essence || 0)}`, inline: true },
+      { name: "Corruption", value: `${formatNumber(entry.corruption || 0)} / 100`, inline: true },
+      { name: "Origin", value: RELIC_ORIGIN_LABELS[entry.origin] || entry.origin || "Unknown", inline: true },
+      { name: "Faction", value: faction, inline: true },
+      { name: "Traits", value: entry.traits?.length ? entry.traits.join(", ") : "No traits awakened yet." },
+      { name: "History", value: history },
+      { name: "Growth", value: `Evolve: ${formatNumber(RELIC_EVOLVE_COST.aura)} aura + ${RELIC_EVOLVE_COST.essence} essence.\nPurify: ${formatNumber(RELIC_PURIFY_COST.aura)} aura + ${RELIC_PURIFY_COST.essence} essence.` },
+    ],
+    footer: "Relics are prestige artifacts. Power comes from story, identity, and collection score rather than PvP stat inflation.",
+  });
+}
+
+async function handleRelic(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const relicInput = interaction.options.getString("relic", true).trim();
+  const matchedRelic = findRelicByInput(relicInput);
+  const relicId = matchedRelic?.id || relicInput;
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const entry = ensureRelicEntry(user, relicId);
+  const relic = matchedRelic || getRelic(relicId);
+  if (!relic || entry.quantity <= 0) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Relic Not Owned", description: "You need to own that relic before inspecting or shaping it.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  if (subcommand === "inspect") {
+    await user.save();
+    return interaction.reply(buildRelicInspectPayload(user, entry));
+  }
+
+  if (subcommand === "evolve") {
+    if ((entry.essence || 0) < RELIC_EVOLVE_COST.essence || user.aura < RELIC_EVOLVE_COST.aura) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Evolution Blocked", description: `Needs ${formatNumber(RELIC_EVOLVE_COST.aura)} aura and ${RELIC_EVOLVE_COST.essence} relic essence. Duplicate claims feed essence.`, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    user.aura -= RELIC_EVOLVE_COST.aura;
+    entry.essence -= RELIC_EVOLVE_COST.essence;
+    entry.level = Math.min(10, (entry.level || 1) + 1);
+    const trait = getRelicTrait(relic, entry.bestPrint || entry.firstPrint || entry.level, entry.level + entry.traits.length);
+    if (!entry.traits.includes(trait)) {
+      entry.traits.push(trait);
+      entry.traits = entry.traits.slice(0, 6);
+    }
+    if (entry.corruption > 0 && Math.random() < 0.35) {
+      entry.corruption = clamp(entry.corruption + randInt(2, 8), 0, 100);
+    }
+    addRelicHistory(entry, "evolve", interaction.user.id, interaction.guildId, `Awakened to level ${entry.level}`);
+    user.markModified("relics");
+    await user.save();
+    eventBus.publish("relic.evolved", { guildId: interaction.guildId, userId: interaction.user.id, metadata: { relicId, level: entry.level } });
+    return interaction.reply(buildEmbedPayload({
+      title: "Relic Evolved",
+      description: `**${relic.name}** awakened to level **${formatNumber(entry.level)}**.`,
+      visual: "emblem-success.svg",
+      fields: [
+        { name: "Trait", value: trait, inline: true },
+        { name: "Corruption", value: `${formatNumber(entry.corruption || 0)} / 100`, inline: true },
+      ],
+    }));
+  }
+
+  if (subcommand === "purify") {
+    if ((entry.corruption || 0) <= 0) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Already Pure", description: "This relic has no corruption to purify.", visual: "emblem-help.svg" }), ephemeral: true });
+    }
+    if ((entry.essence || 0) < RELIC_PURIFY_COST.essence || user.aura < RELIC_PURIFY_COST.aura) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Purification Blocked", description: `Needs ${formatNumber(RELIC_PURIFY_COST.aura)} aura and ${RELIC_PURIFY_COST.essence} relic essence.`, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    user.aura -= RELIC_PURIFY_COST.aura;
+    entry.essence -= RELIC_PURIFY_COST.essence;
+    const removed = Math.min(entry.corruption, randInt(12, 28));
+    entry.corruption = Math.max(0, entry.corruption - removed);
+    addRelicHistory(entry, "purify", interaction.user.id, interaction.guildId, `Removed ${removed} corruption`);
+    user.markModified("relics");
+    await user.save();
+    eventBus.publish("relic.purified", { guildId: interaction.guildId, userId: interaction.user.id, metadata: { relicId, removed } });
+    return interaction.reply(buildEmbedPayload({
+      title: "Relic Purified",
+      description: `**${relic.name}** shed **${formatNumber(removed)} corruption**.`,
+      visual: "emblem-success.svg",
+      fields: [
+        { name: "Remaining Corruption", value: `${formatNumber(entry.corruption)} / 100`, inline: true },
+      ],
+    }));
+  }
+
+  const factionId = interaction.options.getString("faction", true);
+  const faction = getWorldFaction(factionId);
+  entry.factionId = faction.id;
+  if (!entry.traits.includes(`${faction.id}-bound`)) {
+    entry.traits.unshift(`${faction.id}-bound`);
+    entry.traits = entry.traits.slice(0, 6);
+  }
+  addRelicHistory(entry, "bind", interaction.user.id, interaction.guildId, `Bound to ${faction.name}`);
+  user.markModified("relics");
+  await user.save();
+  return interaction.reply(buildEmbedPayload({
+    title: "Relic Bound",
+    description: `**${relic.name}** now carries the mark of **${faction.name}**.`,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Faction Principle", value: faction.principle },
+    ],
+  }));
+}
+
 async function handleClaim(interaction) {
   const guess = interaction.options.getString("guess", true);
   const settings = await getOrCreateGuildSettings(interaction.guildId);
@@ -6362,27 +6608,51 @@ async function handleClaim(interaction) {
   const printNumber = await nextRelicPrint(current.relicId);
   const relic = getRelic(current.relicId);
   const rarity = getRelicRarity(relic);
-  const { entry, isNew } = addRelicToUser(user, relic, printNumber, shiny);
+  const world = normalizeWorldState(settings);
+  const dominantFaction = getDominantWorldFaction(world);
+  const { entry, isNew } = addRelicToUser(user, relic, printNumber, shiny, {
+    source: current.source || current.spawnedBy || "chat",
+    factionId: relic.factionId || dominantFaction?.id || null,
+    userId: interaction.user.id,
+    guildId: interaction.guildId,
+  });
   user.relicHuntStreaks = new Map([[current.relicId, previousStreak + 1]]);
   user.stats.summons = (user.stats.summons || 0) + 1;
   user.xp += 120 + rarity.value * 35 + (shiny ? 500 : 0);
   user.markModified("relicHuntStreaks");
+  if (["epic", "legendary", "mythic"].includes(relic.rarity) || relic.eventExclusive) {
+    const influenceTarget = world.factions.find((faction) => faction.id === (relic.factionId || dominantFaction?.id));
+    if (influenceTarget) {
+      influenceTarget.influence = clamp((Number(influenceTarget.influence) || 0) + (relic.rarity === "mythic" ? 5 : relic.rarity === "legendary" ? 3 : 1), 0, 100);
+    }
+    world.tension = clamp((Number(world.tension) || 0) + (entry.corruption ? 4 : 2), 0, 100);
+    world.storyLog.unshift({
+      title: `${rarity.label} Relic Claimed`,
+      text: `<@${interaction.user.id}> claimed **${relic.name}** print #${printNumber}${entry.corruption ? ` with ${formatNumber(entry.corruption)} corruption` : ""}.`,
+      actorId: interaction.user.id,
+      createdAt: new Date(),
+    });
+    world.storyLog = world.storyLog.slice(0, WORLD_STORY_LIMIT);
+    settings.markModified("worldState");
+  }
   await syncRank(user);
 
-  await user.save();
+  await Promise.all([user.save(), settings.save()]);
+  eventBus.publish("relic.claimed", { guildId: interaction.guildId, userId: interaction.user.id, metadata: { relicId: relic.id, rarity: relic.rarity, printNumber, source: current.source || current.spawnedBy || "chat", eventExclusive: Boolean(relic.eventExclusive) } });
 
   return interaction.reply(addQuickActions(buildEmbedPayload({
-    title: "Relic Claimed",
-    description: `${interaction.user.username} correctly claimed **${getRelicLabel(current.relicId)}**.${shiny ? "\nA special variant sparked on capture." : ""}`,
+    title: relic.eventExclusive || ["legendary", "mythic"].includes(relic.rarity) ? "Relic Claimed - Server Myth" : "Relic Claimed",
+    description: `${interaction.user.username} correctly claimed **${getRelicLabel(current.relicId)}**.${shiny ? "\nA special variant sparked on capture." : ""}${entry.corruption ? `\nThe relic carries **${formatNumber(entry.corruption)} corruption**.` : ""}`,
     visual: "emblem-success.svg",
     fields: [
       { name: "Rarity", value: `${rarity.label}${shiny ? " Special" : ""}`, inline: true },
       { name: "Print", value: `#${formatNumber(printNumber)}`, inline: true },
       { name: "Streak", value: `${formatNumber(previousStreak + 1)} on this relic`, inline: true },
       { name: "Owned", value: `x${formatNumber(entry.quantity)}${isNew ? " | new" : ""}`, inline: true },
+      { name: "Traits", value: entry.traits.length ? entry.traits.join(", ") : "None", inline: false },
     ],
-    footer: "Chat spawns and /summon both feed the same relic collection.",
-  }), interaction.user.id, ["collection", "burn", "rank", "inventory"]));
+    footer: "Relics now keep history, evolve, corrupt, and push world stories.",
+  }), interaction.user.id, ["collection", "relic", "burn", "rank"]));
 }
 
 async function handleHint(interaction) {
@@ -8407,7 +8677,7 @@ async function handlePremiumChest(interaction) {
 
   return interaction.reply(buildEmbedPayload({
     title: "Premium Chest Opened",
-    description: "Your membership chest cracked open with high-value progression loot.",
+    description: "Your membership cache opened with prestige-forward, economy-capped loot.",
     visual: "emblem-success.svg",
     fields: [
       { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
@@ -11523,6 +11793,11 @@ function buildCommands() {
     new SlashCommandBuilder().setName("burn").setDescription("Burn duplicate relics into aura and XP.")
       .addStringOption((option) => option.setName("relic").setDescription("Relic id or exact relic name").setRequired(true))
       .addIntegerOption((option) => option.setName("quantity").setDescription("Duplicate copies to burn").setMinValue(1)),
+    new SlashCommandBuilder().setName("relic").setDescription("Inspect and shape owned relics.")
+      .addSubcommand((sub) => sub.setName("inspect").setDescription("Inspect relic history, traits, and corruption.").addStringOption((option) => option.setName("relic").setDescription("Relic id or name").setRequired(true)))
+      .addSubcommand((sub) => sub.setName("evolve").setDescription("Spend aura and relic essence to evolve a relic.").addStringOption((option) => option.setName("relic").setDescription("Relic id or name").setRequired(true)))
+      .addSubcommand((sub) => sub.setName("purify").setDescription("Spend aura and relic essence to reduce corruption.").addStringOption((option) => option.setName("relic").setDescription("Relic id or name").setRequired(true)))
+      .addSubcommand((sub) => sub.setName("bind").setDescription("Bind a relic to a faction identity.").addStringOption((option) => option.setName("relic").setDescription("Relic id or name").setRequired(true)).addStringOption((option) => option.setName("faction").setDescription("Faction").setRequired(true).addChoices(...getFactionChoiceEntries()))),
     new SlashCommandBuilder().setName("spin").setDescription("Use a small optional arcade spin."),
     new SlashCommandBuilder().setName("coinflip").setDescription("Play a capped optional arcade flip.").addIntegerOption((option) => option.setName("amount").setDescription("Aura to risk").setRequired(true).setMinValue(1)).addStringOption((option) => option.setName("choice").setDescription("Choose heads or tails").setRequired(true).addChoices({ name: "heads", value: "heads" }, { name: "tails", value: "tails" })),
     new SlashCommandBuilder().setName("rob").setDescription("Run a capped strategic heist against another player.")
@@ -11702,7 +11977,7 @@ async function routeInteraction(interaction) {
     });
   }
 
-  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, tutorial: handleTutorial, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, summon: handleSummon, claim: handleClaim, hint: handleHint, incense: handleIncense, burn: handleBurn, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, bounty: handleBounty, daily: handleDaily, vote: handleVote, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, trade: handleTrade, inventory: handleInventory, collection: handleCollection, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, partyquest: handlePartyQuest, weather: handleWeather, letter: handleLetter, shrine: handleShrine, appreciate: handleAppreciate, campfire: handleCampfire, identity: handleIdentity, faction: handleFaction, flex: handleFlex, blackmarket: handleBlackMarket, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, season: handleSeason, serverquest: handleServerQuest, project: handleProject, community: handleCommunity, yearbook: handleYearbook, challenge: handleChallenge, memoryquest: handleMemoryQuest, social: handleSocial, gallery: handleGallery, world: handleWorld, ask: handleAsk, premium: handlePremium, clan: handleClan, authority: handleAuthority };
+  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, tutorial: handleTutorial, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, summon: handleSummon, claim: handleClaim, hint: handleHint, incense: handleIncense, burn: handleBurn, relic: handleRelic, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, bounty: handleBounty, daily: handleDaily, vote: handleVote, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, trade: handleTrade, inventory: handleInventory, collection: handleCollection, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, partyquest: handlePartyQuest, weather: handleWeather, letter: handleLetter, shrine: handleShrine, appreciate: handleAppreciate, campfire: handleCampfire, identity: handleIdentity, faction: handleFaction, flex: handleFlex, blackmarket: handleBlackMarket, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, season: handleSeason, serverquest: handleServerQuest, project: handleProject, community: handleCommunity, yearbook: handleYearbook, challenge: handleChallenge, memoryquest: handleMemoryQuest, social: handleSocial, gallery: handleGallery, world: handleWorld, ask: handleAsk, premium: handlePremium, clan: handleClan, authority: handleAuthority };
   const handler = handlers[interaction.commandName];
   if (!handler) {
     return interaction.reply({ content: "Unknown command.", ephemeral: true });

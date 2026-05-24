@@ -4,6 +4,7 @@ const INTENT_PATTERNS = [
   { intent: "world", pattern: /\b(world|story|faction|season|encounter)\b/i, command: "/world status" },
   { intent: "recap", pattern: /\b(recap|share|summary|what happened|story so far)\b/i, command: "/world recap" },
   { intent: "artifact", pattern: /\b(artifact|relic|server item|server symbol)\b/i, command: "/world artifact" },
+  { intent: "relic", pattern: /\b(relic inspect|relic evolve|relic history|corrupted relic|purify relic|owned relic)\b/i, command: "/relic inspect" },
   { intent: "yearbook", pattern: /\b(yearbook|monthly|spotlight|highlights|wrapped)\b/i, command: "/yearbook" },
   { intent: "challenge", pattern: /\b(challenge|contest|prompt|creator|fanart|meme|clip)\b/i, command: "/challenge status" },
   { intent: "memoryquest", pattern: /\b(memory|remember|lore quest|chronicle)\b/i, command: "/memoryquest status" },

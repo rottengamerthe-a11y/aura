@@ -135,9 +135,9 @@ const SHOP_ITEMS = [
     name: "Premium Supply Drop",
     price: 26000,
     type: "crate",
-    grantsCrates: { rare: 3, epic: 1 },
+    grantsCrates: { rare: 1 },
     premiumOnly: true,
-    description: "Premium-only crate bundle with 3 rare crates and 1 epic crate.",
+    description: "Premium-only prestige crate with a small progression bump.",
   },
   {
     id: "executive_badge",
@@ -145,8 +145,8 @@ const SHOP_ITEMS = [
     price: 18500,
     type: "perk",
     premiumOnly: true,
-    description: "+10% work aura and +6% vault interest while premium is active.",
-    effects: { workAuraBoost: 0.1, vaultInterestBoost: 0.06 },
+    description: "+4% work aura and +1.5% vault interest while premium is active.",
+    effects: { workAuraBoost: 0.04, vaultInterestBoost: 0.015 },
   },
   {
     id: "storm_pass",
@@ -154,8 +154,8 @@ const SHOP_ITEMS = [
     price: 27000,
     type: "perk",
     premiumOnly: true,
-    description: "+10% boss rewards and +8% PvP rewards while premium is active.",
-    effects: { bossRewardBoost: 0.1, pvpRewardBoost: 0.08 },
+    description: "+5% boss rewards while premium is active. PvP integrity is unaffected.",
+    effects: { bossRewardBoost: 0.05 },
   },
   {
     id: "aurix_vip_title",

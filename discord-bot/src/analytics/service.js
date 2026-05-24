@@ -132,6 +132,15 @@ function attachAnalyticsSubscribers(eventBus) {
   eventBus.subscribe("bounty.placed", (event) => {
     recordAnalyticsEvent("bounty", event.payload);
   });
+  eventBus.subscribe("relic.claimed", (event) => {
+    recordAnalyticsEvent("relic_claimed", event.payload);
+  });
+  eventBus.subscribe("relic.evolved", (event) => {
+    recordAnalyticsEvent("relic_evolved", event.payload);
+  });
+  eventBus.subscribe("relic.purified", (event) => {
+    recordAnalyticsEvent("relic_purified", event.payload);
+  });
 }
 
 module.exports = { attachAnalyticsSubscribers, getGuildAnalyticsSummary, recordAnalyticsEvent };
