@@ -8605,7 +8605,6 @@ async function handleHelp(interaction) {
         visual: section.visual,
         footer: "Use /start to create a save and see the quick-start path.",
       }),
-      ephemeral: true,
     });
   }
 
@@ -8620,7 +8619,6 @@ async function handleHelp(interaction) {
       ],
       footer: "Use /help category:<name> to open a specific command group.",
     }),
-    ephemeral: true,
   });
 }
 
