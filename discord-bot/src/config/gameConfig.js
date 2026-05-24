@@ -517,16 +517,14 @@ const BOSSES = [
 ];
 
 const QUEST_TEMPLATES = [
-  { id: "spin_master", name: "Spin Master", description: "Use spin 3 times.", goal: 3, metric: "spins", rewardAura: 350, rewardXp: 120 },
   { id: "shift_runner", name: "Shift Runner", description: "Complete work 3 times.", goal: 3, metric: "works", rewardAura: 420, rewardXp: 130 },
   { id: "deep_digger", name: "Deep Digger", description: "Mine 3 times.", goal: 3, metric: "mines", rewardAura: 460, rewardXp: 145 },
   { id: "green_thumb", name: "Green Thumb", description: "Harvest 2 garden plots.", goal: 2, metric: "harvests", rewardAura: 520, rewardXp: 180 },
-  { id: "risk_runner", name: "Risk Runner", description: "Play 2 coinflips.", goal: 2, metric: "coinflips", rewardAura: 420, rewardXp: 130 },
-  { id: "shadow_hand", name: "Shadow Hand", description: "Win one robbery.", goal: 1, metric: "robWins", rewardAura: 650, rewardXp: 220 },
   { id: "vault_keeper", name: "Vault Keeper", description: "Deposit 1,000 aura into your vault.", goal: 1000, metric: "vaultDeposit", rewardAura: 500, rewardXp: 150 },
-  { id: "gladiator", name: "Gladiator", description: "Win one PvP battle.", goal: 1, metric: "pvpWins", rewardAura: 900, rewardXp: 320 },
   { id: "slayer", name: "Boss Slayer", description: "Defeat one boss.", goal: 1, metric: "bossWins", rewardAura: 1150, rewardXp: 380 },
   { id: "merchant", name: "Merchant", description: "Buy 2 shop items.", goal: 2, metric: "shopBuys", rewardAura: 420, rewardXp: 120 },
+  { id: "kind_sender", name: "Kind Sender", description: "Send aura to another player.", goal: 1, metric: "giftsSent", rewardAura: 360, rewardXp: 130 },
+  { id: "project_helper", name: "Project Helper", description: "Contribute to the active server project.", goal: 1, metric: "projectContributions", rewardAura: 520, rewardXp: 180 },
 ];
 
 const COOLDOWNS = {

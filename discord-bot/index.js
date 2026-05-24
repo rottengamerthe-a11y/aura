@@ -8,19 +8,26 @@ const express = require("express");
 const session = require("express-session");
 const mongoose = require("mongoose");
 const { GuildSettings, PaddleWebhookLog, User } = require("./src/data/models");
+const { attachAnalyticsSubscribers } = require("./src/analytics/service");
+const { eventBus } = require("./src/core/eventBus");
+const { registerDashboardApi } = require("./src/dashboard/api");
 const { migrateToGlobalPlayerProfiles } = require("./src/data/globalPlayerMigration");
 const { applyPaddleWebhookEvent, applyTopggVoteWebhookEvent, buildCommands, handleChatRelicSpawnMessage, recentInteractions, routeInteraction, sendServerJoinMessage, sendServerSetupMessage, startReminderLoop, startRelicSpawnLoop } = require("./src/game/service");
 const { buildEmbedPayload } = require("./src/utils/visuals");
 
 const APP_VERSION = "aurix-premium-buffs-v19";
+attachAnalyticsSubscribers(eventBus);
 const startedAt = Date.now();
 let discordClient = null;
+let httpServer = null;
+let shuttingDown = false;
 const recentDiscordResponses = [];
 const recentTopggStatsPosts = [];
 let topggStatsTimer = null;
 let topggStatsDebounceTimer = null;
 let topggStatsPosting = false;
 let topggStatsConfigWarningShown = false;
+const interactionUserLocks = new Map();
 const TOPGG_STATS_INTERVAL_MS = Number(process.env.TOPGG_STATS_INTERVAL_MS) || 30 * 60 * 1000;
 const TOPGG_STATS_DEBOUNCE_MS = 60 * 1000;
 
@@ -44,6 +51,60 @@ const missing = requiredEnv.filter((key) => !process.env[key]);
 if (missing.length) {
   throw new Error(`Missing required environment variables: ${missing.join(", ")}`);
 }
+
+async function shutdown(reason = "shutdown", exitCode = 0) {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  console.log(`Shutting down Aurix (${reason})...`);
+
+  if (topggStatsTimer) {
+    clearInterval(topggStatsTimer);
+    topggStatsTimer = null;
+  }
+  if (topggStatsDebounceTimer) {
+    clearTimeout(topggStatsDebounceTimer);
+    topggStatsDebounceTimer = null;
+  }
+
+  await Promise.allSettled([
+    discordClient?.destroy?.(),
+    new Promise((resolve) => {
+      if (!httpServer) {
+        resolve();
+        return;
+      }
+      httpServer.close(() => resolve());
+    }),
+    mongoose.connection.readyState ? mongoose.disconnect() : Promise.resolve(),
+  ]);
+
+  process.exit(exitCode);
+}
+
+process.once("SIGINT", () => {
+  shutdown("SIGINT").catch((error) => {
+    console.error("Graceful shutdown failed:", error);
+    process.exit(1);
+  });
+});
+
+process.once("SIGTERM", () => {
+  shutdown("SIGTERM").catch((error) => {
+    console.error("Graceful shutdown failed:", error);
+    process.exit(1);
+  });
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled promise rejection:", reason);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception:", error);
+  shutdown("uncaughtException", 1).catch(() => process.exit(1));
+});
 
 async function connectDatabase() {
   await mongoose.connect(process.env.MONGODB_URI, {
@@ -144,12 +205,49 @@ function getTopggApiToken() {
     || null;
 }
 
+function shouldRegisterCommandsOnStart() {
+  return process.env.REGISTER_COMMANDS_ON_START?.trim().toLowerCase() !== "false";
+}
+
 function rememberTopggStatsPost(entry) {
   recentTopggStatsPosts.unshift({
     at: new Date().toISOString(),
     ...entry,
   });
   recentTopggStatsPosts.splice(20);
+}
+
+function getInteractionUserLockKey(interaction) {
+  const userId = interaction?.user?.id;
+  if (!userId) {
+    return null;
+  }
+  return `${interaction.guildId || "dm"}:${userId}`;
+}
+
+async function withInteractionUserLock(interaction, task) {
+  const key = getInteractionUserLockKey(interaction);
+  if (!key) {
+    return task();
+  }
+
+  const previous = interactionUserLocks.get(key) || Promise.resolve();
+  let releaseLock;
+  const current = new Promise((resolve) => {
+    releaseLock = resolve;
+  });
+  const queue = previous.catch(() => null).then(() => current);
+  interactionUserLocks.set(key, queue);
+
+  await previous.catch(() => null);
+  try {
+    return await task();
+  } finally {
+    releaseLock();
+    if (interactionUserLocks.get(key) === queue) {
+      interactionUserLocks.delete(key);
+    }
+  }
 }
 
 async function getDiscordGuildStats(client) {
@@ -510,7 +608,7 @@ function startWebServer() {
     });
   });
 
-  app.post("/topgg/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  app.post("/topgg/webhook", express.raw({ type: "application/json", limit: "1mb" }), async (req, res) => {
     const signature = req.headers["x-topgg-signature"];
     const rawBody = req.body.toString("utf8");
 
@@ -557,7 +655,7 @@ function startWebServer() {
     }
   });
 
-  app.post("/paddle/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  app.post("/paddle/webhook", express.raw({ type: "application/json", limit: "1mb" }), async (req, res) => {
     if (!paddleWebhookSecret) {
       rememberPaddleWebhook({ ok: false, error: "paddle_not_configured" });
       return res.status(503).json({ ok: false, error: "paddle_not_configured" });
@@ -706,6 +804,8 @@ function startWebServer() {
     return res.status(200).json({ ok: true, user: req.session.discordUser });
   });
 
+  registerDashboardApi(app);
+
   app.post("/logout", (req, res) => {
     req.session.destroy((error) => {
       if (error) {
@@ -833,7 +933,7 @@ function startWebServer() {
     });
   });
 
-  app.listen(port, () => {
+  return app.listen(port, () => {
     console.log(`Health server listening on port ${port}. Version ${APP_VERSION}.`);
   });
 }
@@ -941,7 +1041,7 @@ function rememberDiscordResponse(options) {
 }
 
 async function main() {
-  startWebServer();
+  httpServer = startWebServer();
   console.log("Connecting to MongoDB...");
   await connectDatabase();
   const migrationResult = await migrateToGlobalPlayerProfiles();
@@ -1014,7 +1114,7 @@ async function main() {
   client.on("interactionCreate", async (interaction) => {
     const clearPreparedResponse = await prepareInteractionResponse(interaction);
     try {
-      await routeInteraction(interaction);
+      await withInteractionUserLock(interaction, () => routeInteraction(interaction));
     } catch (error) {
       console.error(error);
       const payload = { content: "Something went wrong while processing that command.", ephemeral: true };
@@ -1045,10 +1145,14 @@ async function main() {
   clearTimeout(loginTimeout);
 
   console.log("Registering application commands...");
-  try {
-    await registerCommands();
-  } catch (error) {
-    console.error("Command registration failed:", error);
+  if (shouldRegisterCommandsOnStart()) {
+    try {
+      await registerCommands();
+    } catch (error) {
+      console.error("Command registration failed:", error);
+    }
+  } else {
+    console.log("Command registration skipped because REGISTER_COMMANDS_ON_START=false.");
   }
 }
 

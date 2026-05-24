@@ -3,6 +3,8 @@ const crypto = require("crypto");
 const { BOSSES, COLORS, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
 const { BattleSession, Clan, CollectiblePrintCounter, GuildSettings, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TopggVoteLog, TradeOffer, User } = require("../data/models");
 const { buildClanCreateData, buildClanLeaderboardFilter, buildClanLookup, buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
+const { classifyIntent } = require("../ai/intentRouter");
+const { eventBus } = require("../core/eventBus");
 const { buildProfileCosmeticAttachment, encodePng, FILE_NAME: PROFILE_COSMETIC_FILE } = require("../utils/cosmeticArt");
 const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 
@@ -31,6 +33,60 @@ const CHAT_SPAWN_USER_RATE_LIMIT_MS = 1500;
 const INCENSE_COST = 50000;
 const INCENSE_SPAWNS = 180;
 const INCENSE_TICK_MS = 20 * 1000;
+const ECONOMY_RULES = Object.freeze({
+  faucetSoftCap: 250000,
+  faucetHardCap: 2500000,
+  faucetMinimumMultiplier: 0.45,
+  vaultBaseRatePerHour: 0.004,
+  vaultPrestigeRatePerHour: 0.001,
+  vaultMaxAccrualHours: 12,
+  vaultDiminishStart: 150000,
+  vaultDiminishFull: 3000000,
+  vaultMinimumRateMultiplier: 0.25,
+  transferFeeRate: 0.03,
+  transferFeeThreshold: 50000,
+  coinflipMaxWalletRatio: 0.05,
+  coinflipMaxBet: 50000,
+  projectRewardPoolCapContributors: 5,
+  projectRewardMaxSinkRatio: 0.35,
+});
+const APPRECIATE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const FACTION_STRIKE_COOLDOWN_MS = 60 * 60 * 1000;
+const FLEX_COOLDOWN_MS = 5 * 60 * 1000;
+const REVENGE_WINDOW_MS = 48 * 60 * 60 * 1000;
+const PROTECTION_WINDOW_MS = 6 * 60 * 60 * 1000;
+const BOUNTY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const HEIST_RULES = Object.freeze({
+  newbieRankFloor: 1,
+  newbieAuraFloor: 8000,
+  walletStealRate: 0.035,
+  walletStealCap: 4200,
+  revengeStealMultiplier: 1.4,
+  factionProtectionMultiplier: 0.75,
+  protectionMultiplier: 0.45,
+});
+const APPRECIATION_TAGS = Object.freeze({
+  kindness: { label: "Kindness", reputation: 2 },
+  creativity: { label: "Creativity", reputation: 2 },
+  helper: { label: "Helpful Energy", reputation: 2 },
+  welcome: { label: "Welcoming", reputation: 2 },
+  funny: { label: "Made People Smile", reputation: 1 },
+});
+const CAMPFIRE_PROMPTS = Object.freeze([
+  "What is a small server moment from this week that should not disappear?",
+  "Who made the server feel easier to be in recently?",
+  "What inside joke, clip, screenshot, or quote belongs in the server story?",
+  "What should this community be known for when someone new joins?",
+  "What creative thing should the server build together next?",
+]);
+const BLACK_MARKET_OFFERS = Object.freeze([
+  { id: "baron_title", name: "Contraband Title: Black-Market Baron", cost: 85000, type: "title", value: "Black-Market Baron", heat: 18 },
+  { id: "riot_frame", name: "Riot Frame", cost: 125000, type: "frame", value: "Riot Frame", heat: 24 },
+  { id: "vault_dust_cache", name: "Vault Dust Cache", cost: 42000, type: "item", itemId: "vault_dust", quantity: 15, heat: 12 },
+  { id: "storm_sigil", name: "Storm Choir Sigil", cost: 68000, type: "title", value: "Storm Choir Sigil", factionId: "storm", heat: 20 },
+  { id: "warden_mark", name: "Warden Black Seal", cost: 68000, type: "title", value: "Warden Black Seal", factionId: "wardens", heat: 20 },
+  { id: "bloom_mark", name: "Bloom Syndicate Mark", cost: 68000, type: "title", value: "Bloom Syndicate Mark", factionId: "bloom", heat: 20 },
+]);
 const TUTORIAL_STEPS = Object.freeze([
   { id: "daily", command: "daily", label: "Claim /daily", rewardAura: 250, rewardXp: 80 },
   { id: "work", command: "work", label: "Complete /work", rewardAura: 300, rewardXp: 90 },
@@ -349,21 +405,16 @@ const RELIC_VISUAL_MOTIFS = Object.freeze({
   codex_heart: { core: "heart", wings: 4, orbit: 6, spikes: 4 },
   aurix_zero: { core: "zero", wings: 6, orbit: 9, spikes: 12 },
 });
-const ENGAGEMENT_COMMANDS = new Set(["start", "tutorial", "profile", "stats", "balance", "work", "mine", "summon", "claim", "hint", "incense", "burn", "spin", "coinflip", "rob", "daily", "vote", "vault", "shop", "buy", "gift", "trade", "inventory", "collection", "craft", "forge", "garden", "property", "expedition", "gear", "rank", "prestige", "achievements", "quests", "crate", "skills", "pvp", "boss", "leaderboard", "season", "serverquest", "premium-chest", "clan", "authority", "event"]);
+const ENGAGEMENT_COMMANDS = new Set(["start", "tutorial", "profile", "stats", "balance", "work", "mine", "summon", "claim", "hint", "incense", "burn", "spin", "coinflip", "rob", "bounty", "daily", "vote", "vault", "shop", "buy", "gift", "trade", "inventory", "collection", "craft", "forge", "garden", "property", "expedition", "partyquest", "weather", "letter", "shrine", "appreciate", "campfire", "identity", "faction", "flex", "blackmarket", "gear", "rank", "prestige", "achievements", "quests", "crate", "skills", "pvp", "boss", "leaderboard", "season", "serverquest", "project", "community", "world", "yearbook", "challenge", "memoryquest", "social", "gallery", "ask", "premium-chest", "clan", "authority", "event"]);
 const QUICK_ACTIONS = Object.freeze({
   achievements: { label: "Achievements", style: ButtonStyle.Secondary },
   balance: { label: "Balance", style: ButtonStyle.Secondary },
   collection: { label: "Collection", style: ButtonStyle.Secondary },
-  daily: { label: "Daily", style: ButtonStyle.Success },
   inventory: { label: "Inventory", style: ButtonStyle.Secondary },
-  mine: { label: "Mine", style: ButtonStyle.Primary },
   profile: { label: "Profile", style: ButtonStyle.Secondary },
   quests: { label: "Quests", style: ButtonStyle.Secondary },
   rank: { label: "Rank", style: ButtonStyle.Secondary },
-  spin: { label: "Spin", style: ButtonStyle.Primary },
-  summon: { label: "Summon", style: ButtonStyle.Primary },
   tutorial: { label: "Tutorial", style: ButtonStyle.Success },
-  work: { label: "Work", style: ButtonStyle.Primary },
 });
 const BATTLE_GEAR_SLOTS = Object.freeze([
   { id: "tool", label: "Tool" },
@@ -376,9 +427,9 @@ const PREMIUM_PLANS = Object.freeze({
     label: "Monthly",
     priceLabel: "$4.99/month",
     durationDays: 30,
-    dailyMultiplier: 1.6,
+    dailyMultiplier: 1.25,
     dailyRareCrates: 2,
-    cooldownReduction: 0.25,
+    cooldownReduction: 0,
     gardenPlots: 3,
     chestCooldownHours: 16,
     welcome: Object.freeze({ aura: 6000, rareCrates: 3, epicCrates: 1, legendaryCrates: 0 }),
@@ -401,9 +452,9 @@ const PREMIUM_PLANS = Object.freeze({
     label: "Yearly",
     priceLabel: "$19.99/year",
     durationDays: 365,
-    dailyMultiplier: 2,
+    dailyMultiplier: 1.35,
     dailyRareCrates: 3,
-    cooldownReduction: 0.35,
+    cooldownReduction: 0,
     gardenPlots: 4,
     chestCooldownHours: 12,
     welcome: Object.freeze({ aura: 18000, rareCrates: 5, epicCrates: 2, legendaryCrates: 1 }),
@@ -426,9 +477,9 @@ const PREMIUM_PLANS = Object.freeze({
     label: "Lifetime",
     priceLabel: "$49.99 one-time",
     durationDays: null,
-    dailyMultiplier: 2.5,
+    dailyMultiplier: 1.5,
     dailyRareCrates: 5,
-    cooldownReduction: 0.5,
+    cooldownReduction: 0,
     gardenPlots: 4,
     chestCooldownHours: 8,
     welcome: Object.freeze({ aura: 45000, rareCrates: 8, epicCrates: 4, legendaryCrates: 2 }),
@@ -451,16 +502,115 @@ const PREMIUM_PURCHASE_URL = "https://aurawebsite-12gd.onrender.com";
 const OFFICIAL_SERVER_URL = "https://aurawebsite-12gd.onrender.com";
 const TOPGG_VOTE_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 const TOPGG_VOTE_PROMPT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
-const TOPGG_VOTE_PROMPT_CHANCE = Number(process.env.TOPGG_VOTE_PROMPT_CHANCE) || 0.12;
+const TOPGG_VOTE_PROMPTS_ENABLED = process.env.TOPGG_VOTE_PROMPTS_ENABLED === "true";
+const TOPGG_VOTE_PROMPT_CHANCE = TOPGG_VOTE_PROMPTS_ENABLED ? (Number(process.env.TOPGG_VOTE_PROMPT_CHANCE) || 0.05) : 0;
 const TOPGG_VOTE_REWARD = Object.freeze({
-  aura: Number(process.env.TOPGG_VOTE_REWARD_AURA) || 30000,
-  xp: Number(process.env.TOPGG_VOTE_REWARD_XP) || 300,
+  aura: Number(process.env.TOPGG_VOTE_REWARD_AURA) || 8000,
+  xp: Number(process.env.TOPGG_VOTE_REWARD_XP) || 450,
   crates: Object.freeze({
-    common: Number(process.env.TOPGG_VOTE_REWARD_COMMON_CRATES) || 0,
-    rare: Number(process.env.TOPGG_VOTE_REWARD_RARE_CRATES) || 2,
-    legendary: Number(process.env.TOPGG_VOTE_REWARD_LEGENDARY_CRATES) || 1,
+    common: Number(process.env.TOPGG_VOTE_REWARD_COMMON_CRATES) || 1,
+    rare: Number(process.env.TOPGG_VOTE_REWARD_RARE_CRATES) || 1,
+    legendary: Number(process.env.TOPGG_VOTE_REWARD_LEGENDARY_CRATES) || 0,
   }),
 });
+const SERVER_PROJECT_TEMPLATES = Object.freeze([
+  {
+    id: "moon_gate",
+    name: "Moon Gate",
+    description: "A shared gateway that converts server donations into a calm payout for contributors.",
+    auraGoal: 120000,
+    materialGoal: 80,
+    communityXp: 1400,
+    rewardAura: 9000,
+    rewardXp: 1200,
+    rewardCrates: { rare: 1 },
+  },
+  {
+    id: "relic_archive",
+    name: "Relic Archive",
+    description: "A community archive for relic hunters, crafters, and collectors.",
+    auraGoal: 90000,
+    materialGoal: 120,
+    communityXp: 1600,
+    rewardAura: 6500,
+    rewardXp: 1700,
+    rewardCrates: { epic: 1 },
+  },
+  {
+    id: "clan_beacon",
+    name: "Clan Beacon",
+    description: "A server beacon that gives casual players a reason to contribute without chasing every cooldown.",
+    auraGoal: 150000,
+    materialGoal: 60,
+    communityXp: 1800,
+    rewardAura: 12000,
+    rewardXp: 900,
+    rewardCrates: { rare: 2 },
+  },
+]);
+const WORLD_FACTIONS = Object.freeze([
+  { id: "wardens", name: "Vault Wardens", principle: "security, archives, and long memory" },
+  { id: "bloom", name: "Bloom Syndicate", principle: "gardens, trade routes, and civic generosity" },
+  { id: "storm", name: "Storm Choir", principle: "risk, exploration, and strange relic weather" },
+]);
+const WORLD_SEASONS = Object.freeze([
+  { id: "rain", name: "Rain of Glass", economy: "crates and relics feel watched by old mirrors" },
+  { id: "ember", name: "Emberwane", economy: "boss routes and forge fires run hot" },
+  { id: "bloom", name: "Verdant Return", economy: "gardens and shared projects feel easier to rally around" },
+  { id: "static", name: "Static Moon", economy: "expeditions return with stranger reports" },
+]);
+const WORLD_ARTIFACT_FORMS = Object.freeze(["Gate", "Crown", "Lantern", "Archive", "Bell", "Compass", "Garden", "Engine"]);
+const WORLD_ARTIFACT_TONES = Object.freeze({
+  wardens: ["sealed", "silver", "remembering", "watchful"],
+  bloom: ["green", "warm", "welcoming", "rooted"],
+  storm: ["singing", "bright", "restless", "star-cut"],
+});
+const PARTY_QUEST_ROLES = Object.freeze([
+  { id: "scout", name: "Scout", description: "Finds the route." },
+  { id: "keeper", name: "Keeper", description: "Protects the memory." },
+  { id: "maker", name: "Maker", description: "Repairs the artifact." },
+  { id: "voice", name: "Voice", description: "Carries the story back." },
+]);
+const SERVER_WEATHER_TYPES = Object.freeze({
+  bloom: { name: "Bloom Weather", description: "Gifts, gardens, and welcoming actions are shaping the server." },
+  civic: { name: "Civic Weather", description: "Projects and memory work are pulling the server together." },
+  storm: { name: "Storm Weather", description: "Exploration, boss fights, and world choices are stirring up tension." },
+  quiet: { name: "Quiet Skies", description: "The server is calm. A world choice, project, or memory could shift the mood." },
+});
+const WORLD_ENCOUNTER_TEMPLATES = Object.freeze([
+  {
+    id: "market_dispute",
+    title: "Market Dispute",
+    description: "A caravan arrives with relic crates, but three factions claim the right to price them.",
+    choices: [
+      { id: "audit", label: "Audit Ledgers", factionId: "wardens", text: "The Wardens establish fair records.", influenceDelta: 7 },
+      { id: "share", label: "Public Stalls", factionId: "bloom", text: "The Syndicate opens a public market.", influenceDelta: 7 },
+      { id: "auction", label: "Storm Auction", factionId: "storm", text: "The Choir turns the sale into a spectacle.", influenceDelta: 7 },
+    ],
+  },
+  {
+    id: "singing_gate",
+    title: "Singing Gate",
+    description: "A gate under the server starts humming names that nobody remembers joining.",
+    choices: [
+      { id: "seal", label: "Seal It", factionId: "wardens", text: "The gate is indexed and contained.", influenceDelta: 8 },
+      { id: "welcome", label: "Welcome It", factionId: "bloom", text: "The gate becomes a gathering site.", influenceDelta: 8 },
+      { id: "follow", label: "Follow It", factionId: "storm", text: "Scouts vanish briefly and return with sparks.", influenceDelta: 8 },
+    ],
+  },
+  {
+    id: "hollow_rain",
+    title: "Hollow Rain",
+    description: "Rain falls upward through the channels. Every drop contains a half-finished rumor.",
+    choices: [
+      { id: "archive", label: "Archive Rumors", factionId: "wardens", text: "Rumors become reliable records.", influenceDelta: 6 },
+      { id: "festival", label: "Hold Festival", factionId: "bloom", text: "The server turns the weather into a festival.", influenceDelta: 6 },
+      { id: "chase", label: "Chase Storm", factionId: "storm", text: "The Choir maps where the rain returns.", influenceDelta: 6 },
+    ],
+  },
+]);
+const WORLD_STORY_LIMIT = 8;
+const WORLD_ENCOUNTER_TTL_MS = 24 * 60 * 60 * 1000;
 const FORGE_MAX_LEVEL = 5;
 const PROPERTY_TYPES = Object.freeze({
   aura_mine: {
@@ -570,21 +720,13 @@ const MICROTRANSACTION_PRODUCTS = Object.freeze({
   }),
 });
 const REMINDER_ACTIONS = Object.freeze({
-  spin: { label: "Spin", command: "/spin" },
-  work: { label: "Work", command: "/work" },
-  mine: { label: "Mine", command: "/mine" },
-  coinflip: { label: "Coinflip", command: "/coinflip" },
-  rob: { label: "Rob", command: "/rob" },
   harvest: { label: "Harvest", command: "/garden harvest" },
-  daily: { label: "Daily", command: "/daily" },
-  vote: { label: "Top.gg Vote", command: "/vote" },
-  boss: { label: "Boss", command: "/boss" },
-  authority: { label: "Authority", command: "/authority" },
 });
+const HEALTHY_REMINDER_ACTIONS = new Set(Object.keys(REMINDER_ACTIONS));
 const REMINDER_ACTION_CHOICES = Object.entries(REMINDER_ACTIONS).map(([value, action]) => ({ name: action.label, value }));
 const REMINDER_POLL_MS = 60 * 1000;
-const FREE_REMINDER_LIMIT = 2;
-const PREMIUM_REMINDER_LIMIT = 7;
+const FREE_REMINDER_LIMIT = 1;
+const PREMIUM_REMINDER_LIMIT = 1;
 const PVP_ARENAS = Object.freeze([
   {
     id: "bloodmoon",
@@ -769,6 +911,54 @@ function formatNumber(value) {
   return Intl.NumberFormat("en-US").format(Math.floor(value));
 }
 
+function getTotalLiquidAura(user) {
+  return Math.max(0, Number(user?.aura) || 0) + Math.max(0, Number(user?.vaultAura) || 0);
+}
+
+function getFaucetMultiplier(user) {
+  const holdings = getTotalLiquidAura(user);
+  if (holdings <= ECONOMY_RULES.faucetSoftCap) {
+    return 1;
+  }
+  const progress = clamp(
+    (holdings - ECONOMY_RULES.faucetSoftCap) / Math.max(1, ECONOMY_RULES.faucetHardCap - ECONOMY_RULES.faucetSoftCap),
+    0,
+    1
+  );
+  return 1 - progress * (1 - ECONOMY_RULES.faucetMinimumMultiplier);
+}
+
+function applyFaucetDamping(user, amount) {
+  return Math.max(0, Math.floor((Number(amount) || 0) * getFaucetMultiplier(user)));
+}
+
+function getVaultRate(user, combinedEffects = null) {
+  const effects = combinedEffects || getCombinedEffects(user);
+  const rawRate = ECONOMY_RULES.vaultBaseRatePerHour
+    + (effects.vaultInterestBoost || 0)
+    + Math.max(0, Number(user?.prestige) || 0) * ECONOMY_RULES.vaultPrestigeRatePerHour;
+  const holdings = Math.max(0, Number(user?.vaultAura) || 0);
+  const progress = clamp(
+    (holdings - ECONOMY_RULES.vaultDiminishStart) / Math.max(1, ECONOMY_RULES.vaultDiminishFull - ECONOMY_RULES.vaultDiminishStart),
+    0,
+    1
+  );
+  const multiplier = 1 - progress * (1 - ECONOMY_RULES.vaultMinimumRateMultiplier);
+  return Math.max(0, rawRate * multiplier);
+}
+
+function getTransferFee(amount) {
+  const normalized = Math.max(0, Math.floor(Number(amount) || 0));
+  if (normalized <= ECONOMY_RULES.transferFeeThreshold) {
+    return 0;
+  }
+  return Math.floor((normalized - ECONOMY_RULES.transferFeeThreshold) * ECONOMY_RULES.transferFeeRate);
+}
+
+function getCoinflipMaxBet(user) {
+  return Math.max(1000, Math.min(ECONOMY_RULES.coinflipMaxBet, Math.floor((Number(user?.aura) || 0) * ECONOMY_RULES.coinflipMaxWalletRatio)));
+}
+
 function pickFlavor(lines) {
   if (!Array.isArray(lines) || lines.length === 0) {
     return "";
@@ -818,6 +1008,955 @@ function buildQuickActionRows(userId, actions = []) {
 function addQuickActions(payload, userId, actions = []) {
   const rows = buildQuickActionRows(userId, actions);
   return rows.length ? { ...payload, components: rows } : payload;
+}
+
+function getServerProjectTemplate(projectId) {
+  return SERVER_PROJECT_TEMPLATES.find((template) => template.id === projectId) || SERVER_PROJECT_TEMPLATES[0];
+}
+
+function createServerProject(projectId = null) {
+  const template = projectId ? getServerProjectTemplate(projectId) : pickFlavor(SERVER_PROJECT_TEMPLATES);
+  return {
+    id: template.id,
+    name: template.name,
+    description: template.description,
+    auraGoal: template.auraGoal,
+    materialGoal: template.materialGoal,
+    aura: 0,
+    materials: new Map(),
+    contributors: [],
+    completedAt: null,
+    startedAt: new Date(),
+  };
+}
+
+function normalizeServerProject(settings) {
+  if (!settings.serverProject || settings.serverProject.completedAt) {
+    settings.serverProject = createServerProject();
+  }
+  if (!settings.serverProject.materials?.get) {
+    settings.serverProject.materials = new Map(Object.entries(settings.serverProject.materials || {}));
+  }
+  settings.serverProject.contributors ||= [];
+  settings.serverProject.aura = Math.max(0, Number(settings.serverProject.aura) || 0);
+  return settings.serverProject;
+}
+
+function getServerProjectMaterialTotal(project) {
+  if (!project?.materials) {
+    return 0;
+  }
+  const entries = project.materials.entries ? Array.from(project.materials.entries()) : Object.entries(project.materials);
+  return entries.reduce((sum, [, amount]) => sum + (Number(amount) || 0), 0);
+}
+
+function getServerProjectContributor(project, userId) {
+  let contributor = project.contributors.find((entry) => entry.userId === userId);
+  if (!contributor) {
+    project.contributors.push({ userId, aura: 0, materials: 0 });
+    contributor = project.contributors[project.contributors.length - 1];
+  }
+  return contributor;
+}
+
+function normalizeCommunityIdentity(settings) {
+  settings.community ||= {};
+  settings.community.xp = Math.max(0, Number(settings.community.xp) || 0);
+  settings.community.level = Math.max(1, Number(settings.community.level) || 1);
+  settings.community.motto = typeof settings.community.motto === "string" ? settings.community.motto : null;
+  settings.community.symbol = typeof settings.community.symbol === "string" ? settings.community.symbol : null;
+  settings.community.values = Array.isArray(settings.community.values) ? settings.community.values.slice(0, 5) : [];
+  settings.community.completedProjects = Math.max(0, Number(settings.community.completedProjects) || 0);
+  settings.community.totalAuraContributed = Math.max(0, Number(settings.community.totalAuraContributed) || 0);
+  settings.community.totalMaterialsContributed = Math.max(0, Number(settings.community.totalMaterialsContributed) || 0);
+  settings.community.lastProjectCompletedAt ||= null;
+  settings.appreciations = Array.isArray(settings.appreciations) ? settings.appreciations.slice(-25) : [];
+  return settings.community;
+}
+
+function getCampfirePrompt(settings) {
+  normalizeWorldState(settings);
+  const world = settings.worldState;
+  const seed = `${settings.guildId}:${world.seasonId}:${new Date().toISOString().slice(0, 10)}`;
+  const index = Math.abs(hashString(seed)) % CAMPFIRE_PROMPTS.length;
+  return CAMPFIRE_PROMPTS[index];
+}
+
+function buildCampfirePayload(settings, guildName) {
+  normalizeCommunityIdentity(settings);
+  const recent = (settings.appreciations || []).slice(-5).reverse();
+  const recentLines = recent.length
+    ? recent.map((entry) => `<@${entry.fromUserId}> -> <@${entry.toUserId}>: ${APPRECIATION_TAGS[entry.tag]?.label || "Kindness"}`).join("\n")
+    : "No appreciations recorded yet. Be the first one to make a quiet moment visible.";
+  return buildEmbedPayload({
+    title: `${guildName} Campfire`,
+    description: getCampfirePrompt(settings),
+    visual: "help-summary.svg",
+    fields: [
+      { name: "Share", value: "`/campfire share text:<memory, idea, or thanks>`" },
+      { name: "Recent Appreciation", value: recentLines },
+      { name: "Why This Exists", value: "Campfire posts are for memories, gratitude, and creative prompts. No streak pressure, no gambling, no leaderboard race." },
+    ],
+    footer: "Healthy sessions should end feeling connected, not drained.",
+  });
+}
+
+function buildIdentityPayload(settings, guildName) {
+  const community = normalizeCommunityIdentity(settings);
+  const values = community.values?.length ? community.values.map((value) => `- ${value}`).join("\n") : "No values set yet.";
+  return buildEmbedPayload({
+    title: `${guildName} Identity`,
+    description: community.motto || "This server has not chosen a motto yet.",
+    visual: "core-profile.svg",
+    fields: [
+      { name: "Symbol", value: community.symbol || "Unset", inline: true },
+      { name: "Community Level", value: `${formatNumber(community.level)} - ${getCommunityLevelTitle(community.level)}`, inline: true },
+      { name: "Values", value: values },
+      { name: "Set Identity", value: "`/identity set motto:<text> symbol:<text> values:<comma separated>`" },
+    ],
+    footer: "Identity gives the server a shared self-image beyond money and XP.",
+  });
+}
+
+function getCommunityLevelByXp(xp) {
+  const totalXp = Math.max(0, Number(xp) || 0);
+  return Math.max(1, Math.floor(Math.sqrt(totalXp / 900)) + 1);
+}
+
+function getCommunityLevelTitle(level) {
+  if (level >= 10) {
+    return "Mythic Community";
+  }
+  if (level >= 7) {
+    return "United Server";
+  }
+  if (level >= 4) {
+    return "Growing Community";
+  }
+  return "New Community";
+}
+
+function getCommunityNextLevelXp(level) {
+  const nextLevel = Math.max(2, Number(level) + 1);
+  return Math.pow(nextLevel - 1, 2) * 900;
+}
+
+function addCommunityProjectProgress(settings, project, template) {
+  const community = normalizeCommunityIdentity(settings);
+  const materialTotal = getServerProjectMaterialTotal(project);
+  community.xp += template.communityXp || 1000;
+  community.completedProjects += 1;
+  community.totalAuraContributed += Number(project.aura) || 0;
+  community.totalMaterialsContributed += materialTotal;
+  community.lastProjectCompletedAt = new Date();
+  community.level = getCommunityLevelByXp(community.xp);
+  settings.markModified("community");
+  return community;
+}
+
+function getCurrentWorldSeason(date = new Date()) {
+  const index = Math.floor(date.getUTCMonth() / 3) % WORLD_SEASONS.length;
+  const season = WORLD_SEASONS[index] || WORLD_SEASONS[0];
+  return {
+    ...season,
+    key: `${date.getUTCFullYear()}-${season.id}`,
+  };
+}
+
+function normalizeWorldState(settings) {
+  const season = getCurrentWorldSeason();
+  settings.worldState ||= {};
+  const world = settings.worldState;
+  if (world.seasonId !== season.key) {
+    world.seasonId = season.key;
+    world.seasonName = season.name;
+    world.tension = Math.max(0, Math.floor((Number(world.tension) || 0) * 0.5));
+    world.activeEncounter = null;
+    world.storyLog ||= [];
+    world.storyLog.unshift({
+      title: `Season Turn: ${season.name}`,
+      text: `The server enters ${season.name}. ${season.economy}.`,
+      actorId: null,
+      createdAt: new Date(),
+    });
+    world.storyLog = world.storyLog.slice(0, WORLD_STORY_LIMIT);
+  }
+  if (!Array.isArray(world.factions) || world.factions.length !== WORLD_FACTIONS.length) {
+    const existing = new Map((world.factions || []).map((faction) => [faction.id, faction]));
+    world.factions = WORLD_FACTIONS.map((faction) => ({
+      id: faction.id,
+      name: faction.name,
+      influence: clamp(Number(existing.get(faction.id)?.influence) || 50, 0, 100),
+      reputation: Number(existing.get(faction.id)?.reputation) || 0,
+    }));
+  }
+  world.factions.forEach((faction) => {
+    faction.influence = clamp(Number(faction.influence) || 0, 0, 100);
+    faction.reputation = Number(faction.reputation) || 0;
+  });
+  normalizeWorldArtifact(settings, world);
+  world.storyLog ||= [];
+  world.storyLog = world.storyLog.slice(0, WORLD_STORY_LIMIT);
+  settings.markModified("worldState");
+  return world;
+}
+
+function getWorldFaction(factionId) {
+  return WORLD_FACTIONS.find((faction) => faction.id === factionId) || WORLD_FACTIONS[0];
+}
+
+function getFactionChoiceEntries() {
+  return WORLD_FACTIONS.map((faction) => ({ name: faction.name, value: faction.id }));
+}
+
+function normalizeUserFaction(user) {
+  user.faction ||= { id: null, pledgedAt: null };
+  if (user.faction.id && !WORLD_FACTIONS.some((faction) => faction.id === user.faction.id)) {
+    user.faction.id = null;
+    user.faction.pledgedAt = null;
+  }
+  return user.faction;
+}
+
+function getPlayerPowerScore(user) {
+  const inventoryPower = (user.inventory || []).reduce((sum, entry) => sum + Math.max(0, Number(entry.quantity) || 0), 0);
+  const relicPower = (user.relics || []).reduce((sum, relic) => sum + Math.max(1, Number(relic.count) || 1), 0);
+  return Math.floor(
+    (Number(user.xp) || 0) / 120
+    + (Number(user.aura) || 0) / 1200
+    + (Number(user.vaultAura) || 0) / 1800
+    + (Number(user.prestige) || 0) * 950
+    + (Number(user.rankIndex) || 0) * 180
+    + inventoryPower * 9
+    + relicPower * 14
+    + (Number(user.stats?.bossWins) || 0) * 85
+    + (Number(user.stats?.pvpWins) || 0) * 110
+  );
+}
+
+function getRarestRelicLabel(user) {
+  const rarityWeight = { common: 1, uncommon: 2, rare: 3, epic: 4, legendary: 5, mythic: 6 };
+  const best = [...(user.relics || [])]
+    .sort((a, b) => (rarityWeight[b.rarity] || 0) - (rarityWeight[a.rarity] || 0) || String(a.name).localeCompare(String(b.name)))[0];
+  return best ? `${best.name || best.relicId} (${best.rarity || "unknown"})` : "No relic flex yet";
+}
+
+function getBlackMarketCycleId(date = new Date()) {
+  const day = Math.floor(date.getTime() / (24 * 60 * 60 * 1000));
+  return `bm-${day}`;
+}
+
+function getBlackMarketOffer(settings, date = new Date()) {
+  const world = normalizeWorldState(settings);
+  const dominant = getDominantWorldFaction(world);
+  const cycleId = getBlackMarketCycleId(date);
+  const seed = `${settings.guildId}:${world.seasonId}:${cycleId}:${dominant?.id || "none"}`;
+  let pool = BLACK_MARKET_OFFERS.filter((offer) => !offer.factionId || offer.factionId === dominant?.id);
+  if (!pool.length) {
+    pool = [...BLACK_MARKET_OFFERS];
+  }
+  const offer = pool[Math.abs(hashString(seed)) % pool.length];
+  return { ...offer, cycleId, purchaseKey: `${cycleId}:${offer.id}`, dominantFaction: dominant };
+}
+
+function grantBlackMarketOffer(user, offer) {
+  normalizeCosmetics(user);
+  if (offer.type === "title") {
+    if (!user.cosmetics.ownedTitles.includes(offer.value)) {
+      user.cosmetics.ownedTitles.push(offer.value);
+    }
+    user.cosmetics.activeTitle = offer.value;
+    return `Title equipped: ${offer.value}`;
+  }
+  if (offer.type === "frame") {
+    if (!user.cosmetics.ownedFrames.includes(offer.value)) {
+      user.cosmetics.ownedFrames.push(offer.value);
+    }
+    user.cosmetics.activeFrame = offer.value;
+    return `Frame equipped: ${offer.value}`;
+  }
+  if (offer.type === "item") {
+    addInventoryItem(user, offer.itemId, offer.quantity || 1);
+    return `${getInventoryLabel(offer.itemId)} x${formatNumber(offer.quantity || 1)}`;
+  }
+  return "Contraband claimed";
+}
+
+function normalizeBounties(settings) {
+  settings.bounties = Array.isArray(settings.bounties) ? settings.bounties : [];
+  const now = Date.now();
+  settings.bounties = settings.bounties
+    .filter((bounty) => bounty?.targetUserId && Number(bounty.amount) > 0)
+    .filter((bounty) => bounty.claimedAt || !bounty.expiresAt || new Date(bounty.expiresAt).getTime() > now)
+    .slice(-50);
+  settings.markModified("bounties");
+  return settings.bounties;
+}
+
+function getActiveBountiesFor(settings, userId) {
+  return normalizeBounties(settings).filter((bounty) => bounty.targetUserId === userId && !bounty.claimedAt);
+}
+
+function getActiveBountyValue(settings, userId) {
+  return getActiveBountiesFor(settings, userId).reduce((sum, bounty) => sum + Math.max(0, Number(bounty.amount) || 0), 0);
+}
+
+function markBountiesClaimed(settings, targetUserId, claimedByUserId) {
+  const active = getActiveBountiesFor(settings, targetUserId);
+  const payout = active.reduce((sum, bounty) => sum + Math.max(0, Number(bounty.amount) || 0), 0);
+  active.forEach((bounty) => {
+    bounty.claimedByUserId = claimedByUserId;
+    bounty.claimedAt = new Date();
+  });
+  settings.markModified("bounties");
+  return { payout, count: active.length };
+}
+
+function isNewbieProtected(user) {
+  return (Number(user.rankIndex) || 0) < HEIST_RULES.newbieRankFloor && (Number(user.aura) || 0) < HEIST_RULES.newbieAuraFloor;
+}
+
+function hasActiveProtection(user) {
+  return user.protectionUntil && new Date(user.protectionUntil).getTime() > Date.now();
+}
+
+function hasRevengeMark(attacker, targetId) {
+  return attacker.revengeTargetId === targetId && attacker.revengeExpiresAt && new Date(attacker.revengeExpiresAt).getTime() > Date.now();
+}
+
+function setRevengeMark(user, targetId) {
+  user.revengeTargetId = targetId;
+  user.revengeExpiresAt = new Date(Date.now() + REVENGE_WINDOW_MS);
+}
+
+function getHeistPlanLabel(plan) {
+  const labels = {
+    quiet: "Quiet Cut",
+    smash: "Smash Raid",
+    frame: "Frame Job",
+  };
+  return labels[plan] || labels.quiet;
+}
+
+function getHeistOutcome(thief, victim, plan) {
+  normalizeUserFaction(thief);
+  normalizeUserFaction(victim);
+  const revenge = hasRevengeMark(thief, victim.userId);
+  const sameFaction = thief.faction?.id && thief.faction.id === victim.faction?.id;
+  const protectedTarget = hasActiveProtection(victim);
+  const powerDelta = clamp((getPlayerPowerScore(thief) - getPlayerPowerScore(victim)) / 12000, -0.12, 0.12);
+  const planRisk = plan === "smash" ? 0.1 : plan === "frame" ? -0.04 : 0;
+  const successChance = clamp(
+    0.4
+      + powerDelta
+      + (revenge ? 0.12 : 0)
+      + (sameFaction ? -0.1 : 0)
+      + (protectedTarget ? -0.16 : 0)
+      + planRisk
+      + (Number(thief.prestige) || 0) * 0.01
+      - (Number(victim.prestige) || 0) * 0.008,
+    0.18,
+    0.74
+  );
+  let cap = HEIST_RULES.walletStealCap + (Number(thief.rankIndex) || 0) * 160;
+  if (plan === "smash") {
+    cap *= 1.35;
+  }
+  if (plan === "frame") {
+    cap *= 0.65;
+  }
+  if (revenge) {
+    cap *= HEIST_RULES.revengeStealMultiplier;
+  }
+  if (sameFaction) {
+    cap *= HEIST_RULES.factionProtectionMultiplier;
+  }
+  if (protectedTarget) {
+    cap *= HEIST_RULES.protectionMultiplier;
+  }
+  const stealable = Math.min(
+    Math.max(0, Math.floor((Number(victim.aura) || 0) * HEIST_RULES.walletStealRate)),
+    Math.floor(cap)
+  );
+  const heat = plan === "smash" ? 9 : plan === "frame" ? 6 : 4;
+  return { successChance, stealable, revenge, sameFaction, protectedTarget, heat };
+}
+
+function getDominantWorldFaction(world) {
+  return [...(world.factions || [])].sort((a, b) => b.influence - a.influence)[0] || world.factions?.[0];
+}
+
+function createWorldArtifact(settings, world) {
+  const seed = crypto.createHash("sha256").update(`${settings.guildId}:${world.seasonId}:artifact`).digest("hex");
+  const dominant = getDominantWorldFaction(world);
+  const faction = getWorldFaction(dominant?.id);
+  const form = WORLD_ARTIFACT_FORMS[parseInt(seed.slice(0, 2), 16) % WORLD_ARTIFACT_FORMS.length];
+  const tones = WORLD_ARTIFACT_TONES[faction.id] || WORLD_ARTIFACT_TONES.wardens;
+  const tone = tones[parseInt(seed.slice(2, 4), 16) % tones.length];
+  const nameRoot = ["Aurix", "Moon", "Rift", "Echo", "Civic", "Star"][parseInt(seed.slice(4, 6), 16) % 6];
+  return {
+    name: `${nameRoot} ${form}`,
+    form,
+    tone,
+    power: 1,
+    traits: [`Touched by ${faction.name}`],
+    lastChangedAt: new Date(),
+  };
+}
+
+function normalizeWorldArtifact(settings, world) {
+  if (!world.artifact?.name) {
+    world.artifact = createWorldArtifact(settings, world);
+  }
+  world.artifact.power = Math.max(1, Number(world.artifact.power) || 1);
+  world.artifact.traits ||= [];
+  world.artifact.traits = [...new Set(world.artifact.traits)].slice(0, 6);
+  world.artifact.lastChangedAt ||= new Date();
+  return world.artifact;
+}
+
+function evolveWorldArtifact(settings, world, choice) {
+  const artifact = normalizeWorldArtifact(settings, world);
+  const faction = getWorldFaction(choice.factionId);
+  const tones = WORLD_ARTIFACT_TONES[faction.id] || WORLD_ARTIFACT_TONES.wardens;
+  artifact.tone = tones[(artifact.power + artifact.traits.length) % tones.length];
+  artifact.power += 1;
+  artifact.traits = [
+    `${faction.name}: ${choice.label}`,
+    ...artifact.traits.filter((trait) => !trait.startsWith(`${faction.name}:`)),
+  ].slice(0, 6);
+  artifact.lastChangedAt = new Date();
+  world.artifact = artifact;
+  return artifact;
+}
+
+function createWorldEncounter(settings) {
+  const world = normalizeWorldState(settings);
+  const seed = `${settings.guildId}:${world.seasonId}:${world.storyLog?.length || 0}:${Date.now()}`;
+  const hash = crypto.createHash("sha256").update(seed).digest("hex");
+  const template = WORLD_ENCOUNTER_TEMPLATES[parseInt(hash.slice(0, 2), 16) % WORLD_ENCOUNTER_TEMPLATES.length];
+  const season = getCurrentWorldSeason();
+  return {
+    id: `${template.id}-${hash.slice(0, 8)}`,
+    title: `${template.title}: ${season.name}`,
+    description: template.description,
+    seasonId: world.seasonId,
+    choices: template.choices.map((choice) => ({ ...choice })),
+    resolvedBy: null,
+    resolvedChoiceId: null,
+    expiresAt: new Date(Date.now() + WORLD_ENCOUNTER_TTL_MS),
+  };
+}
+
+function getActiveWorldEncounter(settings) {
+  const world = normalizeWorldState(settings);
+  if (!world.activeEncounter?.id || world.activeEncounter?.resolvedChoiceId || new Date(world.activeEncounter.expiresAt || 0).getTime() <= Date.now()) {
+    world.activeEncounter = createWorldEncounter(settings);
+    world.lastEncounterAt = new Date();
+    settings.markModified("worldState");
+  }
+  return world.activeEncounter;
+}
+
+function buildWorldDecisionRows(encounter, guildId) {
+  if (!encounter?.choices?.length) {
+    return [];
+  }
+  return [
+    new ActionRowBuilder().addComponents(
+      ...encounter.choices.slice(0, 3).map((choice) => new ButtonBuilder()
+        .setCustomId(`world:choice:${guildId}:${choice.id}`)
+        .setLabel(choice.label)
+        .setStyle(ButtonStyle.Secondary))
+    ),
+  ];
+}
+
+function buildWorldPayload(settings, guildName) {
+  const world = normalizeWorldState(settings);
+  const season = getCurrentWorldSeason();
+  const dominant = getDominantWorldFaction(world);
+  const encounter = getActiveWorldEncounter(settings);
+  const artifact = normalizeWorldArtifact(settings, world);
+  const factionLines = world.factions
+    .map((faction) => `**${faction.name}** ${progressBar(faction.influence, 100, 8)} ${formatNumber(faction.influence)} influence`)
+    .join("\n");
+  const storyLines = world.storyLog.length
+    ? world.storyLog.slice(0, 4).map((entry) => `**${entry.title}** - ${entry.text}`).join("\n")
+    : "No server stories have been written yet. Resolve a world encounter to begin.";
+  return withExtraComponents(buildEmbedPayload({
+    title: `${guildName} World`,
+    description: `Season: **${season.name}**\nDominant faction: **${dominant?.name || "None"}**\nTension: ${progressBar(world.tension, 100, 10)} ${formatNumber(world.tension)} / 100`,
+    visual: "help-summary.svg",
+    fields: [
+      { name: "Factions", value: factionLines || "No factions active." },
+      { name: "Server Artifact", value: `**${artifact.name}**\nA ${artifact.tone} ${artifact.form.toLowerCase()} at power ${formatNumber(artifact.power)}.` },
+      { name: "Active Encounter", value: `**${encounter.title}**\n${encounter.description}\nExpires in ${humanizeMs(new Date(encounter.expiresAt).getTime() - Date.now())}` },
+      { name: "Story So Far", value: storyLines },
+    ],
+    footer: "Use /world encounter or the decision buttons to push the server story in one direction.",
+  }), buildWorldDecisionRows(encounter, settings.guildId));
+}
+
+function buildWorldArtifactPayload(settings, guildName) {
+  const world = normalizeWorldState(settings);
+  const artifact = normalizeWorldArtifact(settings, world);
+  const dominant = getDominantWorldFaction(world);
+  const traits = artifact.traits?.length ? artifact.traits.map((trait) => `- ${trait}`).join("\n") : "No traits yet.";
+  return buildEmbedPayload({
+    title: `${guildName}'s ${artifact.name}`,
+    description: `A **${artifact.tone} ${artifact.form.toLowerCase()}** shaped by this server's decisions.`,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Power", value: `${formatNumber(artifact.power)}`, inline: true },
+      { name: "Dominant Faction", value: dominant?.name || "None", inline: true },
+      { name: "Traits", value: traits },
+      { name: "Share Hook", value: `This artifact is unique to **${guildName}** and changes when the community resolves world encounters.` },
+    ],
+    footer: artifact.lastChangedAt ? `Last changed: ${new Date(artifact.lastChangedAt).toISOString().slice(0, 10)}` : "Resolve world encounters to evolve it.",
+  });
+}
+
+function buildWorldRecapPayload(settings, guildName) {
+  const world = normalizeWorldState(settings);
+  const season = getCurrentWorldSeason();
+  const artifact = normalizeWorldArtifact(settings, world);
+  const dominant = getDominantWorldFaction(world);
+  const storyLines = world.storyLog.length
+    ? world.storyLog.slice(0, 5).map((entry, index) => `${index + 1}. **${entry.title}** - ${entry.text}`).join("\n")
+    : "No story entries yet. Use `/world encounter` to create the first one.";
+  const factionSummary = [...world.factions]
+    .sort((a, b) => b.influence - a.influence)
+    .map((faction) => `${faction.name}: ${formatNumber(faction.influence)}`)
+    .join(" | ");
+  return buildEmbedPayload({
+    title: `${guildName}: Story So Far`,
+    description: [
+      `Season: **${season.name}**`,
+      `Leading faction: **${dominant?.name || "None"}**`,
+      `Artifact: **${artifact.name}**, a ${artifact.tone} ${artifact.form.toLowerCase()} at power ${formatNumber(artifact.power)}`,
+    ].join("\n"),
+    visual: "help-summary.svg",
+    fields: [
+      { name: "Faction Map", value: factionSummary || "No factions active." },
+      { name: "Recent Story", value: storyLines },
+      { name: "Invite Prompt", value: "Bring people into the next decision with `/world encounter`. This recap is designed to be posted in announcements or shared as a screenshot." },
+    ],
+    footer: "Aurix turns server decisions into a persistent community myth.",
+  });
+}
+
+function getMonthId(date = new Date()) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function normalizeCreatorChallenge(settings) {
+  settings.creatorChallenge ||= {};
+  settings.creatorChallenge.entries ||= [];
+  if (settings.creatorChallenge.expiresAt && new Date(settings.creatorChallenge.expiresAt).getTime() <= Date.now()) {
+    settings.creatorChallenge.prompt = null;
+    settings.creatorChallenge.theme = null;
+    settings.creatorChallenge.createdBy = null;
+    settings.creatorChallenge.createdAt = null;
+    settings.creatorChallenge.expiresAt = null;
+    settings.creatorChallenge.entries = [];
+  }
+  settings.markModified("creatorChallenge");
+  return settings.creatorChallenge;
+}
+
+function buildCreatorChallengePayload(settings) {
+  const challenge = normalizeCreatorChallenge(settings);
+  if (!challenge.prompt) {
+    return buildEmbedPayload({
+      title: "Creator Challenge Board",
+      description: "No creator challenge is active. Mods can start one with `/challenge create`.",
+      visual: "help-summary.svg",
+      footer: "Challenges are for memes, art, clips, screenshots, stories, builds, and server rituals.",
+    });
+  }
+  const entries = challenge.entries
+    .slice(-8)
+    .reverse()
+    .map((entry, index) => `${index + 1}. <@${entry.userId}> - ${entry.text}`)
+    .join("\n");
+  return buildEmbedPayload({
+    title: `Creator Challenge: ${challenge.theme || "Server Prompt"}`,
+    description: challenge.prompt,
+    visual: "help-summary.svg",
+    fields: [
+      { name: "Entries", value: entries || "No entries yet. Submit with `/challenge submit`." },
+      { name: "Ends", value: challenge.expiresAt ? new Date(challenge.expiresAt).toISOString().slice(0, 10) : "No end set", inline: true },
+      { name: "Share Hook", value: "Use this for fanart, memes, screenshots, clips, and lore prompts." },
+    ],
+  });
+}
+
+function createMemoryQuest(settings) {
+  const world = normalizeWorldState(settings);
+  const artifact = normalizeWorldArtifact(settings, world);
+  const dominant = getDominantWorldFaction(world);
+  const title = `${artifact.name} Chronicle`;
+  return {
+    id: crypto.randomUUID().slice(0, 8),
+    title,
+    description: `Collect memories for the ${artifact.name}. The ${dominant?.name || "server"} wants proof that this season mattered.`,
+    goal: 12,
+    progress: 0,
+    contributors: [],
+    completedAt: null,
+    createdAt: new Date(),
+  };
+}
+
+function normalizeMemoryQuest(settings) {
+  if (!settings.memoryQuest || settings.memoryQuest.completedAt) {
+    settings.memoryQuest = createMemoryQuest(settings);
+  }
+  settings.memoryQuest.contributors ||= [];
+  settings.memoryQuest.progress = Math.max(0, Number(settings.memoryQuest.progress) || 0);
+  settings.markModified("memoryQuest");
+  return settings.memoryQuest;
+}
+
+function buildMemoryQuestPayload(settings) {
+  const quest = normalizeMemoryQuest(settings);
+  const contributors = [...(quest.contributors || [])]
+    .sort((a, b) => (b.amount || 0) - (a.amount || 0))
+    .slice(0, 5)
+    .map((entry, index) => `${index + 1}. <@${entry.userId}> - ${formatNumber(entry.amount)} memories`)
+    .join("\n");
+  return buildEmbedPayload({
+    title: `Memory Quest: ${quest.title}`,
+    description: `${quest.description}\n\n${progressBar(quest.progress, quest.goal)}\n${formatNumber(quest.progress)} / ${formatNumber(quest.goal)} memories`,
+    visual: "help-summary.svg",
+    fields: [
+      { name: "Contribute", value: "`/memoryquest contribute memory:<short memory>`" },
+      { name: "Top Memory Keepers", value: contributors || "No memories contributed yet." },
+    ],
+    footer: "Memory quests turn server moments into shared lore instead of disposable chat noise.",
+  });
+}
+
+function getServerWeather(settings) {
+  const world = normalizeWorldState(settings);
+  const community = normalizeCommunityIdentity(settings);
+  const memoryProgress = Number(settings.memoryQuest?.progress) || 0;
+  const challengeEntries = settings.creatorChallenge?.entries?.length || 0;
+  const projectWeight = community.completedProjects * 4 + (settings.serverProject?.contributors?.length || 0);
+  const storyWeight = (world.storyLog?.length || 0) + world.tension / 12;
+  const bloomWeight = challengeEntries * 2 + (community.totalMaterialsContributed || 0) / 80;
+  const civicWeight = projectWeight + memoryProgress;
+  const stormWeight = storyWeight + (getDominantWorldFaction(world)?.id === "storm" ? 4 : 0);
+  const scores = [
+    ["bloom", bloomWeight],
+    ["civic", civicWeight],
+    ["storm", stormWeight],
+  ].sort((a, b) => b[1] - a[1]);
+  const [weatherId, score] = scores[0];
+  const weather = score > 0 ? SERVER_WEATHER_TYPES[weatherId] : SERVER_WEATHER_TYPES.quiet;
+  return { id: score > 0 ? weatherId : "quiet", score, weather, scores };
+}
+
+function buildServerWeatherPayload(settings, guildName) {
+  const { weather, scores } = getServerWeather(settings);
+  return buildEmbedPayload({
+    title: `${guildName} Weather`,
+    description: weather.description,
+    visual: "help-summary.svg",
+    fields: [
+      { name: "Current Mood", value: weather.name, inline: true },
+      { name: "Signals", value: scores.map(([id, score]) => `${SERVER_WEATHER_TYPES[id].name}: ${formatNumber(score)}`).join("\n") },
+      { name: "How To Shift It", value: "Creator entries strengthen Bloom. Projects and memory quests strengthen Civic. World decisions and encounters strengthen Storm." },
+    ],
+    footer: "Weather is social feedback, not a timer. It reflects how the server is choosing to play.",
+  });
+}
+
+function buildNpcLetterPayload(settings, guildName) {
+  const world = normalizeWorldState(settings);
+  const artifact = normalizeWorldArtifact(settings, world);
+  const faction = getWorldFaction(getDominantWorldFaction(world)?.id);
+  const latestStory = world.storyLog?.[0];
+  const greeting = {
+    wardens: "Filed under living history",
+    bloom: "Sent with warm roots",
+    storm: "Carried on bright static",
+  }[faction.id] || "Sent from the road";
+  return buildEmbedPayload({
+    title: `Letter From ${faction.name}`,
+    description: [
+      `**${greeting}, ${guildName}.**`,
+      latestStory ? `We noticed **${latestStory.title}**. ${latestStory.text}` : `Your ${artifact.name} is still waiting for its first true legend.`,
+      `The ${artifact.name} now feels ${artifact.tone}. Keep choosing together, and it will become impossible to mistake for anyone else's story.`,
+    ].join("\n\n"),
+    visual: "help-summary.svg",
+    fields: [
+      { name: "Faction Mood", value: faction.principle },
+      { name: "Artifact Mentioned", value: `${artifact.name}, power ${formatNumber(artifact.power)}`, inline: true },
+    ],
+    footer: "NPC letters turn recent server actions into shareable lore.",
+  });
+}
+
+function createPartyQuest(settings) {
+  const world = normalizeWorldState(settings);
+  const artifact = normalizeWorldArtifact(settings, world);
+  return {
+    id: crypto.randomUUID().slice(0, 8),
+    title: `${artifact.name} Expedition`,
+    description: `A four-role expedition to recover a missing piece of the ${artifact.name}.`,
+    roles: PARTY_QUEST_ROLES.map((role) => ({ role: role.id, userId: null })),
+    progress: 0,
+    goal: PARTY_QUEST_ROLES.length,
+    expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000),
+    completedAt: null,
+    createdAt: new Date(),
+  };
+}
+
+function normalizePartyQuest(settings) {
+  if (!settings.partyQuest || settings.partyQuest.completedAt || new Date(settings.partyQuest.expiresAt || 0).getTime() <= Date.now()) {
+    settings.partyQuest = createPartyQuest(settings);
+  }
+  settings.partyQuest.roles ||= PARTY_QUEST_ROLES.map((role) => ({ role: role.id, userId: null }));
+  settings.partyQuest.progress = settings.partyQuest.roles.filter((role) => role.userId).length;
+  settings.markModified("partyQuest");
+  return settings.partyQuest;
+}
+
+function buildPartyQuestPayload(settings) {
+  const quest = normalizePartyQuest(settings);
+  const roleLines = quest.roles.map((entry) => {
+    const role = PARTY_QUEST_ROLES.find((item) => item.id === entry.role) || { name: entry.role, description: "Role" };
+    return `**${role.name}** - ${entry.userId ? `<@${entry.userId}>` : "Open"}\n${role.description}`;
+  }).join("\n\n");
+  return buildEmbedPayload({
+    title: `Co-op Expedition: ${quest.title}`,
+    description: `${quest.description}\n\n${progressBar(quest.progress, quest.goal)}\n${formatNumber(quest.progress)} / ${formatNumber(quest.goal)} roles filled`,
+    visual: "help-summary.svg",
+    fields: [
+      { name: "Roles", value: roleLines },
+      { name: "Join", value: "`/partyquest join role:<role>`" },
+    ],
+    footer: "Co-op expeditions reward a complete team, not solo grinding.",
+  });
+}
+
+async function completePartyQuest(settings) {
+  const quest = settings.partyQuest;
+  const world = normalizeWorldState(settings);
+  const artifact = normalizeWorldArtifact(settings, world);
+  artifact.power += 1;
+  artifact.traits = [`Co-op Expedition: ${quest.title}`, ...artifact.traits].slice(0, 6);
+  artifact.lastChangedAt = new Date();
+  world.storyLog.unshift({
+    title: quest.title,
+    text: `A full party restored a missing piece of **${artifact.name}**.`,
+    actorId: null,
+    createdAt: new Date(),
+  });
+  world.storyLog = world.storyLog.slice(0, WORLD_STORY_LIMIT);
+  quest.completedAt = new Date();
+  settings.markModified("worldState");
+  settings.markModified("partyQuest");
+  await settings.save();
+}
+
+async function buildYearbookPayload(settings, guildName) {
+  const monthId = getMonthId();
+  const [helpers, builders, explorers, artists] = await Promise.all([
+    User.find(buildPlayerLeaderboardFilter(settings.guildId)).sort({ "stats.giftsSent": -1, updatedAt: -1 }).limit(1).lean(),
+    User.find(buildPlayerLeaderboardFilter(settings.guildId)).sort({ "stats.projectContributions": -1, updatedAt: -1 }).limit(1).lean(),
+    User.find(buildPlayerLeaderboardFilter(settings.guildId)).sort({ "stats.bossWins": -1, "stats.mines": -1 }).limit(1).lean(),
+    Promise.resolve((settings.creatorChallenge?.entries || []).slice(-1)),
+  ]);
+  const highlights = [
+    helpers[0] ? { category: "Welcoming Hand", userId: helpers[0].userId, label: "Most generous helper", score: helpers[0].stats?.giftsSent || 0 } : null,
+    builders[0] ? { category: "Project Builder", userId: builders[0].userId, label: "Most project contributions", score: builders[0].stats?.projectContributions || 0 } : null,
+    explorers[0] ? { category: "World Runner", userId: explorers[0].userId, label: "Most adventure momentum", score: (explorers[0].stats?.bossWins || 0) + (explorers[0].stats?.mines || 0) } : null,
+    artists[0] ? { category: "Creator Spark", userId: artists[0].userId, label: "Latest creator challenge entry", score: 1 } : null,
+  ].filter(Boolean);
+  settings.yearbook = { monthId, generatedAt: new Date(), highlights };
+  settings.markModified("yearbook");
+  const world = normalizeWorldState(settings);
+  const artifact = normalizeWorldArtifact(settings, world);
+  const lines = highlights.map((entry) => `**${entry.category}** - <@${entry.userId}>\n${entry.label} (${formatNumber(entry.score)})`).join("\n\n");
+  return buildEmbedPayload({
+    title: `${guildName} Yearbook: ${monthId}`,
+    description: `A shareable community snapshot for this server.\nArtifact: **${artifact.name}**, power ${formatNumber(artifact.power)}.`,
+    visual: "core-profile.svg",
+    fields: [
+      { name: "Highlights", value: lines || "Not enough activity yet. Gifts, projects, memories, and creator entries fill this in." },
+      { name: "Story Hook", value: world.storyLog?.[0] ? `Latest: **${world.storyLog[0].title}** - ${world.storyLog[0].text}` : "No story entries yet." },
+    ],
+    footer: "Post this in announcements as a lightweight community yearbook card.",
+  });
+}
+
+async function resolveWorldEncounter(interaction, choiceId) {
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const world = normalizeWorldState(settings);
+  const encounter = getActiveWorldEncounter(settings);
+  if (encounter.resolvedChoiceId) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Encounter Resolved", description: "This world encounter has already become part of the server story.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
+  const choice = encounter.choices.find((entry) => entry.id === choiceId);
+  if (!choice) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Choice Missing", description: "That world choice is no longer available.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  const faction = world.factions.find((entry) => entry.id === choice.factionId);
+  if (faction) {
+    faction.influence = clamp((Number(faction.influence) || 0) + (choice.influenceDelta || 0), 0, 100);
+    faction.reputation += 1;
+  }
+  const artifact = evolveWorldArtifact(settings, world, choice);
+  world.tension = clamp((Number(world.tension) || 0) + 6, 0, 100);
+  encounter.resolvedBy = interaction.user.id;
+  encounter.resolvedChoiceId = choice.id;
+  world.storyLog.unshift({
+    title: encounter.title,
+    text: `<@${interaction.user.id}> chose **${choice.label}**. ${choice.text}`,
+    actorId: interaction.user.id,
+    createdAt: new Date(),
+  });
+  world.storyLog = world.storyLog.slice(0, WORLD_STORY_LIMIT);
+  world.activeEncounter = null;
+  settings.markModified("worldState");
+
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  if (!user.reputation?.get) {
+    user.reputation = new Map(Object.entries(user.reputation || {}));
+  }
+  user.reputation.set(choice.factionId, (user.reputation.get(choice.factionId) || 0) + 1);
+  user.xp += 120;
+  await syncRank(user);
+  await user.save();
+  await settings.save();
+  eventBus.publish("world.choice_resolved", {
+    guildId: interaction.guildId,
+    userId: interaction.user.id,
+    metadata: {
+      encounterId: encounter.id,
+      choiceId: choice.id,
+      factionId: choice.factionId,
+      artifactPower: artifact.power,
+    },
+  });
+
+  const factionInfo = getWorldFaction(choice.factionId);
+  return interaction.reply(buildEmbedPayload({
+    title: "World Story Advanced",
+    description: `${choice.text}\n\nThe **${factionInfo.name}** gained influence, and **${artifact.name}** changed with the decision.`,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Reputation", value: `+1 with ${factionInfo.name}`, inline: true },
+      { name: "XP", value: "+120", inline: true },
+      { name: "Artifact", value: `${artifact.tone} ${artifact.form}, power ${formatNumber(artifact.power)}`, inline: true },
+      { name: "World Tension", value: `${formatNumber(world.tension)} / 100`, inline: true },
+    ],
+  }));
+}
+
+function buildServerProjectPayload(project) {
+  const template = getServerProjectTemplate(project.id);
+  const materialTotal = getServerProjectMaterialTotal(project);
+  const materialLines = Array.from(project.materials.entries ? project.materials.entries() : Object.entries(project.materials || {}))
+    .filter(([, amount]) => amount > 0)
+    .map(([materialId, amount]) => `${getInventoryLabel(materialId)} x${formatNumber(amount)}`)
+    .join("\n");
+  const topContributors = [...(project.contributors || [])]
+    .sort((a, b) => (b.aura + b.materials * 1000) - (a.aura + a.materials * 1000))
+    .slice(0, 5)
+    .map((entry, index) => `${index + 1}. <@${entry.userId}> - ${formatNumber(entry.aura || 0)} aura, ${formatNumber(entry.materials || 0)} materials`)
+    .join("\n");
+
+  return buildEmbedPayload({
+    title: `Server Project: ${project.name}`,
+    description: `${project.description}\n\n${progressBar(project.aura, project.auraGoal)}\n${formatNumber(project.aura)} / ${formatNumber(project.auraGoal)} aura\n${progressBar(materialTotal, project.materialGoal)}\n${formatNumber(materialTotal)} / ${formatNumber(project.materialGoal)} materials`,
+    visual: "clan-hall.svg",
+    fields: [
+      { name: "Contribute Aura", value: "`/project contribute-aura amount:<amount>`", inline: true },
+      { name: "Contribute Materials", value: "`/project contribute-material material:<id> amount:<amount>`", inline: true },
+      { name: "Completion Reward", value: `Contribution-weighted pool up to ${formatNumber(Math.floor(template.rewardAura * ECONOMY_RULES.projectRewardPoolCapContributors))} aura, plus XP${Object.entries(template.rewardCrates || {}).length ? ` and major-contributor crates` : ""}` },
+      { name: "Materials Banked", value: materialLines || "No materials donated yet." },
+      { name: "Top Contributors", value: topContributors || "No contributors yet." },
+    ],
+    footer: "Projects are shared server sinks. Donations are spent into the project and cannot be withdrawn.",
+  });
+}
+
+function buildCommunityPayload(settings, guildName = "This server") {
+  const community = normalizeCommunityIdentity(settings);
+  const project = normalizeServerProject(settings);
+  const nextLevelXp = getCommunityNextLevelXp(community.level);
+  const currentLevelBaseXp = getCommunityNextLevelXp(Math.max(1, community.level - 1));
+  const currentProgress = Math.max(0, community.xp - currentLevelBaseXp);
+  const neededProgress = Math.max(1, nextLevelXp - currentLevelBaseXp);
+
+  return buildEmbedPayload({
+    title: `${guildName} Community`,
+    description: `${getCommunityLevelTitle(community.level)}\n${progressBar(currentProgress, neededProgress)}\n${formatNumber(currentProgress)} / ${formatNumber(neededProgress)} community XP to level ${community.level + 1}.`,
+    visual: "clan-hall.svg",
+    fields: [
+      { name: "Community Level", value: `${formatNumber(community.level)}`, inline: true },
+      { name: "Projects Completed", value: `${formatNumber(community.completedProjects)}`, inline: true },
+      { name: "Total Contributions", value: `${formatNumber(community.totalAuraContributed)} aura\n${formatNumber(community.totalMaterialsContributed)} materials`, inline: true },
+      { name: "Active Project", value: `**${project.name}**\n${formatNumber(project.aura)} / ${formatNumber(project.auraGoal)} aura\n${formatNumber(getServerProjectMaterialTotal(project))} / ${formatNumber(project.materialGoal)} materials` },
+      { name: "Identity", value: "Community levels come from shared projects, not solo cooldown grinding. Higher levels can later unlock server cosmetics, titles, event themes, and role-shop perks." },
+    ],
+    footer: community.lastProjectCompletedAt ? `Last project completed: ${community.lastProjectCompletedAt.toISOString().slice(0, 10)}` : "Complete projects to shape this server's identity.",
+  });
+}
+
+function isServerProjectComplete(project) {
+  return project.aura >= project.auraGoal && getServerProjectMaterialTotal(project) >= project.materialGoal;
+}
+
+async function completeServerProject(settings, project) {
+  const template = getServerProjectTemplate(project.id);
+  const contributors = [...(project.contributors || [])].filter((entry) => (entry.aura || 0) > 0 || (entry.materials || 0) > 0);
+  const contributorIds = contributors.map((entry) => entry.userId);
+  const users = contributorIds.length
+    ? await User.find({ ...buildPlayerLeaderboardFilter(settings.guildId), userId: { $in: contributorIds } })
+    : [];
+  const usersById = new Map(users.map((user) => [user.userId, user]));
+  const contributionScores = contributors.map((contributor) => ({
+    userId: contributor.userId,
+    score: Math.max(0, ((contributor.aura || 0) / Math.max(1, project.auraGoal)) + ((contributor.materials || 0) / Math.max(1, project.materialGoal))),
+  }));
+  const totalScore = contributionScores.reduce((sum, entry) => sum + entry.score, 0) || 1;
+  const scoresByUserId = new Map(contributionScores.map((entry) => [entry.userId, entry.score]));
+  const auraRewardPool = Math.min(
+    template.rewardAura * Math.min(contributors.length, ECONOMY_RULES.projectRewardPoolCapContributors),
+    Math.floor((Number(project.aura) || 0) * ECONOMY_RULES.projectRewardMaxSinkRatio)
+  );
+
+  for (const contributor of contributors) {
+    const user = usersById.get(contributor.userId);
+    if (!user) {
+      continue;
+    }
+    const rawShare = (scoresByUserId.get(contributor.userId) || 0) / totalScore;
+    const share = Math.min(rawShare, 0.45);
+    user.aura += Math.floor(auraRewardPool * share);
+    user.xp += Math.floor(template.rewardXp * Math.max(0.25, share * contributors.length));
+    if (rawShare >= 0.08) {
+      Object.entries(template.rewardCrates || {}).forEach(([crateId, amount]) => {
+        user.crates.set(crateId, (user.crates.get(crateId) || 0) + amount);
+      });
+    }
+    await syncRank(user);
+    await user.save();
+  }
+
+  addCommunityProjectProgress(settings, project, template);
+  project.completedAt = new Date();
+  settings.serverProject = createServerProject();
+  settings.markModified("serverProject");
+  await settings.save();
+  return { template, contributors: contributors.length };
 }
 
 function withExtraComponents(payload, rows = []) {
@@ -968,10 +2107,11 @@ function formatServerEventBonus(event) {
 
 function applyServerEventRewards(user, event) {
   const bonus = event?.bonus || {};
-  const auraReward = (Number(event.rewardAura) || 0) + Math.floor((Number(event.rewardAura) || 0) * (Number(bonus.auraMultiplier) || 0));
+  let auraReward = (Number(event.rewardAura) || 0) + Math.floor((Number(event.rewardAura) || 0) * (Number(bonus.auraMultiplier) || 0));
   const xpReward = (Number(event.rewardXp) || 0) + Math.floor((Number(event.rewardXp) || 0) * (Number(bonus.xpMultiplier) || 0));
   const bonusLines = formatServerEventBonus(event);
 
+  auraReward = applyFaucetDamping(user, auraReward);
   user.aura += auraReward;
   user.xp += xpReward;
 
@@ -997,6 +2137,50 @@ function applyServerEventRewards(user, event) {
   return { auraReward, xpReward, bonusLines };
 }
 
+async function reserveServerEventClaim(settings, event, userId) {
+  if (!settings?._id || !event?.id || !userId) {
+    return false;
+  }
+
+  const result = await GuildSettings.updateOne(
+    {
+      _id: settings._id,
+      "activeEvent.id": event.id,
+      "activeEvent.expiresAt": { $gt: new Date() },
+      "activeEvent.claimedUserIds": { $ne: userId },
+    },
+    { $addToSet: { "activeEvent.claimedUserIds": userId } }
+  );
+  return result.modifiedCount > 0;
+}
+
+async function reserveServerEventActivityAttempt(settings, event, userId, correct) {
+  if (!settings?._id || !event?.id || !userId) {
+    return false;
+  }
+
+  const update = {
+    $addToSet: {
+      "activeEvent.attemptedUserIds": userId,
+    },
+  };
+  if (correct) {
+    update.$addToSet["activeEvent.claimedUserIds"] = userId;
+  }
+
+  const result = await GuildSettings.updateOne(
+    {
+      _id: settings._id,
+      "activeEvent.id": event.id,
+      "activeEvent.expiresAt": { $gt: new Date() },
+      "activeEvent.attemptedUserIds": { $ne: userId },
+      "activeEvent.claimedUserIds": { $ne: userId },
+    },
+    update
+  );
+  return result.modifiedCount > 0;
+}
+
 async function claimServerEvent(interaction) {
   const settings = await getOrCreateGuildSettings(interaction.guildId);
   const activeServerEvent = getActiveServerEvent(settings);
@@ -1006,15 +2190,20 @@ async function claimServerEvent(interaction) {
   if (activeServerEvent.claimedUserIds?.includes(interaction.user.id)) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Already Claimed", description: "You already claimed this server event.", visual: "emblem-help.svg" }), ephemeral: true });
   }
+  if (activeServerEvent.attemptedUserIds?.includes(interaction.user.id)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Already Attempted", description: "You already used your attempt for this server event.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
   if (activeServerEvent.activity?.answer) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Activity Required", description: activeServerEvent.activity.prompt || "Use the event buttons to complete this server event.", visual: "emblem-help.svg" }), ephemeral: true });
   }
+  const reserved = await reserveServerEventClaim(settings, activeServerEvent, interaction.user.id);
+  if (!reserved) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Already Claimed", description: "You already claimed this server event, or it just expired.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const reward = applyServerEventRewards(user, activeServerEvent);
-  settings.activeEvent.claimedUserIds.push(interaction.user.id);
   await syncRank(user);
   await user.save();
-  await settings.save();
   return interaction.reply(buildEmbedPayload({
     title: `${activeServerEvent.name} Claimed`,
     description: "You caught the server event before it faded.",
@@ -1022,7 +2211,7 @@ async function claimServerEvent(interaction) {
     fields: [
       { name: "Aura", value: `${formatNumber(reward.auraReward)}`, inline: true },
       { name: "XP", value: `${formatNumber(reward.xpReward)}`, inline: true },
-      { name: "Claimed By", value: `${settings.activeEvent.claimedUserIds.length} player(s)`, inline: true },
+      { name: "Claimed By", value: `${(activeServerEvent.claimedUserIds?.length || 0) + 1} player(s)`, inline: true },
       { name: "Unique Bonus", value: reward.bonusLines.join("\n") || "Base event payout only." },
     ],
   }));
@@ -1037,7 +2226,17 @@ async function completeServerEventActivity(interaction, selectedChoiceId) {
   if (activeServerEvent.claimedUserIds?.includes(interaction.user.id)) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Already Claimed", description: "You already completed this server event.", visual: "emblem-help.svg" }), ephemeral: true });
   }
-  if (!activeServerEvent.activity?.answer || selectedChoiceId !== activeServerEvent.activity.answer) {
+  if (activeServerEvent.attemptedUserIds?.includes(interaction.user.id)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Already Attempted", description: "You already used your attempt for this server event.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
+
+  const correct = Boolean(activeServerEvent.activity?.answer && selectedChoiceId === activeServerEvent.activity.answer);
+  const reserved = await reserveServerEventActivityAttempt(settings, activeServerEvent, interaction.user.id, correct);
+  if (!reserved) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Already Attempted", description: "You already used your attempt for this server event, or it just expired.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
+
+  if (!correct) {
     return interaction.reply({
       ...buildEmbedPayload({
         title: `${activeServerEvent.name} Missed`,
@@ -1050,10 +2249,8 @@ async function completeServerEventActivity(interaction, selectedChoiceId) {
 
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const reward = applyServerEventRewards(user, activeServerEvent);
-  settings.activeEvent.claimedUserIds.push(interaction.user.id);
   await syncRank(user);
   await user.save();
-  await settings.save();
   return interaction.reply(buildEmbedPayload({
     title: `${activeServerEvent.name} Completed`,
     description: activeServerEvent.activity?.success || "You completed the server event activity.",
@@ -1061,7 +2258,7 @@ async function completeServerEventActivity(interaction, selectedChoiceId) {
     fields: [
       { name: "Aura", value: `${formatNumber(reward.auraReward)}`, inline: true },
       { name: "XP", value: `${formatNumber(reward.xpReward)}`, inline: true },
-      { name: "Claimed By", value: `${settings.activeEvent.claimedUserIds.length} player(s)`, inline: true },
+      { name: "Claimed By", value: `${(activeServerEvent.claimedUserIds?.length || 0) + 1} player(s)`, inline: true },
       { name: "Unique Bonus", value: reward.bonusLines.join("\n") || "Base event payout only." },
     ],
   }));
@@ -1085,6 +2282,7 @@ async function maybeSpawnServerEvent(interaction) {
     activity: buildServerEventActivity(template),
     expiresAt: new Date(Date.now() + SERVER_EVENT_DURATION_MS),
     claimedUserIds: [],
+    attemptedUserIds: [],
   };
   rememberServerEventId(settings, template.id);
   settings.lastEventSpawnAt = new Date();
@@ -1464,9 +2662,15 @@ function normalizeReminderState(user) {
   if (!Array.isArray(user.reminders.enabledActions)) {
     user.reminders.enabledActions = [];
   }
+  user.reminders.enabledActions = user.reminders.enabledActions.filter((action) => HEALTHY_REMINDER_ACTIONS.has(action));
 
   if (!user.reminders.lastNotifiedAt?.get) {
     user.reminders.lastNotifiedAt = new Map(mapEntries(user.reminders.lastNotifiedAt));
+  }
+  for (const action of Array.from(user.reminders.lastNotifiedAt.keys())) {
+    if (!HEALTHY_REMINDER_ACTIONS.has(action)) {
+      user.reminders.lastNotifiedAt.delete(action);
+    }
   }
 }
 
@@ -1567,7 +2771,7 @@ function buildPremiumFeatureSummary() {
     "Extra garden plots for faster material farming",
     "Battle edge in PvP and bosses: extra HP and passive crit chance",
     "Premium-only shop items: Premium Supply Drop, Executive Badge, Storm Pass",
-    `${PREMIUM_REMINDER_LIMIT} reminder slots instead of ${FREE_REMINDER_LIMIT}`,
+    "Gentle garden reminders remain opt-in and low-pressure",
     "Profile membership status shown in /profile and /premium",
     "Premium-only profile cosmetics: Aurix VIP Title, Gold Profile Frame, Storm Nameplate",
   ].join("\n");
@@ -1585,12 +2789,12 @@ function formatPremiumPlanSummary(plan) {
     `+${formatPercent(effects.spinRewardBoost)} spin rewards`,
     `+${formatPercent(effects.workAuraBoost)} work aura, +${formatPercent(effects.workXpBoost)} work XP`,
     `+${formatPercent(effects.mineYieldBoost)} mining yield, +${formatPercent(effects.mineXpBoost)} mining XP`,
-    `+${formatPercent(plan.dailyMultiplier - 1)} daily aura and XP`,
+    `+${formatPercent(plan.dailyMultiplier - 1)} relaxed daily check-in aura and XP`,
     `+${plan.dailyRareCrates} rare ${plan.dailyRareCrates === 1 ? "crate" : "crates"} from /daily`,
     `${plan.gardenPlots} garden plots total`,
     `/premium-chest every ${plan.chestCooldownHours}h`,
     `Battle edge: +${plan.battle.maxHpBonus} HP, +${formatPercent(plan.battle.critChanceBonus)} crit`,
-    `${formatPercent(plan.cooldownReduction)} shorter cooldowns`,
+    "No premium cooldown pressure",
     `+${formatPercent(effects.vaultInterestBoost)}/hr vault interest`,
     `+${formatPercent(effects.bossRewardBoost)} boss rewards, +${formatPercent(effects.pvpRewardBoost)} PvP rewards`,
     `+${formatPercent(effects.crateAuraBoost)} crate aura rewards`,
@@ -3500,6 +4704,28 @@ function setQuestSet(user) {
   user.quests = selected.map((quest) => ({ ...quest, progress: 0, completed: false }));
 }
 
+function getDailyCatchup(previousDailyAt, currentStreak) {
+  if (!previousDailyAt) {
+    return { missedDays: 0, auraBonus: 0, xpBonus: 0, protectedStreak: 1, message: "First daily claimed." };
+  }
+
+  const elapsedMs = Date.now() - previousDailyAt.getTime();
+  const missedDays = Math.max(0, Math.floor(elapsedMs / COOLDOWNS.dailyMs) - 1);
+  if (missedDays <= 0) {
+    return { missedDays: 0, auraBonus: 0, xpBonus: 0, protectedStreak: currentStreak + 1, message: "Daily rhythm continued." };
+  }
+
+  const cappedMissedDays = Math.min(missedDays, 5);
+  const protectedStreak = Math.max(1, Math.floor((Number(currentStreak) || 0) * 0.75));
+  return {
+    missedDays,
+    auraBonus: cappedMissedDays * 220,
+    xpBonus: cappedMissedDays * 90,
+    protectedStreak,
+    message: `Welcome back. ${formatNumber(missedDays)} missed day${missedDays === 1 ? "" : "s"} converted into rested catch-up instead of wiping your rhythm.`,
+  };
+}
+
 async function syncRank(user) {
   const previousRank = user.rankIndex;
   const computedRank = getRankByXp(user.xp);
@@ -3557,6 +4783,22 @@ async function getOrCreatePlayer(guildId, userId) {
   user.stats ||= {};
   user.stats.summons ||= 0;
   user.stats.relicsBurned ||= 0;
+  user.stats.giftsSent ||= 0;
+  user.stats.appreciationsGiven ||= 0;
+  user.stats.appreciationsReceived ||= 0;
+  user.stats.campfireShares ||= 0;
+  user.stats.flexes ||= 0;
+  user.stats.factionStrikes ||= 0;
+  user.stats.blackMarketBuys ||= 0;
+  user.stats.bountiesPlaced ||= 0;
+  user.stats.bountiesClaimed ||= 0;
+  user.stats.projectContributions ||= 0;
+  user.notoriety = Math.max(0, Number(user.notoriety) || 0);
+  user.faction ||= { id: null, pledgedAt: null };
+  user.blackMarketPurchases ||= [];
+  if (!user.reputation?.get) {
+    user.reputation = new Map(Object.entries(user.reputation || {}));
+  }
   normalizeInventoryState(user);
   normalizeProgressionSystems(user);
   normalizeTutorialState(user);
@@ -3615,6 +4857,21 @@ function resolveTopggVotePayload(payload = {}) {
   };
 }
 
+function buildTopggVoteKey(vote) {
+  if (!vote?.userId || !vote?.createdAt) {
+    return null;
+  }
+  const bucketMs = 5 * 60 * 1000;
+  const createdBucket = Math.floor(vote.createdAt.getTime() / bucketMs);
+  return [
+    vote.eventId || "no-event-id",
+    vote.userId,
+    vote.voteType || "vote",
+    vote.projectPlatformId || vote.projectId || "unknown-project",
+    createdBucket,
+  ].join(":");
+}
+
 function buildTopggReward(weight) {
   const multiplier = clamp(Number(weight) || 1, 1, 5);
   const crates = Object.entries(TOPGG_VOTE_REWARD.crates).reduce((drops, [crateId, amount]) => {
@@ -3654,7 +4911,7 @@ function buildVotePromptPayload(user) {
       visual: "emblem-success.svg",
       fields: [
         { name: "Vote Link", value: voteUrl },
-        { name: "Reminder", value: reminderEnabled ? "Your vote reminder is already enabled." : "Want the next ping too? Use `/reminders enable action:Top.gg Vote`." },
+        { name: "Reminder", value: reminderEnabled ? "Your vote reminder is already enabled." : "Automatic vote pings are disabled by default. Use `/vote` when you already feel like supporting the bot." },
       ],
       footer: "Top.gg votes refresh about every 12 hours.",
     }),
@@ -3667,6 +4924,9 @@ function buildVotePromptPayload(user) {
 }
 
 async function maybePromptTopggVote(interaction, user, commandName) {
+  if (TOPGG_VOTE_PROMPT_CHANCE <= 0) {
+    return;
+  }
   if (!interaction?.guildId || !interaction.user?.id || !interaction.followUp || !user || commandName === "vote") {
     return;
   }
@@ -3712,6 +4972,13 @@ async function applyTopggVoteWebhookEvent(payload) {
       return { ok: true, action: "duplicate", userId: vote.userId, eventId: vote.eventId, reward: existing.reward || null };
     }
   }
+  const voteKey = buildTopggVoteKey(vote);
+  if (voteKey) {
+    const existing = await TopggVoteLog.findOne({ voteKey }).lean();
+    if (existing) {
+      return { ok: true, action: "duplicate", userId: vote.userId, eventId: vote.eventId, voteKey, reward: existing.reward || null };
+    }
+  }
 
   let user = isGlobalPlayerDataEnabled()
     ? await getOrCreatePlayer(null, vote.userId)
@@ -3727,7 +4994,19 @@ async function applyTopggVoteWebhookEvent(payload) {
     normalizeReminderState(user);
   }
   normalizeTopggState(user);
+  if (user.topgg.lastVoteAt && vote.createdAt.getTime() - user.topgg.lastVoteAt.getTime() < TOPGG_VOTE_COOLDOWN_MS - 5 * 60 * 1000) {
+    return {
+      ok: true,
+      action: "duplicate",
+      reason: "within_vote_cooldown",
+      userId: vote.userId,
+      eventId: vote.eventId,
+      voteKey,
+      nextVoteAt: user.topgg.nextVoteAt || null,
+    };
+  }
   const reward = buildTopggReward(vote.weight);
+  reward.aura = applyFaucetDamping(user, reward.aura);
 
   user.aura += reward.aura;
   user.xp += reward.xp;
@@ -3745,6 +5024,7 @@ async function applyTopggVoteWebhookEvent(payload) {
 
   await TopggVoteLog.create({
     eventId: vote.eventId,
+    voteKey,
     userId: vote.userId,
     voteType: vote.voteType,
     weight: vote.weight,
@@ -3918,14 +5198,14 @@ function getReminderArmingNote(user, action) {
     return "That action is already ready, so the next reminder should go out on the next poll.";
   }
   if (action === "harvest") {
-    return "Plant something first, then the reminder will ping you when a crop is ready.";
+    return "Plant something first, then this gentle reminder can tell you when a crop is ready. It is optional and low-frequency.";
   }
-  return `Use ${REMINDER_ACTIONS[action].command} once to start its cooldown cycle, then the reminder can tag you when it is ready again.`;
+  return "This reminder is only for slow, low-pressure activities.";
 }
 
 function buildBalancePayload(user, targetUser) {
   const combinedEffects = getCombinedEffects(user);
-  const vaultRate = 0.03 + (combinedEffects.vaultInterestBoost || 0) + user.prestige * 0.005;
+  const vaultRate = getVaultRate(user, combinedEffects);
   return buildEmbedPayload({
     title: `${targetUser.username}'s Balance`,
     description: "A quick look at wallet, vault, and passive income.",
@@ -3933,11 +5213,13 @@ function buildBalancePayload(user, targetUser) {
     fields: [
       { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
       { name: "Vault", value: `${formatNumber(user.vaultAura)} aura`, inline: true },
-      { name: "Vault Rate", value: `${(vaultRate * 100).toFixed(1)}% per hour`, inline: true },
+      { name: "Vault Rate", value: `${(vaultRate * 100).toFixed(2)}% per hour`, inline: true },
       { name: "Membership", value: formatPremiumStatus(user), inline: true },
       { name: "Prestige", value: `${user.prestige}`, inline: true },
-      { name: "Daily Streak", value: `${user.streak} day${user.streak === 1 ? "" : "s"}`, inline: true },
+      { name: "Daily Rhythm", value: `${user.streak} gentle check-in${user.streak === 1 ? "" : "s"}`, inline: true },
+      { name: "Faucet Multiplier", value: `${Math.round(getFaucetMultiplier(user) * 100)}%`, inline: true },
     ],
+    footer: "Large vaults earn lower marginal yield so old wealth cannot compound forever.",
   });
 }
 
@@ -3949,10 +5231,10 @@ function buildReminderStatusPayload(user) {
     .join(", ");
 
   return buildEmbedPayload({
-    title: "Reminder Settings",
+    title: "Gentle Reminder Settings",
     description: user.reminders.enabledActions.length
-      ? "The bot will tag you in the saved channel when these actions are ready."
-      : "No reminders are enabled right now.",
+      ? "The bot will only tag you for slow, low-pressure activities you explicitly enabled."
+      : "No reminders are enabled right now. That is perfectly fine.",
     visual: "emblem-help.svg",
     fields: [
       { name: "Enabled", value: enabled || "None" },
@@ -3960,7 +5242,7 @@ function buildReminderStatusPayload(user) {
       { name: "Channel", value: user.reminders.channelId ? `<#${user.reminders.channelId}>` : "Not set", inline: true },
       { name: "Server", value: user.reminders.guildId || "Not set", inline: true },
     ],
-    footer: "Use /reminders enable or /reminders disable to manage tags.",
+    footer: "Reminders are optional. Core progression does not require checking back on timers.",
   });
 }
 
@@ -3981,7 +5263,7 @@ async function sendReadyReminder(client, user, action) {
     }
 
     await channel.send({
-      content: `<@${user.userId}> ${REMINDER_ACTIONS[action].command} is ready again.`,
+      content: `<@${user.userId}> ${REMINDER_ACTIONS[action].command} is ready when you feel like checking in.`,
       allowedMentions: { users: [user.userId] },
     });
     return { sent: true };
@@ -4154,6 +5436,58 @@ function getCooldownRemaining(lastDate, durationMs, user = null) {
   return Math.max(0, lastDate.getTime() + getEffectiveCooldownMs(user, durationMs) - Date.now());
 }
 
+function getPathValue(target, pathValue) {
+  return String(pathValue || "").split(".").reduce((value, key) => value?.[key], target);
+}
+
+function setPathValue(target, pathValue, value) {
+  const keys = String(pathValue || "").split(".").filter(Boolean);
+  if (!keys.length) {
+    return;
+  }
+
+  let cursor = target;
+  keys.slice(0, -1).forEach((key) => {
+    cursor[key] ||= {};
+    cursor = cursor[key];
+  });
+  cursor[keys[keys.length - 1]] = value;
+}
+
+async function reserveUserCooldown(user, fieldName, durationMs) {
+  if (!user?._id || !fieldName) {
+    return { ok: false, remaining: 0 };
+  }
+
+  const cooldownMs = getEffectiveCooldownMs(user, durationMs);
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - cooldownMs);
+  const currentValue = getPathValue(user, fieldName);
+  const remaining = getCooldownRemaining(currentValue, durationMs, user);
+  if (remaining > 0) {
+    return { ok: false, remaining };
+  }
+
+  const result = await User.updateOne(
+    {
+      _id: user._id,
+      $or: [
+        { [fieldName]: { $exists: false } },
+        { [fieldName]: null },
+        { [fieldName]: { $lte: cutoff } },
+      ],
+    },
+    { $set: { [fieldName]: now } }
+  );
+
+  if (result.modifiedCount <= 0) {
+    return { ok: false, remaining: cooldownMs };
+  }
+
+  setPathValue(user, fieldName, now);
+  return { ok: true, remaining: 0 };
+}
+
 function humanizeMs(ms) {
   const totalSeconds = Math.ceil(ms / 1000);
   const minutes = Math.floor(totalSeconds / 60);
@@ -4161,12 +5495,16 @@ function humanizeMs(ms) {
   return minutes <= 0 ? `${seconds}s` : `${minutes}m ${seconds}s`;
 }
 
+function hashString(value) {
+  return String(value || "").split("").reduce((hash, char) => ((hash << 5) - hash + char.charCodeAt(0)) | 0, 0);
+}
+
 async function claimVaultInterest(user) {
   const effects = getCombinedEffects(user);
   const now = new Date();
   const elapsedMs = now.getTime() - (user.lastVaultInterestAt?.getTime() || now.getTime());
-  const elapsedHours = elapsedMs / (60 * 60 * 1000);
-  const rate = 0.03 + (effects.vaultInterestBoost || 0) + user.prestige * 0.005;
+  const elapsedHours = Math.min(ECONOMY_RULES.vaultMaxAccrualHours, Math.max(0, elapsedMs / (60 * 60 * 1000)));
+  const rate = getVaultRate(user, effects);
   const accruedInterest = user.vaultAura * rate * elapsedHours;
   const totalInterest = accruedInterest + (Number(user.vaultInterestRemainder) || 0);
   const interest = Math.floor(totalInterest);
@@ -4201,12 +5539,12 @@ function buildProfileEmbed(user, targetUser) {
       { name: "Prestige", value: `${user.prestige}`, inline: true },
       { name: "Membership", value: formatPremiumStatus(user), inline: true },
       { name: "Profile Style", value: `Title: ${cosmeticStyle.titleLabel}\nFrame: ${cosmeticStyle.frameLabel}`, inline: true },
-      { name: "Daily Streak", value: `${user.streak} days`, inline: true },
+      { name: "Daily Rhythm", value: `${user.streak} gentle check-ins`, inline: true },
       { name: "Rank Progress", value: `${progressBar(rankProgressCurrent, rankProgressTotal)}\n${formatNumber(rankProgressCurrent)} / ${formatNumber(rankProgressTotal)} XP` },
       { name: "Battle Record", value: `PvP ${user.stats.pvpWins}-${user.stats.pvpLosses} | Boss ${user.stats.bossWins}-${user.stats.bossLosses}` },
       { name: "PvP Streak", value: `${formatNumber(getPvpStreak(user))} current | ${formatNumber(getBestPvpStreak(user))} best`, inline: true },
     ],
-    footer: "Ranks can go down if your XP drops below the current tier threshold.",
+    footer: "Progress is meant to be paced. The healthiest long-term goals are collection, world story, and community projects.",
   });
   const cosmeticAttachment = buildProfileCosmeticAttachment(user);
   if (cosmeticAttachment) {
@@ -4227,9 +5565,58 @@ const HELP_SECTIONS = [
       { name: "/profile [user]", description: "View your or another player's profile." },
       { name: "/stats [user]", description: "See a fuller breakdown of player activity." },
       { name: "/event action:<status|claim>", description: "View world events or claim active server events." },
+      { name: "/project", description: "Build a shared server project by donating aura and materials." },
+      { name: "/community", description: "View this server's shared identity, level, and active project." },
+      { name: "/identity", description: "View or set the server's motto, symbol, and values." },
+      { name: "/campfire", description: "Share memories and low-pressure community prompts." },
+      { name: "/appreciate", description: "Recognize another member without turning it into a grind reward." },
+      { name: "/faction", description: "Pledge to a faction and push the server warboard." },
+      { name: "/flex", description: "Post a public status card built from real progression." },
+      { name: "/bounty", description: "Post public grudges and fund revenge arcs." },
+      { name: "/blackmarket", description: "Buy scarce rotating prestige contraband." },
+      { name: "/world", description: "View the living server world, factions, seasons, and story encounters." },
+      { name: "/ask", description: "Ask in natural language and get routed to the right Aurix feature." },
       { name: "/serverquest", description: "View the rotating community quest." },
       { name: "/setup", description: "Admin/mod command to choose where Aurix commands work." },
       { name: "/help", description: "Browse every command grouped by category." },
+    ],
+  },
+  {
+    id: "community_play",
+    name: "Community Play",
+    visual: "help-summary.svg",
+    commands: [
+      { name: "/appreciate user:<member>", description: "Publicly thank someone for kindness, creativity, help, welcoming, or humor." },
+      { name: "/campfire status", description: "Open the current server prompt and recent appreciation log." },
+      { name: "/campfire share text:<message>", description: "Save a memory, idea, or thanks into the server story." },
+      { name: "/identity view", description: "View the server's shared motto, symbol, values, and community level." },
+      { name: "/identity set", description: "Manager-only update for server identity." },
+      { name: "/partyquest", description: "Complete a cooperative four-role server expedition." },
+      { name: "/weather", description: "See the server's current social mood weather." },
+      { name: "/letter", description: "Receive a faction letter about the server's story." },
+      { name: "/shrine", description: "Restore the shared artifact shrine with materials." },
+      { name: "/memoryquest", description: "Turn server memories into shared lore." },
+      { name: "/yearbook", description: "Generate a shareable monthly community card." },
+      { name: "/gallery", description: "Show the server's artifact and identity gallery." },
+      { name: "/social [user]", description: "View a member's social reputation and contribution identity." },
+    ],
+  },
+  {
+    id: "chaos",
+    name: "Controlled Chaos",
+    visual: "help-bosses.svg",
+    commands: [
+      { name: "/faction status", description: "View the faction warboard, server tension, and influence race." },
+      { name: "/faction pledge faction:<side>", description: "Publicly pick a faction identity." },
+      { name: "/faction strike", description: "Spend aura to push your faction and raise server tension." },
+      { name: "/flex [user]", description: "Show power, prestige, rare relics, faction, and battle reputation." },
+      { name: "/bounty status", description: "View active public grudges and bounty values." },
+      { name: "/bounty place user:<target>", description: "Fund a revenge arc for PvP and heist conflict." },
+      { name: "/blackmarket status", description: "View the current rotating contraband drop." },
+      { name: "/blackmarket buy", description: "Burn aura on scarce cosmetics or materials." },
+      { name: "/world encounter", description: "Force a community decision point into the server story." },
+      { name: "/pvp", description: "Duel or enter matchmaking for social rivalry." },
+      { name: "/clan war enemy:<code>", description: "Challenge another clan by code." },
     ],
   },
   {
@@ -4237,14 +5624,15 @@ const HELP_SECTIONS = [
     name: "Economy",
     visual: "economy-vault.svg",
     commands: [
-      { name: "/daily", description: "Claim your streak reward and refresh quests." },
+      { name: "/daily", description: "Claim a relaxed daily check-in and refresh quests." },
       { name: "/vote", description: "Vote on Top.gg for webhook-delivered aura, XP, and crates." },
       { name: "/premium-chest", description: "Premium-only recurring loot chest with aura, XP, crates, and materials." },
       { name: "/work", description: "Complete a shift for steady aura and XP." },
       { name: "/mine", description: "Gather crafting materials on a cooldown." },
       { name: "/spin", description: "Spin for aura and XP on a cooldown." },
       { name: "/coinflip", description: "Bet aura on heads or tails on a cooldown." },
-      { name: "/rob user:<player>", description: "Risk a cooldown to steal aura from another player." },
+      { name: "/rob user:<player>", description: "Run a capped strategic heist with revenge, protection, and faction counterplay." },
+      { name: "/bounty", description: "Post or inspect bounties that turn grudges into public conflict." },
       { name: "/vault deposit", description: "Move aura into the vault." },
       { name: "/vault withdraw", description: "Take aura back from the vault." },
       { name: "/vault interest", description: "Collect the vault's accumulated interest." },
@@ -4328,7 +5716,7 @@ const ACHIEVEMENTS = [
   { id: "steady_worker", name: "Steady Worker", description: "Complete 10 work commands.", metric: (user) => user.stats.works, goal: 10, rewardAura: 1800, rewardXp: 420 },
   { id: "lucky_spinner", name: "Lucky Spinner", description: "Use spin 25 times.", metric: (user) => user.stats.spins, goal: 25, rewardAura: 2200, rewardXp: 520 },
   { id: "vault_builder", name: "Vault Builder", description: "Store 10,000 aura in the vault.", metric: (user) => user.vaultAura, goal: 10000, rewardAura: 2500, rewardXp: 600 },
-  { id: "shadow_winner", name: "Shadow Winner", description: "Win 5 robberies.", metric: (user) => user.stats.robWins, goal: 5, rewardAura: 2600, rewardXp: 650 },
+  { id: "shadow_winner", name: "Shadow Operator", description: "Win 5 non-stealing shadow heists.", metric: (user) => user.stats.robWins, goal: 5, rewardAura: 2600, rewardXp: 650 },
   { id: "ore_runner", name: "Ore Runner", description: "Mine 10 times.", metric: (user) => user.stats.mines, goal: 10, rewardAura: 2100, rewardXp: 480 },
   { id: "relic_hunter", name: "Relic Hunter", description: "Summon 10 relics.", metric: (user) => user.stats.summons || 0, goal: 10, rewardAura: 2600, rewardXp: 620 },
   { id: "artisan", name: "Artisan", description: "Craft 5 recipes.", metric: (user) => user.stats.crafts, goal: 5, rewardAura: 2800, rewardXp: 700 },
@@ -4614,6 +6002,8 @@ async function handleStats(interaction) {
       { name: "Relic Finds", value: `${formatNumber(user.stats.summons || 0)}`, inline: true },
       { name: "Coinflips", value: `${formatNumber(user.stats.coinflips)}`, inline: true },
       { name: "Shop Buys", value: `${formatNumber(user.stats.shopBuys)}`, inline: true },
+      { name: "Gifts Sent", value: `${formatNumber(user.stats.giftsSent || 0)}`, inline: true },
+      { name: "Project Help", value: `${formatNumber(user.stats.projectContributions || 0)}`, inline: true },
       { name: "PvP Record", value: `${user.stats.pvpWins}W - ${user.stats.pvpLosses}L`, inline: true },
       { name: "Boss Record", value: `${user.stats.bossWins}W - ${user.stats.bossLosses}L`, inline: true },
       { name: "PvP Streak", value: `${formatNumber(getPvpStreak(user))} current | ${formatNumber(getBestPvpStreak(user))} best`, inline: true },
@@ -4635,13 +6025,17 @@ async function handleGift(interaction) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Gift Failed", description: "Choose another human player to receive aura.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
-  if (amount <= 0 || amount > sender.aura) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Gift Failed", description: "Send an amount inside your current aura wallet.", visual: "emblem-alert.svg" }), ephemeral: true });
+  const transferFee = getTransferFee(amount);
+  const totalCost = amount + transferFee;
+  if (amount <= 0 || totalCost > sender.aura) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Gift Failed", description: `Send an amount inside your current aura wallet. Large transfers include a ${Math.round(ECONOMY_RULES.transferFeeRate * 100)}% burn fee above ${formatNumber(ECONOMY_RULES.transferFeeThreshold)} aura.`, visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
   const receiver = await getOrCreatePlayer(interaction.guildId, target.id);
-  sender.aura -= amount;
+  sender.aura -= totalCost;
   receiver.aura += amount;
+  sender.stats.giftsSent = (sender.stats.giftsSent || 0) + 1;
+  await applyQuestProgress(sender, "giftsSent", 1);
   await sender.save();
   await receiver.save();
 
@@ -4652,6 +6046,8 @@ async function handleGift(interaction) {
     fields: [
       { name: "Sender Wallet", value: `${formatNumber(sender.aura)} aura`, inline: true },
       { name: "Receiver Wallet", value: `${formatNumber(receiver.aura)} aura`, inline: true },
+      { name: "Burned Fee", value: `${formatNumber(transferFee)} aura`, inline: true },
+      { name: "Social Progress", value: "Gift quests and server bonds can progress from helping others.", inline: false },
     ],
   }));
 }
@@ -4742,13 +6138,15 @@ async function acceptTradeOffer(interaction, offerId) {
 
   const sender = await getOrCreatePlayer(interaction.guildId, offer.fromUserId);
   const receiver = await getOrCreatePlayer(interaction.guildId, offer.toUserId);
-  if (offer.aura > sender.aura || (offer.itemId && getTradableQuantity(sender, offer.itemId) < offer.quantity)) {
+  const transferFee = getTransferFee(offer.aura);
+  const totalAuraCost = offer.aura + transferFee;
+  if (totalAuraCost > sender.aura || (offer.itemId && getTradableQuantity(sender, offer.itemId) < offer.quantity)) {
     offer.status = "failed";
     await offer.save();
     return interaction.reply({ ...buildEmbedPayload({ title: "Trade Failed", description: "The sender no longer has the offered assets.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
-  sender.aura -= offer.aura;
+  sender.aura -= totalAuraCost;
   receiver.aura += offer.aura;
   if (offer.itemId && offer.quantity > 0) {
     removeTradableItem(sender, offer.itemId, offer.quantity);
@@ -4764,6 +6162,7 @@ async function acceptTradeOffer(interaction, offerId) {
     visual: "emblem-success.svg",
     fields: [
       { name: "Aura", value: `${formatNumber(offer.aura)}`, inline: true },
+      { name: "Burned Fee", value: `${formatNumber(transferFee)}`, inline: true },
       { name: "Item", value: offer.itemId ? `${getTradableLabel(offer.itemId)} x${formatNumber(offer.quantity)}` : "None", inline: true },
     ],
   }));
@@ -4788,8 +6187,9 @@ async function handleTrade(interaction) {
     if (itemId && !itemId.startsWith("crate:") && !isTradableItemId(itemId)) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Trade Item Locked", description: getTradeItemHelpText(), visual: "emblem-alert.svg" }), ephemeral: true });
     }
-    if (aura > sender.aura) {
-      return interaction.reply({ ...buildEmbedPayload({ title: "Trade Blocked", description: "You do not have that much aura.", visual: "emblem-alert.svg" }), ephemeral: true });
+    const transferFee = getTransferFee(aura);
+    if (aura + transferFee > sender.aura) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Trade Blocked", description: `You need ${formatNumber(aura + transferFee)} aura including the ${formatNumber(transferFee)} aura large-transfer burn fee.`, visual: "emblem-alert.svg" }), ephemeral: true });
     }
     if (itemId && getTradableQuantity(sender, itemId) < quantity) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Trade Blocked", description: `You do not have ${formatNumber(quantity)} ${getTradableLabel(itemId)}.\n${getTradeItemHelpText()}`, visual: "emblem-alert.svg" }), ephemeral: true });
@@ -4843,19 +6243,18 @@ async function handleTrade(interaction) {
 
 async function handleSummon(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  const remaining = getCooldownRemaining(user.lastSummonAt, SUMMON_COOLDOWN_MS, user);
-  if (remaining > 0) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Summon Cooling Down", description: `The relic gate can be opened again in **${humanizeMs(remaining)}**.`, visual: "emblem-help.svg" }), ephemeral: true });
-  }
   if (user.aura < SUMMON_COST) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: `A relic summon costs ${formatNumber(SUMMON_COST)} aura.`, visual: "emblem-economy.svg" }), ephemeral: true });
   }
   if (!interaction.channel?.send) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Summon Blocked", description: "I need a normal text channel where I can post the relic spawn.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
+  const cooldown = await reserveUserCooldown(user, "lastSummonAt", SUMMON_COOLDOWN_MS);
+  if (!cooldown.ok) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Summon Cooling Down", description: `The relic gate can be opened again in **${humanizeMs(cooldown.remaining)}**.`, visual: "emblem-help.svg" }), ephemeral: true });
+  }
 
   user.aura -= SUMMON_COST;
-  user.lastSummonAt = new Date();
   user.stats.summons = (user.stats.summons || 0) + 1;
   await user.save();
   const spawned = await spawnRelicInChannel(interaction.channel, "summon");
@@ -4893,9 +6292,10 @@ async function handleBurn(interaction) {
   }
   const burnQuantity = Math.min(quantity, entry.quantity - 1);
   const rarity = getRelicRarity(relic);
-  const auraReward = rarity.burnAura * burnQuantity;
+  let auraReward = rarity.burnAura * burnQuantity;
   const xpReward = rarity.burnXp * burnQuantity;
   entry.quantity -= burnQuantity;
+  auraReward = applyFaucetDamping(user, auraReward);
   user.aura += auraReward;
   user.xp += xpReward;
   user.stats.relicsBurned = (user.stats.relicsBurned || 0) + burnQuantity;
@@ -5157,17 +6557,703 @@ async function handleServerQuest(interaction) {
   }));
 }
 
+async function handleProject(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const project = normalizeServerProject(settings);
+
+  if (subcommand === "status") {
+    await settings.save();
+    return interaction.reply(buildServerProjectPayload(project));
+  }
+
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+
+  if (subcommand === "contribute-aura") {
+    const amount = interaction.options.getInteger("amount", true);
+    if (amount <= 0 || amount > user.aura) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Project Donation Failed", description: "Donate an amount inside your current aura wallet.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    user.aura -= amount;
+    project.aura += amount;
+    const contributor = getServerProjectContributor(project, interaction.user.id);
+    contributor.aura += amount;
+    user.stats.projectContributions = (user.stats.projectContributions || 0) + 1;
+    await applyQuestProgress(user, "projectContributions", 1);
+    await user.save();
+  } else if (subcommand === "contribute-material") {
+    const materialId = interaction.options.getString("material", true);
+    const amount = interaction.options.getInteger("amount", true);
+    if (!MATERIALS[materialId]) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Project Donation Failed", description: "That material does not exist.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    const entry = user.inventory.find((item) => item.id === materialId);
+    if (!entry || amount <= 0 || entry.quantity < amount) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Project Donation Failed", description: `You do not have ${formatNumber(amount)} ${getInventoryLabel(materialId)}.`, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    entry.quantity -= amount;
+    project.materials.set(materialId, (project.materials.get(materialId) || 0) + amount);
+    const contributor = getServerProjectContributor(project, interaction.user.id);
+    contributor.materials += amount;
+    user.markModified("inventory");
+    user.stats.projectContributions = (user.stats.projectContributions || 0) + 1;
+    await applyQuestProgress(user, "projectContributions", 1);
+    await user.save();
+  }
+
+  settings.markModified("serverProject");
+  if (isServerProjectComplete(project)) {
+    const completion = await completeServerProject(settings, project);
+    return interaction.reply(buildEmbedPayload({
+      title: `${completion.template.name} Complete`,
+      description: `The server finished the project. Rewards were paid to **${formatNumber(completion.contributors)}** contributor(s), community identity grew, and a new project has started.`,
+      visual: "emblem-success.svg",
+      fields: [
+        { name: "Next Project", value: settings.serverProject?.name || "Ready", inline: true },
+        { name: "Community Level", value: `${formatNumber(settings.community?.level || 1)}`, inline: true },
+        { name: "Why It Matters", value: "Projects remove aura and materials from the economy while creating shared goals." },
+      ],
+    }));
+  }
+
+  await settings.save();
+  return interaction.reply(buildServerProjectPayload(project));
+}
+
+async function handleCommunity(interaction) {
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  normalizeCommunityIdentity(settings);
+  normalizeServerProject(settings);
+  await settings.save();
+  return interaction.reply(buildCommunityPayload(settings, interaction.guild?.name || "This server"));
+}
+
+async function handleWorld(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  normalizeWorldState(settings);
+
+  if (subcommand === "status") {
+    const payload = buildWorldPayload(settings, interaction.guild?.name || "This server");
+    await settings.save();
+    return interaction.reply(payload);
+  }
+
+  if (subcommand === "encounter") {
+    const encounter = getActiveWorldEncounter(settings);
+    await settings.save();
+    return interaction.reply(withExtraComponents(buildEmbedPayload({
+      title: encounter.title,
+      description: encounter.description,
+      visual: "help-summary.svg",
+      fields: encounter.choices.map((choice) => ({
+        name: choice.label,
+        value: `${choice.text}\nFaction: ${getWorldFaction(choice.factionId).name}`,
+        inline: true,
+      })),
+      footer: "One choice becomes part of this server's story.",
+    }), buildWorldDecisionRows(encounter, interaction.guildId)));
+  }
+
+  if (subcommand === "artifact") {
+    const payload = buildWorldArtifactPayload(settings, interaction.guild?.name || "This server");
+    await settings.save();
+    return interaction.reply(payload);
+  }
+
+  if (subcommand === "recap") {
+    const payload = buildWorldRecapPayload(settings, interaction.guild?.name || "This server");
+    await settings.save();
+    return interaction.reply(payload);
+  }
+
+  if (subcommand === "decide") {
+    const choiceId = interaction.options.getString("choice", true);
+    return resolveWorldEncounter(interaction, choiceId);
+  }
+
+  return interaction.reply({ ...buildEmbedPayload({ title: "World Command", description: "Use status, encounter, artifact, recap, or decide.", visual: "emblem-help.svg" }), ephemeral: true });
+}
+
+async function handleAsk(interaction) {
+  const text = interaction.options.getString("text", true);
+  const intent = classifyIntent(text);
+  return interaction.reply(buildEmbedPayload({
+    title: "Aurix Assistant",
+    description: intent?.response || "I could not understand that yet. Try /help for the command map.",
+    visual: "help-summary.svg",
+    fields: [
+      { name: "Detected Intent", value: intent?.intent || "unknown", inline: true },
+      { name: "Confidence", value: `${Math.round((intent?.confidence || 0) * 100)}%`, inline: true },
+      { name: "Suggested Command", value: intent?.command || "/help", inline: true },
+    ],
+    footer: "This is a local intent router. It can later be backed by an LLM without changing command handlers.",
+  }));
+}
+
+async function handleYearbook(interaction) {
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const payload = await buildYearbookPayload(settings, interaction.guild?.name || "This server");
+  await settings.save();
+  eventBus.publish("yearbook.generated", { guildId: interaction.guildId, userId: interaction.user.id, metadata: { monthId: settings.yearbook?.monthId || getMonthId() } });
+  return interaction.reply(payload);
+}
+
+async function handleChallenge(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const challenge = normalizeCreatorChallenge(settings);
+
+  if (subcommand === "status") {
+    await settings.save();
+    return interaction.reply(buildCreatorChallengePayload(settings));
+  }
+
+  if (subcommand === "create") {
+    const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+    if (!member?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Challenge Locked", description: "Server managers can create creator challenges.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    const prompt = interaction.options.getString("prompt", true).slice(0, 300);
+    const theme = (interaction.options.getString("theme") || "Community Challenge").slice(0, 80);
+    const days = clamp(interaction.options.getInteger("days") || 7, 1, 30);
+    settings.creatorChallenge = {
+      prompt,
+      theme,
+      createdBy: interaction.user.id,
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + days * 24 * 60 * 60 * 1000),
+      entries: [],
+    };
+    settings.markModified("creatorChallenge");
+    await settings.save();
+    return interaction.reply(buildCreatorChallengePayload(settings));
+  }
+
+  const text = interaction.options.getString("text", true).slice(0, 240);
+  if (!challenge.prompt) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "No Active Challenge", description: "There is no creator challenge active right now.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
+  challenge.entries = challenge.entries.filter((entry) => entry.userId !== interaction.user.id);
+  challenge.entries.push({ userId: interaction.user.id, text, createdAt: new Date() });
+  challenge.entries = challenge.entries.slice(-40);
+  settings.markModified("creatorChallenge");
+  await settings.save();
+  eventBus.publish("challenge.entry_submitted", { guildId: interaction.guildId, userId: interaction.user.id, metadata: { theme: challenge.theme || null } });
+  return interaction.reply(buildEmbedPayload({
+    title: "Challenge Entry Submitted",
+    description: `${interaction.user.username} added an entry to **${challenge.theme || "the creator challenge"}**.`,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Entry", value: text },
+      { name: "Why It Spreads", value: "Challenge entries give creators, artists, memers, and quiet contributors a reason to be seen." },
+    ],
+  }));
+}
+
+async function handleMemoryQuest(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const quest = normalizeMemoryQuest(settings);
+
+  if (subcommand === "status") {
+    await settings.save();
+    return interaction.reply(buildMemoryQuestPayload(settings));
+  }
+
+  const memory = interaction.options.getString("memory", true).slice(0, 220);
+  quest.progress += 1;
+  let contributor = quest.contributors.find((entry) => entry.userId === interaction.user.id);
+  if (!contributor) {
+    quest.contributors.push({ userId: interaction.user.id, amount: 0 });
+    contributor = quest.contributors[quest.contributors.length - 1];
+  }
+  contributor.amount += 1;
+  const world = normalizeWorldState(settings);
+  world.storyLog.unshift({
+    title: quest.title,
+    text: `<@${interaction.user.id}> remembered: ${memory}`,
+    actorId: interaction.user.id,
+    createdAt: new Date(),
+  });
+  world.storyLog = world.storyLog.slice(0, WORLD_STORY_LIMIT);
+
+  let completed = false;
+  if (quest.progress >= quest.goal) {
+    completed = true;
+    quest.completedAt = new Date();
+    const community = normalizeCommunityIdentity(settings);
+    community.xp += 700;
+    community.level = getCommunityLevelByXp(community.xp);
+    settings.markModified("community");
+  }
+  settings.markModified("memoryQuest");
+  settings.markModified("worldState");
+  await settings.save();
+  eventBus.publish("memoryquest.contributed", { guildId: interaction.guildId, userId: interaction.user.id, metadata: { completed } });
+  return interaction.reply(buildEmbedPayload({
+    title: completed ? "Memory Quest Complete" : "Memory Added",
+    description: completed ? `The server completed **${quest.title}**. A new memory quest will appear next time.` : `Your memory was added to **${quest.title}**.`,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Memory", value: memory },
+      { name: "Progress", value: `${formatNumber(Math.min(quest.progress, quest.goal))} / ${formatNumber(quest.goal)}`, inline: true },
+    ],
+  }));
+}
+
+async function handleSocial(interaction) {
+  const target = interaction.options?.getUser?.("user") || interaction.user;
+  const user = await getOrCreatePlayer(interaction.guildId, target.id);
+  const reputation = user.reputation?.get ? Array.from(user.reputation.entries()) : Object.entries(user.reputation || {});
+  const reputationLines = reputation.length
+    ? reputation.map(([factionId, amount]) => `${APPRECIATION_TAGS[factionId]?.label || getWorldFaction(factionId).name}: ${formatNumber(amount)}`).join("\n")
+    : "No social reputation yet.";
+  const socialScore = (user.stats.giftsSent || 0) * 3 + (user.stats.projectContributions || 0) * 4 + reputation.reduce((sum, [, amount]) => sum + Number(amount || 0) * 5, 0);
+  return interaction.reply(buildEmbedPayload({
+    title: `${target.username}'s Social Identity`,
+    description: "A profile for how this member shapes the community, not just how much they grind.",
+    visual: "core-profile.svg",
+    fields: [
+      { name: "Social Score", value: `${formatNumber(socialScore)}`, inline: true },
+      { name: "Gifts Sent", value: `${formatNumber(user.stats.giftsSent || 0)}`, inline: true },
+      { name: "Project Help", value: `${formatNumber(user.stats.projectContributions || 0)}`, inline: true },
+      { name: "Appreciations", value: `${formatNumber(user.stats.appreciationsReceived || 0)} received | ${formatNumber(user.stats.appreciationsGiven || 0)} given`, inline: true },
+      { name: "Campfire Shares", value: `${formatNumber(user.stats.campfireShares || 0)}`, inline: true },
+      { name: "Reputation", value: reputationLines },
+    ],
+  }));
+}
+
+async function handleGallery(interaction) {
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  normalizeWorldState(settings);
+  normalizeServerProject(settings);
+  const artifactPayload = buildWorldArtifactPayload(settings, interaction.guild?.name || "This server");
+  artifactPayload.embeds[0].addFields(
+    { name: "Active Project", value: settings.serverProject?.name || "None", inline: true },
+    { name: "Community Level", value: `${formatNumber(settings.community?.level || 1)}`, inline: true },
+    { name: "Gallery Use", value: "Use this as the server's identity card: artifact, project, faction state, and community level in one place." }
+  );
+  await settings.save();
+  return interaction.reply(artifactPayload);
+}
+
+async function handleWeather(interaction) {
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  normalizeWorldState(settings);
+  normalizeMemoryQuest(settings);
+  normalizeServerProject(settings);
+  await settings.save();
+  return interaction.reply(buildServerWeatherPayload(settings, interaction.guild?.name || "This server"));
+}
+
+async function handleLetter(interaction) {
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  normalizeWorldState(settings);
+  await settings.save();
+  return interaction.reply(buildNpcLetterPayload(settings, interaction.guild?.name || "this server"));
+}
+
+async function handlePartyQuest(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const quest = normalizePartyQuest(settings);
+
+  if (subcommand === "status") {
+    await settings.save();
+    return interaction.reply(buildPartyQuestPayload(settings));
+  }
+
+  const roleId = interaction.options.getString("role", true);
+  const slot = quest.roles.find((entry) => entry.role === roleId);
+  if (!slot) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Role Missing", description: "That expedition role does not exist.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  if (quest.roles.some((entry) => entry.userId === interaction.user.id)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Already Joined", description: "You already hold a role in this co-op expedition.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
+  if (slot.userId) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Role Taken", description: "That role is already filled. Pick another open role.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
+  slot.userId = interaction.user.id;
+  quest.progress = quest.roles.filter((entry) => entry.userId).length;
+  settings.markModified("partyQuest");
+  let completed = false;
+  if (quest.progress >= quest.goal) {
+    completed = true;
+    await completePartyQuest(settings);
+  } else {
+    await settings.save();
+  }
+  eventBus.publish("partyquest.joined", { guildId: interaction.guildId, userId: interaction.user.id, metadata: { roleId, completed } });
+  return interaction.reply(completed
+    ? buildEmbedPayload({ title: "Co-op Expedition Complete", description: `The party completed **${quest.title}** and strengthened the server artifact.`, visual: "emblem-success.svg" })
+    : buildPartyQuestPayload(settings));
+}
+
+async function handleShrine(interaction) {
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const world = normalizeWorldState(settings);
+  const artifact = normalizeWorldArtifact(settings, world);
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const cost = 3;
+  const dust = user.inventory.find((entry) => entry.id === "vault_dust");
+  if (!dust || dust.quantity < cost) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Shrine Needs Dust", description: `Restoring the shrine needs ${cost} Vault Dust. Use /mine or trade with the server.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  dust.quantity -= cost;
+  artifact.power += 1;
+  artifact.traits = [`Shrine restored by ${interaction.user.username}`, ...artifact.traits].slice(0, 6);
+  artifact.lastChangedAt = new Date();
+  world.storyLog.unshift({
+    title: "Artifact Shrine Restored",
+    text: `<@${interaction.user.id}> spent Vault Dust to restore **${artifact.name}**.`,
+    actorId: interaction.user.id,
+    createdAt: new Date(),
+  });
+  world.storyLog = world.storyLog.slice(0, WORLD_STORY_LIMIT);
+  user.markModified("inventory");
+  settings.markModified("worldState");
+  await user.save();
+  await settings.save();
+  eventBus.publish("shrine.restored", { guildId: interaction.guildId, userId: interaction.user.id, metadata: { artifactPower: artifact.power } });
+  return interaction.reply(buildEmbedPayload({
+    title: "Shrine Restored",
+    description: `The shrine around **${artifact.name}** glows brighter. This is the bot-native version of a collaborative Activity ritual.`,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Artifact Power", value: `${formatNumber(artifact.power)}`, inline: true },
+      { name: "Spent", value: `${cost} Vault Dust`, inline: true },
+    ],
+  }));
+}
+
+async function handleAppreciate(interaction) {
+  const target = interaction.options.getUser("user", true);
+  const tag = interaction.options.getString("tag") || "kindness";
+  const note = (interaction.options.getString("note") || "").trim().slice(0, 180);
+  if (target.bot || target.id === interaction.user.id) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Appreciation Needs Someone Else", description: "Use this to notice another person, not yourself or a bot.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
+  const sender = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const cooldown = await reserveUserCooldown(sender, "lastAppreciateAt", APPRECIATE_COOLDOWN_MS);
+  if (!cooldown.ok) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Appreciation Resting", description: `You can appreciate someone again in ${humanizeMs(cooldown.remaining)}. This stays slow on purpose so it feels real.`, visual: "emblem-help.svg" }), ephemeral: true });
+  }
+
+  const receiver = await getOrCreatePlayer(interaction.guildId, target.id);
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  normalizeCommunityIdentity(settings);
+  const tagConfig = APPRECIATION_TAGS[tag] || APPRECIATION_TAGS.kindness;
+  sender.stats.appreciationsGiven = (sender.stats.appreciationsGiven || 0) + 1;
+  receiver.stats.appreciationsReceived = (receiver.stats.appreciationsReceived || 0) + 1;
+  if (!receiver.reputation?.get) {
+    receiver.reputation = new Map(Object.entries(receiver.reputation || {}));
+  }
+  receiver.reputation.set(tag, (receiver.reputation.get(tag) || 0) + tagConfig.reputation);
+  settings.appreciations.unshift({
+    fromUserId: interaction.user.id,
+    toUserId: target.id,
+    tag,
+    note: note || null,
+    createdAt: new Date(),
+  });
+  settings.appreciations = settings.appreciations.slice(0, 25);
+  settings.community.xp += 35;
+  settings.community.level = getCommunityLevelByXp(settings.community.xp);
+  settings.markModified("community");
+  settings.markModified("appreciations");
+  receiver.markModified("reputation");
+  await Promise.all([sender.save(), receiver.save(), settings.save()]);
+  eventBus.publish("appreciation.created", { guildId: interaction.guildId, userId: interaction.user.id, metadata: { targetUserId: target.id, tag } });
+  return interaction.reply(buildEmbedPayload({
+    title: "Appreciation Shared",
+    description: `<@${interaction.user.id}> appreciated <@${target.id}> for **${tagConfig.label}**.`,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Note", value: note || "No note added." },
+      { name: "Design", value: "This gives social reputation and community identity progress, not a cash payout." },
+    ],
+  }));
+}
+
+async function handleCampfire(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  normalizeCommunityIdentity(settings);
+  normalizeWorldState(settings);
+  if (subcommand === "status") {
+    await settings.save();
+    return interaction.reply(buildCampfirePayload(settings, interaction.guild?.name || "This server"));
+  }
+
+  const text = interaction.options.getString("text", true).trim().slice(0, 240);
+  const world = normalizeWorldState(settings);
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  user.stats.campfireShares = (user.stats.campfireShares || 0) + 1;
+  settings.community.xp += 45;
+  settings.community.level = getCommunityLevelByXp(settings.community.xp);
+  world.storyLog.unshift({
+    title: "Campfire Share",
+    text: `<@${interaction.user.id}> shared: ${text}`,
+    actorId: interaction.user.id,
+    createdAt: new Date(),
+  });
+  world.storyLog = world.storyLog.slice(0, WORLD_STORY_LIMIT);
+  settings.markModified("community");
+  settings.markModified("worldState");
+  await Promise.all([user.save(), settings.save()]);
+  eventBus.publish("campfire.shared", { guildId: interaction.guildId, userId: interaction.user.id, metadata: { prompt: getCampfirePrompt(settings) } });
+  return interaction.reply(buildEmbedPayload({
+    title: "Campfire Moment Saved",
+    description: text,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Prompt", value: getCampfirePrompt(settings) },
+      { name: "Where It Goes", value: "This becomes part of the server story log and can appear in recaps/yearbooks." },
+    ],
+    footer: "No streak required. One good memory is enough.",
+  }));
+}
+
+async function handleIdentity(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  normalizeCommunityIdentity(settings);
+  if (subcommand === "view") {
+    await settings.save();
+    return interaction.reply(buildIdentityPayload(settings, interaction.guild?.name || "This server"));
+  }
+
+  const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+  if (!member?.permissions?.has(PermissionsBitField.Flags.ManageGuild)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Identity Locked", description: "Server managers can update the shared identity.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  const motto = (interaction.options.getString("motto") || "").trim().slice(0, 140);
+  const symbol = (interaction.options.getString("symbol") || "").trim().slice(0, 60);
+  const values = (interaction.options.getString("values") || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(0, 5)
+    .map((value) => value.slice(0, 40));
+  if (motto) {
+    settings.community.motto = motto;
+  }
+  if (symbol) {
+    settings.community.symbol = symbol;
+  }
+  if (values.length) {
+    settings.community.values = values;
+  }
+  settings.community.xp += 120;
+  settings.community.level = getCommunityLevelByXp(settings.community.xp);
+  settings.markModified("community");
+  await settings.save();
+  eventBus.publish("identity.updated", { guildId: interaction.guildId, userId: interaction.user.id, metadata: { values: settings.community.values || [] } });
+  return interaction.reply(buildIdentityPayload(settings, interaction.guild?.name || "This server"));
+}
+
+async function handleFaction(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const world = normalizeWorldState(settings);
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  normalizeUserFaction(user);
+
+  if (subcommand === "status") {
+    const factionLines = [...world.factions]
+      .sort((a, b) => b.influence - a.influence)
+      .map((faction) => {
+        const base = getWorldFaction(faction.id);
+        return `**${base.name}** ${progressBar(faction.influence, 100, 8)} ${formatNumber(faction.influence)}\n${base.principle}`;
+      })
+      .join("\n\n");
+    await settings.save();
+    return interaction.reply(buildEmbedPayload({
+      title: "Faction Warboard",
+      description: "Pick a side, push influence, and make the server's culture visibly tilt.",
+      visual: "help-summary.svg",
+      fields: [
+        { name: "Your Pledge", value: user.faction.id ? getWorldFaction(user.faction.id).name : "Unpledged", inline: true },
+        { name: "Server Tension", value: `${formatNumber(world.tension)} / 100`, inline: true },
+        { name: "Factions", value: factionLines || "No faction state yet." },
+        { name: "Moves", value: "`/faction pledge faction:<side>`\n`/faction strike` spends aura to push your faction." },
+      ],
+      footer: "Rivalry is server-shaping, not wallet-stealing.",
+    }));
+  }
+
+  if (subcommand === "pledge") {
+    const factionId = interaction.options.getString("faction", true);
+    const faction = getWorldFaction(factionId);
+    user.faction = { id: faction.id, pledgedAt: new Date() };
+    if (!user.reputation?.get) {
+      user.reputation = new Map(Object.entries(user.reputation || {}));
+    }
+    user.reputation.set(faction.id, (user.reputation.get(faction.id) || 0) + 2);
+    user.markModified("reputation");
+    await user.save();
+    return interaction.reply(buildEmbedPayload({
+      title: `${faction.name} Pledge Locked`,
+      description: `<@${interaction.user.id}> pledged to **${faction.name}**.`,
+      visual: "emblem-success.svg",
+      fields: [
+        { name: "Principle", value: faction.principle },
+        { name: "Next Move", value: "`/faction strike` to spend aura and push faction influence." },
+      ],
+    }));
+  }
+
+  if (!user.faction.id) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "No Faction Pledge", description: "Use `/faction pledge` before launching a strike.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  const cost = Math.min(Math.max(2500, Math.floor((user.aura || 0) * 0.04)), 25000);
+  if (user.aura < cost) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Strike Underfunded", description: `You need ${formatNumber(cost)} aura to fund this faction move.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  const cooldown = await reserveUserCooldown(user, "lastFactionStrikeAt", FACTION_STRIKE_COOLDOWN_MS);
+  if (!cooldown.ok) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Strike Crew Rebuilding", description: `Your faction can use you again in ${humanizeMs(cooldown.remaining)}. Strategy beats spam.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  const factionState = world.factions.find((entry) => entry.id === user.faction.id);
+  const faction = getWorldFaction(user.faction.id);
+  user.aura -= cost;
+  user.stats.factionStrikes = (user.stats.factionStrikes || 0) + 1;
+  if (!user.reputation?.get) {
+    user.reputation = new Map(Object.entries(user.reputation || {}));
+  }
+  user.reputation.set(faction.id, (user.reputation.get(faction.id) || 0) + 3);
+  if (factionState) {
+    factionState.influence = clamp((Number(factionState.influence) || 0) + 4, 0, 100);
+    factionState.reputation = (Number(factionState.reputation) || 0) + 1;
+  }
+  world.tension = clamp((Number(world.tension) || 0) + 6, 0, 100);
+  world.storyLog.unshift({
+    title: `${faction.name} Strike`,
+    text: `<@${interaction.user.id}> funded a ${faction.name} power move for ${formatNumber(cost)} aura.`,
+    actorId: interaction.user.id,
+    createdAt: new Date(),
+  });
+  world.storyLog = world.storyLog.slice(0, WORLD_STORY_LIMIT);
+  settings.markModified("worldState");
+  user.markModified("reputation");
+  await Promise.all([user.save(), settings.save()]);
+  eventBus.publish("faction.strike", { guildId: interaction.guildId, userId: interaction.user.id, metadata: { factionId: faction.id, cost } });
+  return interaction.reply(buildEmbedPayload({
+    title: `${faction.name} Strike Landed`,
+    description: `A controlled burst of chaos just moved the server warboard.`,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Aura Burned", value: `${formatNumber(cost)}`, inline: true },
+      { name: "Influence", value: `${formatNumber(factionState?.influence || 0)} / 100`, inline: true },
+      { name: "Server Tension", value: `${formatNumber(world.tension)} / 100`, inline: true },
+    ],
+  }));
+}
+
+async function handleFlex(interaction) {
+  const target = interaction.options?.getUser?.("user") || interaction.user;
+  const user = await getOrCreatePlayer(interaction.guildId, target.id);
+  normalizeUserFaction(user);
+  if (target.id === interaction.user.id) {
+    const cooldown = await reserveUserCooldown(user, "lastFlexAt", FLEX_COOLDOWN_MS);
+    if (!cooldown.ok) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Flex Cooling Down", description: `Let the last flex breathe. You can post another in ${humanizeMs(cooldown.remaining)}.`, visual: "emblem-help.svg" }), ephemeral: true });
+    }
+    user.stats.flexes = (user.stats.flexes || 0) + 1;
+    await user.save();
+  }
+  const power = getPlayerPowerScore(user);
+  const rank = RANKS[user.rankIndex] || RANKS[0];
+  const faction = user.faction.id ? getWorldFaction(user.faction.id).name : "Unpledged";
+  return interaction.reply(buildEmbedPayload({
+    title: `${target.username}'s Flex Card`,
+    description: `Power Score: **${formatNumber(power)}**\nFaction: **${faction}**`,
+    visual: "core-profile.svg",
+    thumbnail: target.displayAvatarURL?.({ extension: "png", size: 128 }) || null,
+    fields: [
+      { name: "Rank", value: getRankLabel(rank), inline: true },
+      { name: "Prestige", value: `${formatNumber(user.prestige || 0)}`, inline: true },
+      { name: "Vault", value: `${formatNumber(user.vaultAura || 0)} aura`, inline: true },
+      { name: "Rarest Relic", value: getRarestRelicLabel(user) },
+      { name: "Combat Reputation", value: `PvP ${formatNumber(user.stats.pvpWins || 0)}-${formatNumber(user.stats.pvpLosses || 0)} | Boss ${formatNumber(user.stats.bossWins || 0)}-${formatNumber(user.stats.bossLosses || 0)}` },
+    ],
+    footer: "Flex culture is cosmetic status. No payout, no exploit, all signal.",
+  }));
+}
+
+async function handleBlackMarket(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const offer = getBlackMarketOffer(settings);
+  const heatText = `${formatNumber(offer.heat)} heat`;
+  if (subcommand === "status") {
+    await settings.save();
+    return interaction.reply(buildEmbedPayload({
+      title: "Black Market",
+      description: `Tonight's contraband: **${offer.name}**`,
+      visual: "economy-vault.svg",
+      fields: [
+        { name: "Cost", value: `${formatNumber(offer.cost)} aura`, inline: true },
+        { name: "Heat", value: heatText, inline: true },
+        { name: "Faction Signal", value: offer.dominantFaction?.name || "No dominant faction", inline: true },
+        { name: "Buy", value: "`/blackmarket buy`" },
+      ],
+      footer: "Rotating prestige sink. Expensive on purpose, because flex needs scarcity.",
+    }));
+  }
+
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  user.blackMarketPurchases ||= [];
+  if (user.blackMarketPurchases.includes(offer.purchaseKey)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Already Bought", description: "You already hit this black-market drop. Wait for the next rotation.", visual: "emblem-help.svg" }), ephemeral: true });
+  }
+  if (user.aura < offer.cost) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: `This deal needs **${formatNumber(offer.cost)} aura**. The market does not do pity discounts.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  user.aura -= offer.cost;
+  const granted = grantBlackMarketOffer(user, offer);
+  user.blackMarketPurchases.push(offer.purchaseKey);
+  user.blackMarketPurchases = user.blackMarketPurchases.slice(-40);
+  user.stats.blackMarketBuys = (user.stats.blackMarketBuys || 0) + 1;
+  normalizeWorldState(settings);
+  settings.worldState.tension = clamp((Number(settings.worldState.tension) || 0) + offer.heat, 0, 100);
+  settings.worldState.storyLog.unshift({
+    title: "Black Market Deal",
+    text: `<@${interaction.user.id}> bought **${offer.name}** and raised market heat.`,
+    actorId: interaction.user.id,
+    createdAt: new Date(),
+  });
+  settings.worldState.storyLog = settings.worldState.storyLog.slice(0, WORLD_STORY_LIMIT);
+  user.markModified("inventory");
+  user.markModified("cosmetics");
+  settings.markModified("worldState");
+  await Promise.all([user.save(), settings.save()]);
+  eventBus.publish("blackmarket.bought", { guildId: interaction.guildId, userId: interaction.user.id, metadata: { offerId: offer.id, cost: offer.cost } });
+  return interaction.reply(buildEmbedPayload({
+    title: "Black Market Deal Closed",
+    description: `You burned **${formatNumber(offer.cost)} aura** and walked away with **${offer.name}**.`,
+    visual: "emblem-success.svg",
+    fields: [
+      { name: "Granted", value: granted, inline: true },
+      { name: "Market Heat", value: heatText, inline: true },
+      { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+    ],
+  }));
+}
+
 async function handleWork(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  const remaining = getCooldownRemaining(user.lastWorkAt, COOLDOWNS.workMs, user);
-  if (remaining > 0) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Work Cooling Down", description: `Your next shift opens in ${humanizeMs(remaining)}.`, visual: "economy-vault.svg" }), ephemeral: true });
+  const cooldown = await reserveUserCooldown(user, "lastWorkAt", COOLDOWNS.workMs);
+  if (!cooldown.ok) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Work Cooling Down", description: `Your next shift opens in ${humanizeMs(cooldown.remaining)}.`, visual: "economy-vault.svg" }), ephemeral: true });
   }
 
   const effects = getCombinedEffects(user);
-  const auraReward = Math.floor((randInt(260, 620) * (1 + (effects.spinRewardBoost || 0) * 0.5 + (effects.workAuraBoost || 0))) + user.prestige * 55);
+  const auraReward = applyFaucetDamping(user, Math.floor((randInt(260, 620) * (1 + (effects.spinRewardBoost || 0) * 0.5 + (effects.workAuraBoost || 0))) + user.prestige * 55));
   const xpReward = Math.floor((randInt(70, 140) + user.rankIndex * 10) * (1 + (effects.workXpBoost || 0)));
-  user.lastWorkAt = new Date();
   user.aura += auraReward;
   user.xp += xpReward;
   user.stats.works += 1;
@@ -5205,9 +7291,9 @@ async function handleWork(interaction) {
 
 async function handleMine(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  const remaining = getCooldownRemaining(user.lastMineAt, COOLDOWNS.mineMs, user);
-  if (remaining > 0) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Mine Cooling Down", description: `The mine resets in ${humanizeMs(remaining)}.`, visual: "economy-vault.svg" }), ephemeral: true });
+  const cooldown = await reserveUserCooldown(user, "lastMineAt", COOLDOWNS.mineMs);
+  if (!cooldown.ok) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Mine Cooling Down", description: `The mine resets in ${humanizeMs(cooldown.remaining)}.`, visual: "economy-vault.svg" }), ephemeral: true });
   }
 
   const effects = getCombinedEffects(user);
@@ -5219,9 +7305,8 @@ async function handleMine(interaction) {
   const gained = materials.map((entry) => ({ ...entry, quantity: Math.max(0, Math.floor(entry.quantity * (1 + (effects.mineYieldBoost || 0)))) })).filter((entry) => entry.quantity > 0);
   gained.forEach((entry) => addInventoryItem(user, entry.id, entry.quantity));
 
-  const auraReward = randInt(80, 220);
+  const auraReward = applyFaucetDamping(user, randInt(80, 220));
   const xpReward = Math.floor(randInt(60, 130) * (1 + (effects.mineXpBoost || 0)));
-  user.lastMineAt = new Date();
   user.aura += auraReward;
   user.xp += xpReward;
   user.stats.mines += 1;
@@ -5261,55 +7346,168 @@ async function handleMine(interaction) {
 async function handleRob(interaction) {
   const thief = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const target = interaction.options.getUser("user", true);
-  const remaining = getCooldownRemaining(thief.lastRobAt, COOLDOWNS.robMs, thief);
-  if (remaining > 0) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Rob Cooling Down", description: `You can attempt another robbery in ${humanizeMs(remaining)}.`, visual: "emblem-alert.svg" }), ephemeral: true });
-  }
+  const plan = interaction.options.getString("plan") || "quiet";
   if (target.bot || target.id === interaction.user.id) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Invalid Target", description: "Choose another human player to rob.", visual: "emblem-alert.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "Invalid Target", description: "Choose another human player.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
   const victim = await getOrCreatePlayer(interaction.guildId, target.id);
-  if (victim.aura < 250) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Target Too Light", description: "That player is not carrying enough aura to be worth robbing.", visual: "emblem-alert.svg" }), ephemeral: true });
+  if (isNewbieProtected(victim) && !hasRevengeMark(thief, target.id)) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Target Under Newbie Protection", description: `${target.username} is still under starter protection. Build a rivalry through PvP, factions, or bounties first.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  const outcome = getHeistOutcome(thief, victim, plan);
+  if (outcome.stealable <= 0) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "No Clean Angle", description: `${target.username}'s exposed wallet is too small or too protected for a meaningful heist.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  const cooldown = await reserveUserCooldown(thief, "lastRobAt", COOLDOWNS.robMs);
+  if (!cooldown.ok) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Heist Crew Cooling Down", description: `You can run another heist in ${humanizeMs(cooldown.remaining)}. Pick targets, don't spam them.`, visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
-  thief.lastRobAt = new Date();
-  const successChance = clamp(0.42 + thief.prestige * 0.015 - victim.prestige * 0.01, 0.2, 0.7);
-  const success = Math.random() < successChance;
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  const world = normalizeWorldState(settings);
+  const success = Math.random() < outcome.successChance;
   let description = "";
+  let bountyResult = { payout: 0, count: 0 };
 
   if (success) {
-    const stolen = Math.min(victim.aura, randInt(180, 700) + victim.rankIndex * 35);
+    const stolen = Math.min(victim.aura, Math.max(1, outcome.stealable));
     const xpReward = randInt(90, 170);
-    victim.aura -= stolen;
+    victim.aura = Math.max(0, victim.aura - stolen);
+    victim.protectionUntil = new Date(Date.now() + PROTECTION_WINDOW_MS);
+    setRevengeMark(victim, thief.userId);
     thief.aura += stolen;
     thief.xp += xpReward;
+    thief.notoriety = Math.max(0, (Number(thief.notoriety) || 0) + outcome.heat);
     thief.stats.robWins += 1;
+    if (outcome.revenge) {
+      thief.revengeTargetId = null;
+      thief.revengeExpiresAt = null;
+    }
     await applyQuestProgress(thief, "robWins", 1);
     await syncRank(thief);
-    description = `You slipped past ${target.username} and stole **${formatNumber(stolen)} aura**.`;
+    description = `**${getHeistPlanLabel(plan)}** landed. You stole **${formatNumber(stolen)} aura** from ${target.username}'s exposed wallet. They gained protection and a revenge mark.`;
   } else {
-    const fine = Math.min(thief.aura, randInt(120, 360));
+    const fine = Math.min(thief.aura, Math.max(180, Math.floor(outcome.stealable * 0.35)));
     const xpLoss = randInt(40, 90);
     thief.aura = Math.max(0, thief.aura - fine);
     thief.xp = Math.max(0, thief.xp - xpLoss);
+    victim.aura += Math.floor(fine * 0.35);
+    setRevengeMark(thief, victim.userId);
+    thief.notoriety = Math.max(0, (Number(thief.notoriety) || 0) + Math.floor(outcome.heat / 2));
     thief.stats.robLosses += 1;
     await syncRank(thief);
-    description = `You got caught trying to rob ${target.username} and paid **${formatNumber(fine)} aura** in fines.`;
+    description = `**${getHeistPlanLabel(plan)}** got burned. You paid **${formatNumber(fine)} aura** in heat costs; ${target.username} recovered **${formatNumber(Math.floor(fine * 0.35))} aura** from your failed move.`;
   }
 
-  await thief.save();
-  await victim.save();
+  const factionState = world.factions.find((entry) => entry.id === thief.faction?.id);
+  if (factionState) {
+    factionState.reputation = (Number(factionState.reputation) || 0) + 1;
+    factionState.influence = clamp((Number(factionState.influence) || 0) + (success ? 2 : 1), 0, 100);
+  }
+  world.tension = clamp((Number(world.tension) || 0) + outcome.heat, 0, 100);
+  world.storyLog.unshift({
+    title: success ? "Heist Landed" : "Heist Burned",
+    text: `<@${interaction.user.id}> ran **${getHeistPlanLabel(plan)}** on <@${target.id}>. ${success ? "The wallet bled." : "The alarm sang."}`,
+    actorId: interaction.user.id,
+    createdAt: new Date(),
+  });
+  world.storyLog = world.storyLog.slice(0, WORLD_STORY_LIMIT);
+  settings.markModified("worldState");
+
+  if (success && getActiveBountyValue(settings, victim.userId) > 0) {
+    bountyResult = markBountiesClaimed(settings, victim.userId, thief.userId);
+    thief.aura += bountyResult.payout;
+    thief.stats.bountiesClaimed = (thief.stats.bountiesClaimed || 0) + bountyResult.count;
+  } else if (!success && getActiveBountyValue(settings, thief.userId) > 0) {
+    bountyResult = markBountiesClaimed(settings, thief.userId, victim.userId);
+    victim.aura += bountyResult.payout;
+    victim.stats.bountiesClaimed = (victim.stats.bountiesClaimed || 0) + bountyResult.count;
+  }
+
+  await Promise.all([thief.save(), victim.save(), settings.save()]);
+  eventBus.publish("heist.resolved", { guildId: interaction.guildId, userId: interaction.user.id, metadata: { targetUserId: target.id, success, plan, stolen: success ? outcome.stealable : 0 } });
 
   return interaction.reply(buildEmbedPayload({
-    title: success ? "Robbery Success" : "Robbery Failed",
+    title: success ? "Heist Success" : "Heist Failed",
     description,
     visual: success ? "emblem-success.svg" : "emblem-alert.svg",
     fields: [
-      { name: "Win Rate", value: `${thief.stats.robWins}W - ${thief.stats.robLosses}L`, inline: true },
+      { name: "Plan", value: getHeistPlanLabel(plan), inline: true },
+      { name: "Chance", value: `${Math.round(outcome.successChance * 100)}%`, inline: true },
+      { name: "Notoriety", value: `${formatNumber(thief.notoriety)}`, inline: true },
       { name: "Next Attempt", value: "20 minutes", inline: true },
       { name: "Wallet", value: `${formatNumber(thief.aura)} aura`, inline: true },
+      { name: "Counterplay", value: outcome.protectedTarget ? "Target protection reduced the payout." : outcome.sameFaction ? "Same-faction protection reduced your angle." : "Vaulting aura, faction loyalty, and revenge marks all matter." },
+      bountyResult.payout > 0 ? { name: "Bounty Claimed", value: success ? `You claimed ${formatNumber(bountyResult.payout)} aura from active contracts on ${target.username}.` : `${target.username} claimed ${formatNumber(bountyResult.payout)} aura from contracts on you.` } : null,
+    ].filter(Boolean),
+  }));
+}
+
+async function handleBounty(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
+  normalizeBounties(settings);
+
+  if (subcommand === "status") {
+    const active = settings.bounties.filter((bounty) => !bounty.claimedAt).slice(-10).reverse();
+    const lines = active.length
+      ? active.map((bounty, index) => `${index + 1}. <@${bounty.targetUserId}> - ${formatNumber(bounty.amount)} aura${bounty.reason ? ` - ${bounty.reason}` : ""}`).join("\n")
+      : "No active bounties. Peace never lasts.";
+    await settings.save();
+    return interaction.reply(buildEmbedPayload({
+      title: "Bounty Board",
+      description: lines,
+      visual: "pvp-challenge.svg",
+      fields: [
+        { name: "Claiming", value: "Bounties are auto-claimed when you defeat the target in PvP or punish their failed/successful heist route." },
+        { name: "Place", value: "`/bounty place user:<target> amount:<aura> reason:<optional>`" },
+      ],
+    }));
+  }
+
+  const target = interaction.options.getUser("user", true);
+  const amount = interaction.options.getInteger("amount", true);
+  const reason = (interaction.options.getString("reason") || "").trim().slice(0, 120);
+  if (target.bot || target.id === interaction.user.id) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Invalid Bounty", description: "Put bounties on rival humans, not yourself or bots.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  const placer = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  if (amount < 500 || amount > 100000 || amount > placer.aura) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Bounty Rejected", description: "Bounty amount must be 500-100,000 aura and inside your wallet.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  placer.aura -= amount;
+  placer.stats.bountiesPlaced = (placer.stats.bountiesPlaced || 0) + 1;
+  settings.bounties.push({
+    bountyId: crypto.randomBytes(4).toString("hex"),
+    targetUserId: target.id,
+    placedByUserId: interaction.user.id,
+    amount,
+    reason: reason || null,
+    createdAt: new Date(),
+    expiresAt: new Date(Date.now() + BOUNTY_TTL_MS),
+  });
+  normalizeWorldState(settings);
+  settings.worldState.tension = clamp((Number(settings.worldState.tension) || 0) + 5, 0, 100);
+  settings.worldState.storyLog.unshift({
+    title: "Bounty Posted",
+    text: `<@${interaction.user.id}> posted ${formatNumber(amount)} aura on <@${target.id}>${reason ? `: ${reason}` : "."}`,
+    actorId: interaction.user.id,
+    createdAt: new Date(),
+  });
+  settings.worldState.storyLog = settings.worldState.storyLog.slice(0, WORLD_STORY_LIMIT);
+  settings.markModified("bounties");
+  settings.markModified("worldState");
+  await Promise.all([placer.save(), settings.save()]);
+  eventBus.publish("bounty.placed", { guildId: interaction.guildId, userId: interaction.user.id, metadata: { targetUserId: target.id, amount } });
+  return interaction.reply(buildEmbedPayload({
+    title: "Bounty Posted",
+    description: `<@${target.id}> is now worth **${formatNumber(amount)} aura** to anyone who can settle it through conflict.`,
+    visual: "pvp-challenge.svg",
+    fields: [
+      { name: "Reason", value: reason || "No reason given." },
+      { name: "Expires", value: "7 days", inline: true },
+      { name: "Your Wallet", value: `${formatNumber(placer.aura)} aura`, inline: true },
     ],
   }));
 }
@@ -5564,7 +7762,7 @@ async function handleReminders(interaction) {
         return interaction.reply({
           ...buildEmbedPayload({
             title: "Reminder Limit Reached",
-            description: `You can enable up to **${reminderLimit}** reminders right now. Disable another reminder first${isPremiumActive(user) ? "." : ", or upgrade premium for more reminder slots."}`,
+            description: `You can enable up to **${reminderLimit}** gentle reminders right now. Disable another reminder first.`,
             visual: "emblem-alert.svg",
             fields: [
               { name: "Current Reminders", value: user.reminders.enabledActions.length ? user.reminders.enabledActions.map((entry) => REMINDER_ACTIONS[entry].command).join(", ") : "None" },
@@ -5582,8 +7780,8 @@ async function handleReminders(interaction) {
     await user.save();
 
     return interaction.reply(buildEmbedPayload({
-      title: "Reminder Enabled",
-      description: `You will be tagged in <#${interaction.channelId}> when ${REMINDER_ACTIONS[action].command} is ready.`,
+      title: "Gentle Reminder Enabled",
+      description: `You may be tagged in <#${interaction.channelId}> when ${REMINDER_ACTIONS[action].command} is ready. No streak or reward depends on responding quickly.`,
       visual: "emblem-success.svg",
       fields: [
         { name: "Action", value: REMINDER_ACTIONS[action].command, inline: true },
@@ -5889,7 +8087,7 @@ async function handleExpedition(interaction) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Expedition Not Back", description: `${getExpeditionLabel(config)} returns in ${humanizeMs(remaining)}.`, visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
-  const auraReward = randInt(config.aura[0], config.aura[1]);
+  const auraReward = applyFaucetDamping(user, randInt(config.aura[0], config.aura[1]));
   const xpReward = randInt(config.xp[0], config.xp[1]);
   const materialIds = Object.keys(MATERIALS);
   const materialDrops = [];
@@ -5966,17 +8164,16 @@ async function handleGear(interaction) {
 
 async function handleSpin(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  const remaining = getCooldownRemaining(user.lastSpinAt, COOLDOWNS.spinMs, user);
-  if (remaining > 0) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Spin Cooling Down", description: `Your aura spinner will recharge in ${humanizeMs(remaining)}.`, visual: "core-arcade.svg" }), ephemeral: true });
+  const cooldown = await reserveUserCooldown(user, "lastSpinAt", COOLDOWNS.spinMs);
+  if (!cooldown.ok) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Spin Resting", description: `The spinner will be available in ${humanizeMs(cooldown.remaining)}. No need to wait here.`, visual: "core-arcade.svg" }), ephemeral: true });
   }
 
   const effects = getCombinedEffects(user);
   const baseReward = randInt(180, 540);
   const jackpot = Math.random() < 0.07 ? randInt(500, 1400) : 0;
-  const reward = Math.floor((baseReward + jackpot) * (1 + (effects.spinRewardBoost || 0)));
+  const reward = applyFaucetDamping(user, Math.floor((baseReward + jackpot) * (1 + (effects.spinRewardBoost || 0))));
   const xpGain = randInt(60, 120);
-  user.lastSpinAt = new Date();
   user.aura += reward;
   user.xp += xpGain;
   user.stats.spins += 1;
@@ -6003,25 +8200,30 @@ async function handleSpin(interaction) {
     ),
     visual: "core-arcade.svg",
     fields: [
-      { name: "Jackpot", value: jackpot > 0 ? `Triggered for ${formatNumber(jackpot)} aura` : "Not this time", inline: true },
-      { name: "Next Spin", value: humanizeMs(getEffectiveCooldownMs(user, COOLDOWNS.spinMs)), inline: true },
+      { name: "Bonus Spark", value: jackpot > 0 ? `${formatNumber(jackpot)} aura` : "Quiet spin", inline: true },
+      { name: "Session Note", value: "Spin is optional filler, not a main progression requirement.", inline: true },
       { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
       { name: "Premium", value: isPremiumActive(user) ? "Spin boost applied" : "No premium boost", inline: true },
     ],
     footer,
-  }), interaction.user.id, ["spin", "daily", "work", "rank"]));
+  }), interaction.user.id, ["rank", "collection", "quests"]));
 }
 
 async function handleCoinflip(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const amount = interaction.options.getInteger("amount", true);
   const choice = interaction.options.getString("choice", true);
-  const remaining = getCooldownRemaining(user.lastCoinflipAt, COOLDOWNS.coinflipMs, user);
-  if (remaining > 0) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Coinflip Cooling Down", description: `You can flip again in ${humanizeMs(remaining)}.`, visual: "emblem-core-arcade.svg" }), ephemeral: true });
-  }
+  const maxBet = getCoinflipMaxBet(user);
   if (amount <= 0 || amount > user.aura) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Invalid Bet", description: "Your bet must be above 0 and within your aura wallet.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  if (amount > maxBet) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Bet Too Large", description: `To prevent whale-only jackpot swings, your current max coinflip bet is **${formatNumber(maxBet)} aura**.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  const cooldown = await reserveUserCooldown(user, "lastCoinflipAt", COOLDOWNS.coinflipMs);
+  if (!cooldown.ok) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Arcade Flip Resting", description: `The arcade table will be available in ${humanizeMs(cooldown.remaining)}. This is optional and not needed for healthy progress.`, visual: "emblem-core-arcade.svg" }), ephemeral: true });
   }
 
   const effects = getPerkEffects(user);
@@ -6041,7 +8243,6 @@ async function handleCoinflip(interaction) {
     }
   }
 
-  user.lastCoinflipAt = new Date();
   user.aura -= amount;
   user.stats.coinflips += 1;
 
@@ -6062,7 +8263,7 @@ async function handleCoinflip(interaction) {
   await user.save();
 
   return interaction.reply(buildEmbedPayload({
-    title: "Coinflip Resolved",
+    title: "Arcade Flip Resolved",
     description,
     visual: "emblem-core-arcade.svg",
     fields: [
@@ -6070,27 +8271,27 @@ async function handleCoinflip(interaction) {
       { name: "Multiplier", value: choiceWins ? `${multiplier}x` : "0x", inline: true },
       { name: "XP Delta", value: `${xpDelta >= 0 ? "+" : ""}${formatNumber(xpDelta)}`, inline: true },
     ],
-    footer: `Coinflip cooldown: ${humanizeMs(getEffectiveCooldownMs(user, COOLDOWNS.coinflipMs))}`,
+    footer: "Arcade flips are intentionally capped and optional.",
   }));
 }
 
 async function handleDaily(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  const remaining = getCooldownRemaining(user.lastDailyAt, COOLDOWNS.dailyMs, user);
-  if (remaining > 0) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Daily Already Claimed", description: `Your next daily reward unlocks in ${humanizeMs(remaining)}.`, visual: "emblem-help.svg" }), ephemeral: true });
+  const previousDailyAt = user.lastDailyAt;
+  const cooldown = await reserveUserCooldown(user, "lastDailyAt", COOLDOWNS.dailyMs);
+  if (!cooldown.ok) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Daily Already Checked In", description: `Another relaxed check-in is available in ${humanizeMs(cooldown.remaining)}. You will not lose progress by stepping away.`, visual: "emblem-help.svg" }), ephemeral: true });
   }
 
-  const last = user.lastDailyAt?.getTime() || 0;
-  const streakContinues = Date.now() - last <= COOLDOWNS.dailyMs * 2;
-  user.streak = streakContinues ? user.streak + 1 : 1;
-  user.lastDailyAt = new Date();
+  const catchup = getDailyCatchup(previousDailyAt, user.streak);
+  user.streak = catchup.protectedStreak;
   const premiumRareCrates = getPremiumDailyRareCrates(user);
   const premiumMultiplier = getPremiumDailyMultiplier(user);
-  const auraReward = Math.floor((700 + user.streak * 90 + user.prestige * 140) * premiumMultiplier);
+  const auraReward = applyFaucetDamping(user, Math.floor((700 + user.streak * 90 + user.prestige * 140) * premiumMultiplier));
   const xpReward = Math.floor((180 + user.streak * 40) * premiumMultiplier);
-  user.aura += auraReward;
-  user.xp += xpReward;
+  const catchupAuraBonus = applyFaucetDamping(user, catchup.auraBonus);
+  user.aura += auraReward + catchupAuraBonus;
+  user.xp += xpReward + catchup.xpBonus;
   user.crates.set("common", (user.crates.get("common") || 0) + 1);
   if (user.streak % 7 === 0) {
     user.crates.set("rare", (user.crates.get("rare") || 0) + 1);
@@ -6104,31 +8305,27 @@ async function handleDaily(interaction) {
   await syncRank(user);
   await user.save();
 
-  const footer = await buildSocialProofFooter(
-    interaction.guildId,
-    { streak: { $gte: user.streak } },
-    (count) => `${formatOtherPlayers(count)} held a streak this long.`
-  );
-
   return interaction.reply(addQuickActions(buildEmbedPayload({
-    title: "Daily Reward Claimed",
+    title: "Daily Check-In",
     description: withFlavor(
       pickFlavor([
         "The daily seal opens with a warm flash.",
         "A fresh reward packet drops into your route.",
-        "The streak counter wakes up and keeps climbing.",
-        "Today's claim lands right on schedule.",
+        "The rhythm counter notes the visit without asking you to rush.",
+        "Today's check-in lands quietly.",
       ]),
-      `Your streak is now **${user.streak}**.`
+      `Your rhythm is now **${user.streak}**. ${catchup.message}`
     ),
     visual: "emblem-success.svg",
     fields: [
       { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
       { name: "XP", value: `${formatNumber(xpReward)}`, inline: true },
-      { name: "Bonus", value: premiumRareCrates > 0 ? `Premium bonus ${getCrateLabel("rare")} x${premiumRareCrates} + ${user.streak % 7 === 0 ? `streak ${getCrateLabel("rare")}` : getCrateLabel("common")}` : user.streak % 7 === 0 ? `${getCrateLabel("rare")} earned` : `${getCrateLabel("common")} earned`, inline: true },
+      { name: "Bonus", value: premiumRareCrates > 0 ? `Premium bonus ${getCrateLabel("rare")} x${premiumRareCrates} + ${user.streak % 7 === 0 ? `weekly rhythm ${getCrateLabel("rare")}` : getCrateLabel("common")}` : user.streak % 7 === 0 ? `${getCrateLabel("rare")} earned` : `${getCrateLabel("common")} earned`, inline: true },
+      { name: "Rested Catch-up", value: catchupAuraBonus || catchup.xpBonus ? `${formatNumber(catchupAuraBonus)} aura + ${formatNumber(catchup.xpBonus)} XP` : "No missed days to recover.", inline: true },
+      { name: "Economy Scaling", value: `${Math.round(getFaucetMultiplier(user) * 100)}% faucet rate`, inline: true },
     ],
-    footer,
-  }), interaction.user.id, ["work", "spin", "quests", "tutorial"]));
+    footer: "You can miss days. Rested catch-up exists so the bot does not punish normal life.",
+  }), interaction.user.id, ["quests", "tutorial", "profile"]));
 }
 
 async function handleVote(interaction) {
@@ -6150,7 +8347,7 @@ async function handleVote(interaction) {
       { name: "Vote Link", value: voteUrl },
       { name: "Reward", value: formatTopggReward(buildTopggReward(1)), inline: true },
       { name: "Weekend", value: "Top.gg double-vote weekends pay double when Top.gg sends weight 2.", inline: true },
-      { name: "Reminders", value: reminderEnabled ? "Enabled. I will tag you when Top.gg says you can vote again." : "Optional. Use `/reminders enable action:Top.gg Vote` to get a ping every 12 hours after voting." },
+      { name: "Reminders", value: reminderEnabled ? "Enabled from an older setting. You can disable it with `/reminders disable`." : "Automatic vote pings are off by default. Use `/vote` only when you already want to support the bot." },
     ],
     footer: user.topgg.voteCount > 0 ? `Votes rewarded: ${formatNumber(user.topgg.voteCount)}` : "Rewards are delivered by the Top.gg webhook.",
   }));
@@ -6170,12 +8367,12 @@ async function handlePremiumChest(interaction) {
     });
   }
 
-  const remaining = getCooldownRemaining(user.premium.lastChestAt, getPremiumChestCooldownMs(user));
-  if (remaining > 0) {
+  const cooldown = await reserveUserCooldown(user, "premium.lastChestAt", getPremiumChestCooldownMs(user));
+  if (!cooldown.ok) {
     return interaction.reply({
       ...buildEmbedPayload({
         title: "Premium Chest Recharging",
-        description: `Your next Premium Chest opens in ${humanizeMs(remaining)}.`,
+        description: `Your next Premium Chest opens in ${humanizeMs(cooldown.remaining)}.`,
         visual: "emblem-alert.svg",
       }),
       ephemeral: true,
@@ -6183,7 +8380,7 @@ async function handlePremiumChest(interaction) {
   }
 
   const chest = plan.chest;
-  const auraReward = randInt(chest.aura[0], chest.aura[1]);
+  const auraReward = applyFaucetDamping(user, randInt(chest.aura[0], chest.aura[1]));
   const xpReward = randInt(chest.xp[0], chest.xp[1]);
   const materialIds = Object.keys(MATERIALS);
   const materialDrops = [];
@@ -6205,7 +8402,6 @@ async function handlePremiumChest(interaction) {
   if (legendaryDropped) {
     user.crates.set("legendary", (user.crates.get("legendary") || 0) + 1);
   }
-  user.premium.lastChestAt = new Date();
   await syncRank(user);
   await user.save();
 
@@ -6228,11 +8424,12 @@ async function handleVault(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const combinedEffects = getCombinedEffects(user);
   const vaultPerkBonus = combinedEffects.vaultInterestBoost || 0;
-  const vaultRate = 0.03 + vaultPerkBonus + user.prestige * 0.005;
+  const vaultRate = getVaultRate(user, combinedEffects);
   const bonusLines = [
-    `Base: 3.0%/hr`,
+    `Base: ${(ECONOMY_RULES.vaultBaseRatePerHour * 100).toFixed(2)}%/hr`,
     `Bonus Sources: ${formatEffectValue(vaultPerkBonus)}/hr (cap ${formatEffectCapValue("vaultInterestBoost", getEffectCapsForUser(user))}/hr)`,
-    `Prestige: +${(user.prestige * 0.5).toFixed(1)}%/hr`,
+    `Prestige: +${(user.prestige * ECONOMY_RULES.vaultPrestigeRatePerHour * 100).toFixed(2)}%/hr`,
+    `Large-vault scaling: effective rate shown below`,
   ];
   const interest = await claimVaultInterest(user);
 
@@ -6279,7 +8476,7 @@ async function handleVault(interaction) {
     fields: [
       { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
       { name: "Vault", value: `${formatNumber(user.vaultAura)} aura`, inline: true },
-      { name: "Current Interest", value: `${(vaultRate * 100).toFixed(1)}% per hour`, inline: true },
+      { name: "Current Interest", value: `${(vaultRate * 100).toFixed(2)}% per hour`, inline: true },
       { name: "Rate Breakdown", value: bonusLines.join("\n") },
     ],
     footer,
@@ -6538,7 +8735,7 @@ async function handleRank(interaction) {
         "The ladder holds steady while the next tier waits.",
         "Progress scans clean across the current bracket.",
       ]),
-      "Rank is based on XP, separate from aura. Losing combat can rank you down if XP falls below the threshold."
+      "Rank is based on XP, separate from aura. Treat it as a long-term trail, not a timer to chase."
     ),
     visual: "core-profile.svg",
     fields: [
@@ -6587,7 +8784,7 @@ async function handlePrestige(interaction) {
     visual: "emblem-success.svg",
     fields: [
       { name: "Aura Cost", value: `${formatNumber(auraCost)}`, inline: true },
-      { name: "Reward", value: "1 epic crate + higher future daily and vault scaling", inline: true },
+      { name: "Reward", value: "1 epic crate + modest future daily and vault scaling", inline: true },
     ],
     footer,
   }));
@@ -6652,6 +8849,7 @@ async function handleCrate(interaction) {
     });
   }
 
+  auraReward = applyFaucetDamping(user, auraReward);
   user.aura += auraReward;
   user.xp += xpReward;
 
@@ -7742,11 +9940,12 @@ async function finishBattle(interaction, state, winnerId) {
   const first = await getOrCreatePlayer(getBattleGuildIdForUser(state, state.playerOne.id, interaction.guildId), state.playerOne.id);
   const second = state.isBoss ? null : await getOrCreatePlayer(getBattleGuildIdForUser(state, state.playerTwo.id, interaction.guildId), state.playerTwo.id);
   const playerWon = state.playerOne.id === winnerId;
+  const settings = state.isBoss ? null : await getOrCreateGuildSettings(interaction.guildId);
 
   if (state.isBoss) {
     if (playerWon) {
       const effects = getCombinedEffects(first);
-      const auraReward = Math.floor(state.rewardAura * (1 + (effects.bossRewardBoost || 0)));
+      const auraReward = applyFaucetDamping(first, Math.floor(state.rewardAura * (1 + (effects.bossRewardBoost || 0))));
       const loot = rollCombatLoot("boss", state.playerTwo.id.replace("boss:", ""));
       first.aura += auraReward;
       first.xp += state.rewardXp;
@@ -7791,12 +9990,18 @@ async function finishBattle(interaction, state, winnerId) {
     first.stats.pvpStreak = getPvpStreak(first) + 1;
     first.stats.bestPvpStreak = Math.max(getBestPvpStreak(first), first.stats.pvpStreak);
     second.stats.pvpStreak = 0;
-    const streakBonus = Math.min(Math.max(0, first.stats.pvpStreak - 1), 5) * 0.04;
-    const auraReward = Math.floor(state.rewardAura * (1 + (effects.pvpRewardBoost || 0) + streakBonus));
+    const streakBonus = 0;
+    const auraReward = applyFaucetDamping(first, Math.floor(state.rewardAura * (1 + (effects.pvpRewardBoost || 0))));
+    const bountyResult = settings ? markBountiesClaimed(settings, second.userId, first.userId) : { payout: 0, count: 0 };
     first.aura += auraReward;
+    first.aura += bountyResult.payout;
     first.xp += state.rewardXp;
     second.xp = Math.max(0, second.xp - Math.floor(state.rewardXp / 2));
+    first.notoriety = Math.max(0, (Number(first.notoriety) || 0) + 2);
+    second.protectionUntil = new Date(Date.now() + PROTECTION_WINDOW_MS);
+    setRevengeMark(second, first.userId);
     first.stats.pvpWins += 1;
+    first.stats.bountiesClaimed = (first.stats.bountiesClaimed || 0) + bountyResult.count;
     second.stats.pvpLosses += 1;
     applyCombatLoot(first, loot);
     await applyQuestProgress(first, "pvpWins", 1);
@@ -7804,6 +10009,9 @@ async function finishBattle(interaction, state, winnerId) {
     await syncRank(second);
     await first.save();
     await second.save();
+    if (settings) {
+      await settings.save();
+    }
 
     const payload = {
       ...buildEmbedPayload({
@@ -7813,7 +10021,8 @@ async function finishBattle(interaction, state, winnerId) {
         fields: [
           { name: "Loot Drops", value: loot.length ? loot.map((entry) => entry.label).join(", ") : "None", inline: true },
           { name: "Win Streak", value: `${formatNumber(first.stats.pvpStreak)} current | ${formatNumber(first.stats.bestPvpStreak)} best`, inline: true },
-          { name: "Aura Bonus", value: streakBonus > 0 ? `+${Math.round(streakBonus * 100)}% streak bonus` : "No streak bonus", inline: true },
+          { name: "Bounty", value: bountyResult.payout > 0 ? `${formatNumber(bountyResult.payout)} aura claimed` : "No active bounty", inline: true },
+          { name: "Aura Bonus", value: "No win-streak payout. PvP records are expressive, not pressure multipliers.", inline: true },
         ],
       }),
       components: [],
@@ -7827,12 +10036,18 @@ async function finishBattle(interaction, state, winnerId) {
     second.stats.pvpStreak = getPvpStreak(second) + 1;
     second.stats.bestPvpStreak = Math.max(getBestPvpStreak(second), second.stats.pvpStreak);
     first.stats.pvpStreak = 0;
-    const streakBonus = Math.min(Math.max(0, second.stats.pvpStreak - 1), 5) * 0.04;
-    const auraReward = Math.floor(state.rewardAura * (1 + (effects.pvpRewardBoost || 0) + streakBonus));
+    const streakBonus = 0;
+    const auraReward = applyFaucetDamping(second, Math.floor(state.rewardAura * (1 + (effects.pvpRewardBoost || 0))));
+    const bountyResult = settings ? markBountiesClaimed(settings, first.userId, second.userId) : { payout: 0, count: 0 };
     second.aura += auraReward;
+    second.aura += bountyResult.payout;
     second.xp += state.rewardXp;
     first.xp = Math.max(0, first.xp - Math.floor(state.rewardXp / 2));
+    second.notoriety = Math.max(0, (Number(second.notoriety) || 0) + 2);
+    first.protectionUntil = new Date(Date.now() + PROTECTION_WINDOW_MS);
+    setRevengeMark(first, second.userId);
     second.stats.pvpWins += 1;
+    second.stats.bountiesClaimed = (second.stats.bountiesClaimed || 0) + bountyResult.count;
     first.stats.pvpLosses += 1;
     applyCombatLoot(second, loot);
     await applyQuestProgress(second, "pvpWins", 1);
@@ -7840,6 +10055,9 @@ async function finishBattle(interaction, state, winnerId) {
     await syncRank(second);
     await first.save();
     await second.save();
+    if (settings) {
+      await settings.save();
+    }
 
     const payload = {
       ...buildEmbedPayload({
@@ -7849,7 +10067,8 @@ async function finishBattle(interaction, state, winnerId) {
         fields: [
           { name: "Loot Drops", value: loot.length ? loot.map((entry) => entry.label).join(", ") : "None", inline: true },
           { name: "Win Streak", value: `${formatNumber(second.stats.pvpStreak)} current | ${formatNumber(second.stats.bestPvpStreak)} best`, inline: true },
-          { name: "Aura Bonus", value: streakBonus > 0 ? `+${Math.round(streakBonus * 100)}% streak bonus` : "No streak bonus", inline: true },
+          { name: "Bounty", value: bountyResult.payout > 0 ? `${formatNumber(bountyResult.payout)} aura claimed` : "No active bounty", inline: true },
+          { name: "Aura Bonus", value: "No win-streak payout. PvP records are expressive, not pressure multipliers.", inline: true },
         ],
       }),
       components: [],
@@ -8291,6 +10510,14 @@ async function handleEventButton(interaction) {
   return claimServerEvent(interaction);
 }
 
+async function handleWorldButton(interaction) {
+  const [, action, guildId, choiceId] = interaction.customId.split(":");
+  if (guildId !== interaction.guildId || action !== "choice") {
+    return interaction.reply({ content: "That world decision is no longer available here.", ephemeral: true });
+  }
+  return resolveWorldEncounter(interaction, choiceId);
+}
+
 async function runPostCommandEngagement(interaction, commandName, subcommand = null) {
   if (!interaction?.guildId || !interaction.user?.id || !ENGAGEMENT_COMMANDS.has(commandName)) {
     return;
@@ -8541,9 +10768,9 @@ async function handleBoss(interaction) {
   if (isOnActiveExpedition(user)) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Away On Expedition", description: "You cannot start a boss fight while your character is away. Use /expedition status.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
-  const remaining = getCooldownRemaining(user.lastBossAt, COOLDOWNS.bossMs, user);
-  if (remaining > 0) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Boss Cooling Down", description: `You can challenge another boss in ${humanizeMs(remaining)}.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  const cooldown = await reserveUserCooldown(user, "lastBossAt", COOLDOWNS.bossMs);
+  if (!cooldown.ok) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Boss Cooling Down", description: `You can challenge another boss in ${humanizeMs(cooldown.remaining)}.`, visual: "emblem-alert.svg" }), ephemeral: true });
   }
   const battleId = crypto.randomUUID();
   const state = {
@@ -8563,7 +10790,6 @@ async function handleBoss(interaction) {
   };
   state.bossIntent = chooseBossIntent(state);
   state.playerTwo.skill.heal = 0;
-  user.lastBossAt = new Date();
   await user.save();
   activeBattles.set(battleId, state);
   await saveBattleSession(state);
@@ -9246,9 +11472,9 @@ async function handleAuthority(interaction) {
   if (user.rankIndex < 2) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Authority Locked", description: "You need rank Riftkeeper or higher to use rank-only commands.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
-  const remaining = getCooldownRemaining(user.lastAuthorityAt, COOLDOWNS.authorityMs, user);
-  if (remaining > 0) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Authority Cooling Down", description: `You can use this again in ${humanizeMs(remaining)}.`, visual: "emblem-help.svg" }), ephemeral: true });
+  const cooldown = await reserveUserCooldown(user, "lastAuthorityAt", COOLDOWNS.authorityMs);
+  if (!cooldown.ok) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Authority Cooling Down", description: `You can use this again in ${humanizeMs(cooldown.remaining)}.`, visual: "emblem-help.svg" }), ephemeral: true });
   }
 
   const target = interaction.options.getUser("user", true);
@@ -9257,7 +11483,6 @@ async function handleAuthority(interaction) {
   const xpGain = 100 + user.rankIndex * 35;
   targetProfile.aura += auraGain;
   targetProfile.xp += xpGain;
-  user.lastAuthorityAt = new Date();
   await syncRank(targetProfile);
   await targetProfile.save();
   await user.save();
@@ -9287,7 +11512,7 @@ function buildCommands() {
     new SlashCommandBuilder().setName("stats").setDescription("View deeper player stats.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
     new SlashCommandBuilder().setName("balance").setDescription("Check wallet and vault balance.").addUserOption((option) => option.setName("user").setDescription("Optional target")),
     new SlashCommandBuilder().setName("work").setDescription("Complete a shift for steady aura and XP."),
-    new SlashCommandBuilder().setName("mine").setDescription("Gather crafting materials on a cooldown."),
+    new SlashCommandBuilder().setName("mine").setDescription("Gather crafting materials for projects and crafting."),
     new SlashCommandBuilder().setName("summon").setDescription("Spend aura to print a collectible Aurix relic."),
     new SlashCommandBuilder().setName("claim").setDescription("Claim the active chat-spawned relic by name.")
       .addStringOption((option) => option.setName("guess").setDescription("Relic name").setRequired(true)),
@@ -9298,12 +11523,17 @@ function buildCommands() {
     new SlashCommandBuilder().setName("burn").setDescription("Burn duplicate relics into aura and XP.")
       .addStringOption((option) => option.setName("relic").setDescription("Relic id or exact relic name").setRequired(true))
       .addIntegerOption((option) => option.setName("quantity").setDescription("Duplicate copies to burn").setMinValue(1)),
-    new SlashCommandBuilder().setName("spin").setDescription("Spin for aura on a cooldown."),
-    new SlashCommandBuilder().setName("coinflip").setDescription("Bet aura on heads or tails on a cooldown.").addIntegerOption((option) => option.setName("amount").setDescription("Aura to bet").setRequired(true).setMinValue(1)).addStringOption((option) => option.setName("choice").setDescription("Choose heads or tails").setRequired(true).addChoices({ name: "heads", value: "heads" }, { name: "tails", value: "tails" })),
-    new SlashCommandBuilder().setName("rob").setDescription("Attempt to steal aura from another player.").addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true)),
-    new SlashCommandBuilder().setName("daily").setDescription("Claim your daily streak reward."),
+    new SlashCommandBuilder().setName("spin").setDescription("Use a small optional arcade spin."),
+    new SlashCommandBuilder().setName("coinflip").setDescription("Play a capped optional arcade flip.").addIntegerOption((option) => option.setName("amount").setDescription("Aura to risk").setRequired(true).setMinValue(1)).addStringOption((option) => option.setName("choice").setDescription("Choose heads or tails").setRequired(true).addChoices({ name: "heads", value: "heads" }, { name: "tails", value: "tails" })),
+    new SlashCommandBuilder().setName("rob").setDescription("Run a capped strategic heist against another player.")
+      .addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true))
+      .addStringOption((option) => option.setName("plan").setDescription("Heist plan").addChoices({ name: "Quiet Cut", value: "quiet" }, { name: "Smash Raid", value: "smash" }, { name: "Frame Job", value: "frame" })),
+    new SlashCommandBuilder().setName("bounty").setDescription("Post and inspect public revenge contracts.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("View active bounties."))
+      .addSubcommand((sub) => sub.setName("place").setDescription("Place a bounty on a rival.").addUserOption((option) => option.setName("user").setDescription("Bounty target").setRequired(true)).addIntegerOption((option) => option.setName("amount").setDescription("Aura bounty").setRequired(true).setMinValue(500).setMaxValue(100000)).addStringOption((option) => option.setName("reason").setDescription("Optional reason").setMaxLength(120))),
+    new SlashCommandBuilder().setName("daily").setDescription("Claim a relaxed daily check-in."),
     new SlashCommandBuilder().setName("vote").setDescription("Get the Top.gg vote link and reward reminder info."),
-    new SlashCommandBuilder().setName("reminders").setDescription("Manage ready-state tag reminders.")
+    new SlashCommandBuilder().setName("reminders").setDescription("Manage gentle low-pressure reminders.")
       .addSubcommand((sub) => sub.setName("status").setDescription("View your reminder settings."))
       .addSubcommand((sub) => sub.setName("enable").setDescription("Tag me when an action is ready.").addStringOption((option) => option.setName("action").setDescription("Action to track").setRequired(true).addChoices(...REMINDER_ACTION_CHOICES)))
       .addSubcommand((sub) => sub.setName("disable").setDescription("Stop tagging me for an action.").addStringOption((option) => option.setName("action").setDescription("Action to stop tracking").setRequired(true).addChoices(...REMINDER_ACTION_CHOICES))),
@@ -9338,6 +11568,30 @@ function buildCommands() {
       .addSubcommand((sub) => sub.setName("status").setDescription("View current expedition status."))
       .addSubcommand((sub) => sub.setName("start").setDescription("Start a timed expedition.").addStringOption((option) => option.setName("type").setDescription("Expedition").setRequired(true).addChoices(...Object.values(EXPEDITION_TYPES).map((expedition) => ({ name: expedition.name, value: expedition.id })))))
       .addSubcommand((sub) => sub.setName("claim").setDescription("Claim a completed expedition.")),
+    new SlashCommandBuilder().setName("partyquest").setDescription("Join a cooperative server expedition.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("View the active co-op expedition."))
+      .addSubcommand((sub) => sub.setName("join").setDescription("Take a role in the co-op expedition.").addStringOption((option) => option.setName("role").setDescription("Expedition role").setRequired(true).addChoices(...PARTY_QUEST_ROLES.map((role) => ({ name: role.name, value: role.id }))))),
+    new SlashCommandBuilder().setName("weather").setDescription("View this server's social mood weather."),
+    new SlashCommandBuilder().setName("letter").setDescription("Receive an NPC faction letter about the server story."),
+    new SlashCommandBuilder().setName("shrine").setDescription("Spend materials to restore the server artifact shrine."),
+    new SlashCommandBuilder().setName("appreciate").setDescription("Recognize another member with low-pressure social reputation.")
+      .addUserOption((option) => option.setName("user").setDescription("Member to appreciate").setRequired(true))
+      .addStringOption((option) => option.setName("tag").setDescription("What you are appreciating").addChoices(...Object.entries(APPRECIATION_TAGS).map(([value, entry]) => ({ name: entry.label, value }))))
+      .addStringOption((option) => option.setName("note").setDescription("Optional short note").setMaxLength(180)),
+    new SlashCommandBuilder().setName("campfire").setDescription("Share memories, gratitude, and creative prompts.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("View the current campfire prompt."))
+      .addSubcommand((sub) => sub.setName("share").setDescription("Add a memory, idea, or thanks to the server story.").addStringOption((option) => option.setName("text").setDescription("Memory, idea, or thanks").setRequired(true).setMaxLength(240))),
+    new SlashCommandBuilder().setName("identity").setDescription("View or set this server's shared identity.")
+      .addSubcommand((sub) => sub.setName("view").setDescription("View the server identity."))
+      .addSubcommand((sub) => sub.setName("set").setDescription("Manager-only identity update.").addStringOption((option) => option.setName("motto").setDescription("Short server motto").setMaxLength(140)).addStringOption((option) => option.setName("symbol").setDescription("Server symbol, phrase, or emblem").setMaxLength(60)).addStringOption((option) => option.setName("values").setDescription("Comma-separated values").setMaxLength(180))),
+    new SlashCommandBuilder().setName("faction").setDescription("Pledge, flex, and push the faction warboard.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("View faction influence and your pledge."))
+      .addSubcommand((sub) => sub.setName("pledge").setDescription("Pledge to a faction.").addStringOption((option) => option.setName("faction").setDescription("Faction").setRequired(true).addChoices(...getFactionChoiceEntries())))
+      .addSubcommand((sub) => sub.setName("strike").setDescription("Spend aura to push your pledged faction.")),
+    new SlashCommandBuilder().setName("flex").setDescription("Post a public power and prestige flex card.").addUserOption((option) => option.setName("user").setDescription("Optional member to inspect")),
+    new SlashCommandBuilder().setName("blackmarket").setDescription("Rotating high-heat prestige sink.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("View the current contraband drop."))
+      .addSubcommand((sub) => sub.setName("buy").setDescription("Buy the current contraband drop.")),
     new SlashCommandBuilder().setName("gear").setDescription("Manage your equipped gear.").addSubcommand((sub) => sub.setName("loadout").setDescription("View equipped gear.")).addSubcommand((sub) => sub.setName("equip").setDescription("Equip a crafted gear item.").addStringOption((option) => option.setName("item").setDescription("Gear item").setRequired(true).addChoices(...Object.entries(GEAR_ITEMS).map(([gearId, gear]) => ({ name: gear.name, value: gearId }))))),
     new SlashCommandBuilder().setName("rank").setDescription("View rank progression and prestige readiness."),
     new SlashCommandBuilder().setName("prestige").setDescription("Reset rank progression to gain prestige."),
@@ -9352,6 +11606,30 @@ function buildCommands() {
     new SlashCommandBuilder().setName("leaderboard").setDescription("View top players and clans.").addStringOption((option) => option.setName("category").setDescription("Leaderboard type").setRequired(true).addChoices({ name: "aura", value: "aura" }, { name: "vault", value: "vault" }, { name: "xp", value: "xp" }, { name: "prestige", value: "prestige" }, { name: "clans", value: "clans" })).addStringOption((option) => option.setName("scope").setDescription("Global or this server only").addChoices({ name: "global", value: "global" }, { name: "server", value: "server" })),
     new SlashCommandBuilder().setName("season").setDescription("View the current clan season standings."),
     new SlashCommandBuilder().setName("serverquest").setDescription("View the rotating community quest."),
+    new SlashCommandBuilder().setName("project").setDescription("Build shared server projects with aura and materials.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("View the active server project."))
+      .addSubcommand((sub) => sub.setName("contribute-aura").setDescription("Donate aura into the shared server project.").addIntegerOption((option) => option.setName("amount").setDescription("Aura to donate").setRequired(true).setMinValue(1)))
+      .addSubcommand((sub) => sub.setName("contribute-material").setDescription("Donate crafting materials into the shared server project.").addStringOption((option) => option.setName("material").setDescription("Material to donate").setRequired(true).addChoices(...Object.entries(MATERIALS).map(([materialId, material]) => ({ name: material.name, value: materialId })))).addIntegerOption((option) => option.setName("amount").setDescription("Material quantity").setRequired(true).setMinValue(1))),
+    new SlashCommandBuilder().setName("community").setDescription("View this server's shared identity and community progress."),
+    new SlashCommandBuilder().setName("yearbook").setDescription("Generate a shareable monthly community yearbook card."),
+    new SlashCommandBuilder().setName("challenge").setDescription("Run creator/community challenges.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("View the active creator challenge."))
+      .addSubcommand((sub) => sub.setName("create").setDescription("Create a creator challenge for this server.").addStringOption((option) => option.setName("prompt").setDescription("Challenge prompt").setRequired(true).setMaxLength(300)).addStringOption((option) => option.setName("theme").setDescription("Challenge theme").setMaxLength(80)).addIntegerOption((option) => option.setName("days").setDescription("Days active").setMinValue(1).setMaxValue(30)))
+      .addSubcommand((sub) => sub.setName("submit").setDescription("Submit a creator challenge entry.").addStringOption((option) => option.setName("text").setDescription("Link, caption, or short entry").setRequired(true).setMaxLength(240))),
+    new SlashCommandBuilder().setName("memoryquest").setDescription("Build server lore from community memories.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("View the active memory quest."))
+      .addSubcommand((sub) => sub.setName("contribute").setDescription("Add a memory to the active quest.").addStringOption((option) => option.setName("memory").setDescription("A short server memory").setRequired(true).setMaxLength(220))),
+    new SlashCommandBuilder().setName("social").setDescription("View social reputation and community identity.").addUserOption((option) => option.setName("user").setDescription("Optional member")),
+    new SlashCommandBuilder().setName("gallery").setDescription("Show this server's artifact and identity gallery."),
+    new SlashCommandBuilder().setName("world").setDescription("Shape this server's living world.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("View factions, season, tension, and story log."))
+      .addSubcommand((sub) => sub.setName("encounter").setDescription("Open the active procedural world encounter."))
+      .addSubcommand((sub) => sub.setName("artifact").setDescription("View this server's unique evolving artifact."))
+      .addSubcommand((sub) => sub.setName("recap").setDescription("Create a shareable recap of this server's story."))
+      .addSubcommand((sub) => sub.setName("decide").setDescription("Resolve the active world encounter.").addStringOption((option) => option.setName("choice").setDescription("World choice").setRequired(true).addChoices(
+        ...WORLD_ENCOUNTER_TEMPLATES.flatMap((template) => template.choices).map((choice) => ({ name: choice.label, value: choice.id }))
+      ))),
+    new SlashCommandBuilder().setName("ask").setDescription("Ask Aurix where to go in natural language.").addStringOption((option) => option.setName("text").setDescription("What do you want to do?").setRequired(true).setMaxLength(300)),
     new SlashCommandBuilder().setName("premium").setDescription("View your premium status."),
     new SlashCommandBuilder().setName("premium-chest").setDescription("Open your premium recurring loot chest."),
     new SlashCommandBuilder().setName("clan").setDescription("Manage your clan.").addSubcommand((sub) => sub.setName("create").setDescription("Create a clan for 50,000 aura.").addStringOption((option) => option.setName("name").setDescription("Clan name").setRequired(true))).addSubcommand((sub) => sub.setName("join").setDescription("Join a clan by code.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("apply").setDescription("Send a join request for approval.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("leave").setDescription("Leave your clan.")).addSubcommand((sub) => sub.setName("info").setDescription("View your clan.")).addSubcommand((sub) => sub.setName("members").setDescription("List clan members.")).addSubcommand((sub) => sub.setName("log").setDescription("View recent clan activity.")).addSubcommand((sub) => sub.setName("kick").setDescription("Owner-only member removal.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true))).addSubcommand((sub) => sub.setName("approve").setDescription("Owner or officer request approval.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("decline").setDescription("Owner or officer reject an applicant.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("role").setDescription("Owner-only officer management.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true)).addStringOption((option) => option.setName("role").setDescription("Role to set").setRequired(true).addChoices({ name: "officer", value: "officer" }, { name: "member", value: "member" }))).addSubcommand((sub) => sub.setName("transfer").setDescription("Owner-only leadership transfer.").addUserOption((option) => option.setName("user").setDescription("New owner").setRequired(true))).addSubcommand((sub) => sub.setName("disband").setDescription("Owner-only full clan deletion.")).addSubcommand((sub) => sub.setName("upgrade").setDescription("Spend clan vault aura on upgrades.").addStringOption((option) => option.setName("path").setDescription("Upgrade path").setRequired(true).addChoices({ name: "hall", value: "hall" }, { name: "vault", value: "vault" }, { name: "arsenal", value: "arsenal" }))).addSubcommand((sub) => sub.setName("raid").setDescription("Launch a cooldown-based clan raid.")).addSubcommand((sub) => sub.setName("donate").setDescription("Donate aura to your clan.").addIntegerOption((option) => option.setName("amount").setDescription("Amount").setRequired(true).setMinValue(1))).addSubcommand((sub) => sub.setName("war").setDescription("Fight another clan by code.").addStringOption((option) => option.setName("enemy").setDescription("Enemy clan code").setRequired(true))),
@@ -9360,6 +11638,7 @@ function buildCommands() {
 }
 
 async function routeInteraction(interaction) {
+  const routeStartedAt = Date.now();
   const interactionLog = {
     build: COMMAND_BUILD_ID,
     at: new Date().toISOString(),
@@ -9391,6 +11670,12 @@ async function routeInteraction(interaction) {
     return result;
   }
 
+  if (interaction.isButton() && interaction.customId?.startsWith("world:")) {
+    const result = await handleWorldButton(interaction);
+    await sendPendingRankUpMessages(interaction);
+    return result;
+  }
+
   if (interaction.isButton() && interaction.customId?.startsWith("pvpqueue:")) {
     const result = await handlePvpQueueButton(interaction);
     await sendPendingRankUpMessages(interaction);
@@ -9417,7 +11702,7 @@ async function routeInteraction(interaction) {
     });
   }
 
-  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, tutorial: handleTutorial, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, summon: handleSummon, claim: handleClaim, hint: handleHint, incense: handleIncense, burn: handleBurn, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, daily: handleDaily, vote: handleVote, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, trade: handleTrade, inventory: handleInventory, collection: handleCollection, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, season: handleSeason, serverquest: handleServerQuest, premium: handlePremium, clan: handleClan, authority: handleAuthority };
+  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, tutorial: handleTutorial, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, summon: handleSummon, claim: handleClaim, hint: handleHint, incense: handleIncense, burn: handleBurn, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, bounty: handleBounty, daily: handleDaily, vote: handleVote, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, trade: handleTrade, inventory: handleInventory, collection: handleCollection, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, partyquest: handlePartyQuest, weather: handleWeather, letter: handleLetter, shrine: handleShrine, appreciate: handleAppreciate, campfire: handleCampfire, identity: handleIdentity, faction: handleFaction, flex: handleFlex, blackmarket: handleBlackMarket, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, season: handleSeason, serverquest: handleServerQuest, project: handleProject, community: handleCommunity, yearbook: handleYearbook, challenge: handleChallenge, memoryquest: handleMemoryQuest, social: handleSocial, gallery: handleGallery, world: handleWorld, ask: handleAsk, premium: handlePremium, clan: handleClan, authority: handleAuthority };
   const handler = handlers[interaction.commandName];
   if (!handler) {
     return interaction.reply({ content: "Unknown command.", ephemeral: true });
@@ -9442,11 +11727,29 @@ async function routeInteraction(interaction) {
     await user.save();
   }
 
-  const result = await handler(interaction);
-  const subcommand = interaction.options?.getSubcommand?.(false) || null;
-  await runPostCommandEngagement(interaction, interaction.commandName, subcommand);
-  await sendPendingRankUpMessages(interaction);
-  return result;
+  try {
+    const result = await handler(interaction);
+    const subcommand = interaction.options?.getSubcommand?.(false) || null;
+    await runPostCommandEngagement(interaction, interaction.commandName, subcommand);
+    await sendPendingRankUpMessages(interaction);
+    eventBus.publish("interaction.completed", {
+      guildId: interaction.guildId,
+      userId: interaction.user?.id || null,
+      commandName: interaction.commandName,
+      durationMs: Date.now() - routeStartedAt,
+      metadata: { subcommand },
+    });
+    return result;
+  } catch (error) {
+    eventBus.publish("interaction.failed", {
+      guildId: interaction.guildId,
+      userId: interaction.user?.id || null,
+      commandName: interaction.commandName,
+      durationMs: Date.now() - routeStartedAt,
+      metadata: { message: error?.message || String(error) },
+    });
+    throw error;
+  }
 }
 
 module.exports = {

@@ -81,6 +81,229 @@ const activeEventSchema = new mongoose.Schema(
     activity: { type: mongoose.Schema.Types.Mixed, default: null },
     expiresAt: { type: Date, default: null },
     claimedUserIds: { type: [String], default: [] },
+    attemptedUserIds: { type: [String], default: [] },
+  },
+  { _id: false }
+);
+
+const serverProjectContributorSchema = new mongoose.Schema(
+  {
+    userId: String,
+    aura: { type: Number, default: 0 },
+    materials: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
+const serverProjectSchema = new mongoose.Schema(
+  {
+    id: { type: String, default: null },
+    name: { type: String, default: null },
+    description: { type: String, default: null },
+    auraGoal: { type: Number, default: 0 },
+    materialGoal: { type: Number, default: 0 },
+    aura: { type: Number, default: 0 },
+    materials: { type: Map, of: Number, default: {} },
+    contributors: { type: [serverProjectContributorSchema], default: [] },
+    completedAt: { type: Date, default: null },
+    startedAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+const communityIdentitySchema = new mongoose.Schema(
+  {
+    xp: { type: Number, default: 0 },
+    level: { type: Number, default: 1 },
+    motto: { type: String, default: null },
+    symbol: { type: String, default: null },
+    values: { type: [String], default: [] },
+    completedProjects: { type: Number, default: 0 },
+    totalAuraContributed: { type: Number, default: 0 },
+    totalMaterialsContributed: { type: Number, default: 0 },
+    lastProjectCompletedAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
+const worldFactionSchema = new mongoose.Schema(
+  {
+    id: String,
+    name: String,
+    influence: { type: Number, default: 50 },
+    reputation: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
+const worldEncounterChoiceSchema = new mongoose.Schema(
+  {
+    id: String,
+    label: String,
+    factionId: String,
+    text: String,
+    influenceDelta: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
+const worldEncounterSchema = new mongoose.Schema(
+  {
+    id: { type: String, default: null },
+    title: { type: String, default: null },
+    description: { type: String, default: null },
+    seasonId: { type: String, default: null },
+    choices: { type: [worldEncounterChoiceSchema], default: [] },
+    resolvedBy: { type: String, default: null },
+    resolvedChoiceId: { type: String, default: null },
+    expiresAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
+const worldStoryEntrySchema = new mongoose.Schema(
+  {
+    title: String,
+    text: String,
+    actorId: { type: String, default: null },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+const worldArtifactSchema = new mongoose.Schema(
+  {
+    name: { type: String, default: null },
+    form: { type: String, default: null },
+    tone: { type: String, default: null },
+    power: { type: Number, default: 1 },
+    traits: { type: [String], default: [] },
+    lastChangedAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
+const worldStateSchema = new mongoose.Schema(
+  {
+    seasonId: { type: String, default: null },
+    seasonName: { type: String, default: null },
+    tension: { type: Number, default: 0 },
+    factions: { type: [worldFactionSchema], default: [] },
+    activeEncounter: { type: worldEncounterSchema, default: null },
+    artifact: { type: worldArtifactSchema, default: null },
+    storyLog: { type: [worldStoryEntrySchema], default: [] },
+    lastEncounterAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
+const creatorChallengeEntrySchema = new mongoose.Schema(
+  {
+    userId: String,
+    text: String,
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+const creatorChallengeSchema = new mongoose.Schema(
+  {
+    prompt: { type: String, default: null },
+    theme: { type: String, default: null },
+    createdBy: { type: String, default: null },
+    createdAt: { type: Date, default: null },
+    expiresAt: { type: Date, default: null },
+    entries: { type: [creatorChallengeEntrySchema], default: [] },
+  },
+  { _id: false }
+);
+
+const memoryQuestContributorSchema = new mongoose.Schema(
+  {
+    userId: String,
+    amount: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
+const memoryQuestSchema = new mongoose.Schema(
+  {
+    id: { type: String, default: null },
+    title: { type: String, default: null },
+    description: { type: String, default: null },
+    goal: { type: Number, default: 0 },
+    progress: { type: Number, default: 0 },
+    contributors: { type: [memoryQuestContributorSchema], default: [] },
+    completedAt: { type: Date, default: null },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+const yearbookHighlightSchema = new mongoose.Schema(
+  {
+    category: String,
+    userId: String,
+    label: String,
+    score: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
+const yearbookSchema = new mongoose.Schema(
+  {
+    monthId: { type: String, default: null },
+    generatedAt: { type: Date, default: null },
+    highlights: { type: [yearbookHighlightSchema], default: [] },
+  },
+  { _id: false }
+);
+
+const appreciationSchema = new mongoose.Schema(
+  {
+    fromUserId: String,
+    toUserId: String,
+    tag: { type: String, default: "kindness" },
+    note: { type: String, default: null },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+const partyQuestRoleSchema = new mongoose.Schema(
+  {
+    role: String,
+    userId: { type: String, default: null },
+  },
+  { _id: false }
+);
+
+const partyQuestSchema = new mongoose.Schema(
+  {
+    id: { type: String, default: null },
+    title: { type: String, default: null },
+    description: { type: String, default: null },
+    roles: { type: [partyQuestRoleSchema], default: [] },
+    progress: { type: Number, default: 0 },
+    goal: { type: Number, default: 4 },
+    expiresAt: { type: Date, default: null },
+    completedAt: { type: Date, default: null },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
+const bountySchema = new mongoose.Schema(
+  {
+    bountyId: String,
+    targetUserId: String,
+    placedByUserId: String,
+    amount: { type: Number, default: 0 },
+    reason: { type: String, default: null },
+    createdAt: { type: Date, default: Date.now },
+    expiresAt: { type: Date, default: null },
+    claimedByUserId: { type: String, default: null },
+    claimedAt: { type: Date, default: null },
   },
   { _id: false }
 );
@@ -117,6 +340,9 @@ const userSchema = new mongoose.Schema(
     prestige: { type: Number, default: 0 },
     streak: { type: Number, default: 0 },
     lastDailyAt: { type: Date, default: null },
+    lastAppreciateAt: { type: Date, default: null },
+    lastFactionStrikeAt: { type: Date, default: null },
+    lastFlexAt: { type: Date, default: null },
     lastSpinAt: { type: Date, default: null },
     lastCoinflipAt: { type: Date, default: null },
     lastWorkAt: { type: Date, default: null },
@@ -125,6 +351,10 @@ const userSchema = new mongoose.Schema(
     lastSummonAt: { type: Date, default: null },
     lastBossAt: { type: Date, default: null },
     lastAuthorityAt: { type: Date, default: null },
+    protectionUntil: { type: Date, default: null },
+    revengeTargetId: { type: String, default: null },
+    revengeExpiresAt: { type: Date, default: null },
+    notoriety: { type: Number, default: 0 },
     lastVaultInterestAt: { type: Date, default: null },
     vaultInterestRemainder: { type: Number, default: 0 },
     inventory: { type: [inventoryEntrySchema], default: [] },
@@ -147,6 +377,11 @@ const userSchema = new mongoose.Schema(
       ownedTitles: { type: [String], default: [] },
       ownedFrames: { type: [String], default: [] },
     },
+    faction: {
+      id: { type: String, default: null },
+      pledgedAt: { type: Date, default: null },
+    },
+    blackMarketPurchases: { type: [String], default: [] },
     crates: { type: Map, of: Number, default: {} },
     quests: { type: [questSchema], default: [] },
     claimedAchievements: { type: [String], default: [] },
@@ -204,6 +439,16 @@ const userSchema = new mongoose.Schema(
       bossLosses: { type: Number, default: 0 },
       vaultDeposit: { type: Number, default: 0 },
       shopBuys: { type: Number, default: 0 },
+      giftsSent: { type: Number, default: 0 },
+      appreciationsGiven: { type: Number, default: 0 },
+      appreciationsReceived: { type: Number, default: 0 },
+      campfireShares: { type: Number, default: 0 },
+      flexes: { type: Number, default: 0 },
+      factionStrikes: { type: Number, default: 0 },
+      blackMarketBuys: { type: Number, default: 0 },
+      bountiesPlaced: { type: Number, default: 0 },
+      bountiesClaimed: { type: Number, default: 0 },
+      projectContributions: { type: Number, default: 0 },
     },
     reminders: {
       guildId: { type: String, default: null },
@@ -212,6 +457,7 @@ const userSchema = new mongoose.Schema(
       lastNotifiedAt: { type: Map, of: Date, default: {} },
     },
     relicHuntStreaks: { type: Map, of: Number, default: {} },
+    reputation: { type: Map, of: Number, default: {} },
     botContext: {
       lastGuildId: { type: String, default: null },
       lastChannelId: { type: String, default: null },
@@ -277,6 +523,7 @@ const paddleWebhookLogSchema = new mongoose.Schema(
 const topggVoteLogSchema = new mongoose.Schema(
   {
     eventId: { type: String, default: null },
+    voteKey: { type: String, default: null },
     userId: { type: String, required: true, index: true },
     voteType: { type: String, default: null },
     weight: { type: Number, default: 1 },
@@ -295,6 +542,13 @@ topggVoteLogSchema.index(
   {
     unique: true,
     partialFilterExpression: { eventId: { $type: "string" } },
+  }
+);
+topggVoteLogSchema.index(
+  { voteKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { voteKey: { $type: "string" } },
   }
 );
 
@@ -348,6 +602,15 @@ const guildSettingsSchema = new mongoose.Schema(
     configuredAt: { type: Date, default: null },
     activeEvent: { type: activeEventSchema, default: null },
     recentEventIds: { type: [String], default: [] },
+    serverProject: { type: serverProjectSchema, default: null },
+    community: { type: communityIdentitySchema, default: () => ({}) },
+    worldState: { type: worldStateSchema, default: () => ({}) },
+    creatorChallenge: { type: creatorChallengeSchema, default: () => ({}) },
+    memoryQuest: { type: memoryQuestSchema, default: null },
+    yearbook: { type: yearbookSchema, default: () => ({}) },
+    partyQuest: { type: partyQuestSchema, default: null },
+    appreciations: { type: [appreciationSchema], default: [] },
+    bounties: { type: [bountySchema], default: [] },
     relicSpawn: { type: relicSpawnStateSchema, default: () => ({ current: null, incenseRemaining: 0, lastIncenseSpawnAt: null }) },
     lastEventSpawnAt: { type: Date, default: null },
   },
@@ -408,7 +671,26 @@ const rolePurchaseSchema = new mongoose.Schema(
 
 rolePurchaseSchema.index({ guildId: 1, userId: 1, roleId: 1 });
 
+const analyticsEventSchema = new mongoose.Schema(
+  {
+    type: { type: String, required: true, index: true },
+    guildId: { type: String, default: null, index: true },
+    userId: { type: String, default: null, index: true },
+    commandName: { type: String, default: null, index: true },
+    customId: { type: String, default: null },
+    ok: { type: Boolean, default: true, index: true },
+    durationMs: { type: Number, default: 0 },
+    metadata: { type: mongoose.Schema.Types.Mixed, default: null },
+    createdAt: { type: Date, default: Date.now, index: true },
+  },
+  { versionKey: false }
+);
+
+analyticsEventSchema.index({ guildId: 1, createdAt: -1 });
+analyticsEventSchema.index({ commandName: 1, createdAt: -1 });
+
 const User = mongoose.models.User || mongoose.model("User", userSchema);
+const AnalyticsEvent = mongoose.models.AnalyticsEvent || mongoose.model("AnalyticsEvent", analyticsEventSchema);
 const BattleSession = mongoose.models.BattleSession || mongoose.model("BattleSession", battleSessionSchema);
 const Clan = mongoose.models.Clan || mongoose.model("Clan", clanSchema);
 const CollectiblePrintCounter = mongoose.models.CollectiblePrintCounter || mongoose.model("CollectiblePrintCounter", collectiblePrintCounterSchema);
@@ -421,4 +703,4 @@ const RolePurchase = mongoose.models.RolePurchase || mongoose.model("RolePurchas
 const TopggVoteLog = mongoose.models.TopggVoteLog || mongoose.model("TopggVoteLog", topggVoteLogSchema);
 const TradeOffer = mongoose.models.TradeOffer || mongoose.model("TradeOffer", tradeOfferSchema);
 
-module.exports = { BattleSession, Clan, CollectiblePrintCounter, GuildSettings, PaddleWebhookLog, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TopggVoteLog, TradeOffer, User };
+module.exports = { AnalyticsEvent, BattleSession, Clan, CollectiblePrintCounter, GuildSettings, PaddleWebhookLog, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TopggVoteLog, TradeOffer, User };
