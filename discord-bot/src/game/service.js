@@ -14,7 +14,7 @@ const reminderIntervals = new WeakMap();
 const relicSpawnIntervals = new WeakMap();
 const chatSpawnCounters = new Map();
 const recentInteractions = [];
-const COMMAND_BUILD_ID = "aurix-topgg-vote-rewards-v21";
+const COMMAND_BUILD_ID = "aurix-topgg-vote-reminder-prompts-v22";
 const BATTLE_TIMEOUT_MS = 45 * 60 * 1000;
 const BATTLE_ANIMATION_DELAY_MS = 900;
 const PVP_INVITE_TIMEOUT_MS = 2 * 60 * 1000;
@@ -530,7 +530,7 @@ const PREMIUM_PURCHASE_URL = "https://aurawebsite-12gd.onrender.com";
 const OFFICIAL_SERVER_URL = "https://aurawebsite-12gd.onrender.com";
 const TOPGG_VOTE_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 const TOPGG_VOTE_PROMPT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
-const TOPGG_VOTE_PROMPTS_ENABLED = process.env.TOPGG_VOTE_PROMPTS_ENABLED === "true";
+const TOPGG_VOTE_PROMPTS_ENABLED = process.env.TOPGG_VOTE_PROMPTS_ENABLED !== "false";
 const TOPGG_VOTE_PROMPT_CHANCE = TOPGG_VOTE_PROMPTS_ENABLED ? (Number(process.env.TOPGG_VOTE_PROMPT_CHANCE) || 0.05) : 0;
 const TOPGG_VOTE_REWARD = Object.freeze({
   aura: Number(process.env.TOPGG_VOTE_REWARD_AURA) || 8000,
@@ -753,6 +753,7 @@ const MICROTRANSACTION_PRODUCTS = Object.freeze({
 });
 const REMINDER_ACTIONS = Object.freeze({
   harvest: { label: "Harvest", command: "/garden harvest" },
+  vote: { label: "Top.gg Vote", command: "/vote" },
 });
 const HEALTHY_REMINDER_ACTIONS = new Set(Object.keys(REMINDER_ACTIONS));
 const REMINDER_ACTION_CHOICES = Object.entries(REMINDER_ACTIONS).map(([value, action]) => ({ name: action.label, value }));
@@ -5035,7 +5036,7 @@ function buildVotePromptPayload(user) {
       visual: "emblem-success.svg",
       fields: [
         { name: "Vote Link", value: voteUrl },
-        { name: "Reminder", value: reminderEnabled ? "Your vote reminder is already enabled." : "Automatic vote pings are disabled by default. Use `/vote` when you already feel like supporting the bot." },
+        { name: "Reminder", value: reminderEnabled ? "Your vote reminder is already enabled, so you can be tagged when voting is available again." : "Want a ping next time voting opens? Use `/reminders enable action:Top.gg Vote`." },
       ],
       footer: "Top.gg votes refresh about every 12 hours.",
     }),
@@ -8617,7 +8618,7 @@ async function handleVote(interaction) {
       { name: "Vote Link", value: voteUrl },
       { name: "Reward", value: formatTopggReward(buildTopggReward(1)), inline: true },
       { name: "Weekend", value: "Top.gg double-vote weekends pay double when Top.gg sends weight 2.", inline: true },
-      { name: "Reminders", value: reminderEnabled ? "Enabled from an older setting. You can disable it with `/reminders disable`." : "Automatic vote pings are off by default. Use `/vote` only when you already want to support the bot." },
+      { name: "Reminders", value: reminderEnabled ? "Enabled. You can disable it with `/reminders disable action:Top.gg Vote`." : "Optional: use `/reminders enable action:Top.gg Vote` to get tagged when your next vote is available." },
     ],
     footer: user.topgg.voteCount > 0 ? `Votes rewarded: ${formatNumber(user.topgg.voteCount)}` : "Rewards are delivered by the Top.gg webhook.",
   }));
