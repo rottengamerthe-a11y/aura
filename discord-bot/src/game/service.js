@@ -11232,7 +11232,13 @@ async function handleLeaderboard(interaction) {
     return interaction.reply(buildEmbedPayload({ title: `${serverOnly ? "Server" : "Global"} Clan Leaderboard`, description: lines, visual: "clan-top.svg" }));
   }
 
-  const sortMap = { aura: { aura: -1 }, xp: { xp: -1 }, prestige: { prestige: -1, xp: -1 }, vault: { vaultAura: -1 } };
+  const sortMap = {
+    aura: { aura: -1 },
+    xp: { xp: -1 },
+    prestige: { prestige: -1, xp: -1 },
+    vault: { vaultAura: -1 },
+    pvp: { "stats.pvpWins": -1, "stats.bestPvpStreak": -1, "stats.pvpLosses": 1 },
+  };
   let users;
   if (isGlobalPlayerDataEnabled() || serverOnly) {
     const rawUsers = await User.find(buildPlayerLeaderboardFilter(interaction.guildId)).sort({ ...(sortMap[category] || { aura: -1 }), updatedAt: -1 });
@@ -11259,10 +11265,19 @@ async function handleLeaderboard(interaction) {
     return { player, name: member?.username || player.userId };
   }));
   const lines = members.map((entry, index) => {
-    const value = category === "xp" ? `${formatNumber(entry.player.xp)} XP` : category === "prestige" ? `${entry.player.prestige} prestige` : category === "vault" ? `${formatNumber(entry.player.vaultAura)} vault aura` : `${formatNumber(entry.player.aura)} aura`;
+    const value = category === "xp"
+      ? `${formatNumber(entry.player.xp)} XP`
+      : category === "prestige"
+        ? `${entry.player.prestige} prestige`
+        : category === "vault"
+          ? `${formatNumber(entry.player.vaultAura)} vault aura`
+          : category === "pvp"
+            ? `${formatNumber(entry.player.stats?.pvpWins || 0)}W-${formatNumber(entry.player.stats?.pvpLosses || 0)}L | streak ${formatNumber(getPvpStreak(entry.player))} current, ${formatNumber(getBestPvpStreak(entry.player))} best`
+            : `${formatNumber(entry.player.aura)} aura`;
     return `${index + 1}. **${entry.name}** - ${value}`;
   }).join("\n");
-  return interaction.reply(buildEmbedPayload({ title: `${serverOnly ? "Server" : "Global"} Player Leaderboard`, description: lines || "No player data yet.", visual: "help-summary.svg" }));
+  const titleLabel = category === "pvp" ? "PvP Leaderboard" : "Player Leaderboard";
+  return interaction.reply(buildEmbedPayload({ title: `${serverOnly ? "Server" : "Global"} ${titleLabel}`, description: lines || "No player data yet.", visual: category === "pvp" ? "emblem-pvp.svg" : "help-summary.svg" }));
 }
 
 async function handleClan(interaction) {
@@ -11878,7 +11893,7 @@ function buildCommands() {
       .addUserOption((option) => option.setName("user").setDescription("Optional direct opponent"))
       .addStringOption((option) => option.setName("mode").setDescription("Global matchmaking control").addChoices({ name: "join", value: "join" }, { name: "status", value: "status" })),
     new SlashCommandBuilder().setName("boss").setDescription("Fight a boss.").addStringOption((option) => option.setName("boss").setDescription("Boss id").addChoices({ name: "ember", value: "ember" }, { name: "oracle", value: "oracle" }, { name: "warden", value: "warden" }, { name: "codex", value: "codex" })),
-    new SlashCommandBuilder().setName("leaderboard").setDescription("View top players and clans.").addStringOption((option) => option.setName("category").setDescription("Leaderboard type").setRequired(true).addChoices({ name: "aura", value: "aura" }, { name: "vault", value: "vault" }, { name: "xp", value: "xp" }, { name: "prestige", value: "prestige" }, { name: "clans", value: "clans" })).addStringOption((option) => option.setName("scope").setDescription("Global or this server only").addChoices({ name: "global", value: "global" }, { name: "server", value: "server" })),
+    new SlashCommandBuilder().setName("leaderboard").setDescription("View top players and clans.").addStringOption((option) => option.setName("category").setDescription("Leaderboard type").setRequired(true).addChoices({ name: "aura", value: "aura" }, { name: "vault", value: "vault" }, { name: "xp", value: "xp" }, { name: "prestige", value: "prestige" }, { name: "pvp", value: "pvp" }, { name: "clans", value: "clans" })).addStringOption((option) => option.setName("scope").setDescription("Global or this server only").addChoices({ name: "global", value: "global" }, { name: "server", value: "server" })),
     new SlashCommandBuilder().setName("season").setDescription("View the current clan season standings."),
     new SlashCommandBuilder().setName("serverquest").setDescription("View the rotating community quest."),
     new SlashCommandBuilder().setName("project").setDescription("Build shared server projects with aura and materials.")
