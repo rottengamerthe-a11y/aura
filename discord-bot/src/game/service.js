@@ -8090,30 +8090,81 @@ function formatForgeStatus(user) {
   return lines.join("\n");
 }
 
-async function handleForge(interaction) {
-  const subcommand = interaction.options.getSubcommand();
-  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
-  normalizeProgressionSystems(user);
+function getOwnedGearEntries(user) {
+  return Object.entries(GEAR_ITEMS)
+    .filter(([gearId]) => getInventoryQuantity(user, gearId) > 0)
+    .map(([gearId, gear]) => ({ gearId, gear }));
+}
 
-  if (subcommand === "status") {
-    return interaction.reply(buildEmbedPayload({
-      title: "Aura Forge",
-      description: "Upgrade crafted gear for stronger effects. Failed upgrades still consume aura and chip durability.",
-      visual: "help-skills.svg",
-      fields: [
-        { name: "Gear", value: formatForgeStatus(user) },
-        { name: "Rules", value: `Max upgrade: +${FORGE_MAX_LEVEL}\nBroken gear works at half power until repaired.` },
-      ],
-    }));
+function buildOwnedGearOptions(user, action) {
+  const ownedGear = getOwnedGearEntries(user);
+  if (!ownedGear.length) {
+    return [
+      {
+        label: "No crafted gear owned",
+        value: "none",
+        description: "Craft gear before using this panel.",
+      },
+    ];
   }
 
-  const gearId = interaction.options.getString("item", true);
+  return ownedGear.map(({ gearId, gear }) => {
+    const level = getGearUpgradeLevel(user, gearId);
+    const durability = getGearDurability(user, gearId);
+    const actionText = action === "repair" ? `${durability}% durability` : `+${level} forge level`;
+    return {
+      label: gear.name.slice(0, 100),
+      value: gearId,
+      description: `${gear.slot} slot | ${actionText}`.slice(0, 100),
+    };
+  }).slice(0, 25);
+}
+
+function buildGearEquipComponents(user, ownerId) {
+  const ownedGear = getOwnedGearEntries(user);
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`gear:equip:${ownerId}`)
+    .setPlaceholder(ownedGear.length ? "Choose gear to equip" : "Craft gear to unlock equip choices")
+    .setDisabled(!ownedGear.length)
+    .addOptions(buildOwnedGearOptions(user, "equip"));
+  return [new ActionRowBuilder().addComponents(menu)];
+}
+
+function buildForgeActionComponents(user, ownerId) {
+  const ownedGear = getOwnedGearEntries(user);
+  const disabled = !ownedGear.length;
+  return [
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`forge:upgrade:${ownerId}`)
+        .setPlaceholder(ownedGear.length ? "Choose gear to upgrade" : "Craft gear to unlock forge upgrades")
+        .setDisabled(disabled)
+        .addOptions(buildOwnedGearOptions(user, "upgrade"))
+    ),
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`forge:repair:${ownerId}`)
+        .setPlaceholder(ownedGear.length ? "Choose gear to repair" : "Craft gear to unlock repairs")
+        .setDisabled(disabled)
+        .addOptions(buildOwnedGearOptions(user, "repair"))
+    ),
+  ];
+}
+
+function respondWithMutablePanel(interaction, payload) {
+  if (interaction.isButton?.() || interaction.isStringSelectMenu?.()) {
+    return interaction.update(payload);
+  }
+  return interaction.reply(payload);
+}
+
+async function applyForgeAction(interaction, user, gearId, action) {
   const gear = getGearItem(gearId);
   if (!gear || getInventoryQuantity(user, gearId) <= 0) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Forge Failed", description: "You need to own that crafted gear before forging it.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
-  if (subcommand === "repair") {
+  if (action === "repair") {
     const durability = getGearDurability(user, gearId);
     if (durability >= 100) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Repair Not Needed", description: `${getInventoryLabel(gearId)} is already at full durability.`, visual: "emblem-help.svg" }), ephemeral: true });
@@ -8125,15 +8176,18 @@ async function handleForge(interaction) {
     user.aura -= cost;
     setGearDurability(user, gearId, 100);
     await user.save();
-    return interaction.reply(buildEmbedPayload({
-      title: "Gear Repaired",
-      description: `${getInventoryLabel(gearId)} is back to full durability.`,
-      visual: "emblem-success.svg",
-      fields: [
-        { name: "Cost", value: `${formatNumber(cost)} aura`, inline: true },
-        { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
-      ],
-    }));
+    return respondWithMutablePanel(interaction, {
+      ...buildEmbedPayload({
+        title: "Gear Repaired",
+        description: `${getInventoryLabel(gearId)} is back to full durability.`,
+        visual: "emblem-success.svg",
+        fields: [
+          { name: "Cost", value: `${formatNumber(cost)} aura`, inline: true },
+          { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+        ],
+      }),
+      components: buildForgeActionComponents(user, interaction.user.id),
+    });
   }
 
   const level = getGearUpgradeLevel(user, gearId);
@@ -8157,18 +8211,45 @@ async function handleForge(interaction) {
   user.markModified("gearUpgrades");
   await user.save();
 
-  return interaction.reply(buildEmbedPayload({
-    title: success ? "Forge Upgrade Complete" : "Forge Failed",
-    description: success
-      ? `${getInventoryLabel(gearId)} reached **+${level + 1}**. Its effects are now stronger.`
-      : `${getInventoryLabel(gearId)} resisted the forge. The aura was spent and durability dropped.`,
-    visual: success ? "emblem-success.svg" : "emblem-alert.svg",
-    fields: [
-      { name: "Cost", value: `${formatNumber(cost)} aura`, inline: true },
-      { name: "Durability", value: `${getGearDurability(user, gearId)}%`, inline: true },
-      { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
-    ],
-  }));
+  return respondWithMutablePanel(interaction, {
+    ...buildEmbedPayload({
+      title: success ? "Forge Upgrade Complete" : "Forge Failed",
+      description: success
+        ? `${getInventoryLabel(gearId)} reached **+${level + 1}**. Its effects are now stronger.`
+        : `${getInventoryLabel(gearId)} resisted the forge. The aura was spent and durability dropped.`,
+      visual: success ? "emblem-success.svg" : "emblem-alert.svg",
+      fields: [
+        { name: "Cost", value: `${formatNumber(cost)} aura`, inline: true },
+        { name: "Durability", value: `${getGearDurability(user, gearId)}%`, inline: true },
+        { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+      ],
+    }),
+    components: buildForgeActionComponents(user, interaction.user.id),
+  });
+}
+
+async function handleForge(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  normalizeProgressionSystems(user);
+
+  if (subcommand === "status") {
+    return interaction.reply({
+      ...buildEmbedPayload({
+        title: "Aura Forge",
+        description: "Upgrade crafted gear for stronger effects. Failed upgrades still consume aura and chip durability.",
+        visual: "help-skills.svg",
+        fields: [
+          { name: "Gear", value: formatForgeStatus(user) },
+          { name: "Rules", value: `Max upgrade: +${FORGE_MAX_LEVEL}\nBroken gear works at half power until repaired.` },
+        ],
+      }),
+      components: buildForgeActionComponents(user, interaction.user.id),
+    });
+  }
+
+  const gearId = interaction.options.getString("item", true);
+  return applyForgeAction(interaction, user, gearId, subcommand);
 }
 
 function getProperty(type) {
@@ -8395,42 +8476,56 @@ async function handleExpedition(interaction) {
 async function handleGear(interaction) {
   const subcommand = interaction.options.getSubcommand();
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  normalizeProgressionSystems(user);
 
   if (subcommand === "loadout") {
-    const lines = Object.entries(user.equippedGear || {}).map(([slot, gearId]) => {
+    const loadout = cloneLoadout(user.equippedGear);
+    const lines = Object.entries(loadout).map(([slot, gearId]) => {
       if (!gearId) {
         return `${slot}: Empty`;
       }
       return `${slot}: ${getInventoryLabel(gearId)} +${getGearUpgradeLevel(user, gearId)} (${getGearDurability(user, gearId)}% durability)`;
     }).join("\n");
-    return interaction.reply(buildEmbedPayload({
-      title: "Gear Loadout",
-      description: lines,
-      visual: "help-skills.svg",
-      footer: "Use /forge to upgrade or repair gear.",
-    }));
+    return interaction.reply({
+      ...buildEmbedPayload({
+        title: "Gear Loadout",
+        description: lines,
+        visual: "help-skills.svg",
+        footer: "Choose owned gear below, or use /forge to upgrade and repair.",
+      }),
+      components: buildGearEquipComponents(user, interaction.user.id),
+    });
   }
 
   const gearId = interaction.options.getString("item", true);
+  return equipGearItem(interaction, user, gearId);
+}
+
+async function equipGearItem(interaction, user, gearId) {
   const gear = getGearItem(gearId);
   if (!gear) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Gear Missing", description: "That gear item does not exist.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
-  const ownedQuantity = user.inventory.find((entry) => entry.id === gearId)?.quantity || 0;
+  const ownedQuantity = getInventoryQuantity(user, gearId);
   if (ownedQuantity <= 0) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Gear Not Owned", description: `You do not own **${getInventoryLabel(gearId)}** yet. Craft it first.`, visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
+  user.equippedGear = cloneLoadout(user.equippedGear);
   user.equippedGear[gear.slot] = gearId;
+  user.markModified("equippedGear");
   await user.save();
-  return interaction.reply(buildEmbedPayload({
-    title: "Gear Equipped",
-    description: `You equipped **${getInventoryLabel(gearId)}** in the **${gear.slot}** slot.`,
-    visual: "help-skills.svg",
-    fields: [
-      { name: "Effect", value: gear.description },
-    ],
-  }));
+  return respondWithMutablePanel(interaction, {
+    ...buildEmbedPayload({
+      title: "Gear Equipped",
+      description: `You equipped **${getInventoryLabel(gearId)}** in the **${gear.slot}** slot.`,
+      visual: "help-skills.svg",
+      fields: [
+        { name: "Effect", value: gear.description },
+      ],
+    }),
+    components: buildGearEquipComponents(user, interaction.user.id),
+  });
 }
 
 async function handleSpin(interaction) {
@@ -10747,6 +10842,40 @@ async function handleQuickActionButton(interaction) {
   return result;
 }
 
+async function handleGearComponentInteraction(interaction) {
+  const [, action, ownerId] = interaction.customId.split(":");
+  if (ownerId !== interaction.user.id) {
+    return interaction.reply({ content: "Only the player who opened this gear panel can use it.", ephemeral: true });
+  }
+  if (!interaction.isStringSelectMenu() || action !== "equip") {
+    return interaction.reply({ content: "That gear action is not supported anymore.", ephemeral: true });
+  }
+  const gearId = interaction.values[0];
+  if (!gearId || gearId === "none") {
+    return interaction.reply({ content: "Craft gear first, then reopen `/gear loadout`.", ephemeral: true });
+  }
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  normalizeProgressionSystems(user);
+  return equipGearItem(interaction, user, gearId);
+}
+
+async function handleForgeComponentInteraction(interaction) {
+  const [, action, ownerId] = interaction.customId.split(":");
+  if (ownerId !== interaction.user.id) {
+    return interaction.reply({ content: "Only the player who opened this forge panel can use it.", ephemeral: true });
+  }
+  if (!interaction.isStringSelectMenu() || !["upgrade", "repair"].includes(action)) {
+    return interaction.reply({ content: "That forge action is not supported anymore.", ephemeral: true });
+  }
+  const gearId = interaction.values[0];
+  if (!gearId || gearId === "none") {
+    return interaction.reply({ content: "Craft gear first, then reopen `/forge status`.", ephemeral: true });
+  }
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  normalizeProgressionSystems(user);
+  return applyForgeAction(interaction, user, gearId, action);
+}
+
 async function handleTradeButton(interaction) {
   const [, action, offerId, targetUserId] = interaction.customId.split(":");
   if (targetUserId !== interaction.user.id) {
@@ -11947,6 +12076,18 @@ async function routeInteraction(interaction) {
 
   if (interaction.isButton() && interaction.customId?.startsWith("quick:")) {
     return handleQuickActionButton(interaction);
+  }
+
+  if (interaction.isStringSelectMenu() && interaction.customId?.startsWith("gear:")) {
+    const result = await handleGearComponentInteraction(interaction);
+    await sendPendingRankUpMessages(interaction);
+    return result;
+  }
+
+  if (interaction.isStringSelectMenu() && interaction.customId?.startsWith("forge:")) {
+    const result = await handleForgeComponentInteraction(interaction);
+    await sendPendingRankUpMessages(interaction);
+    return result;
   }
 
   if (interaction.isButton() && interaction.customId?.startsWith("trade:")) {
