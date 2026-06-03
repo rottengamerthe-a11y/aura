@@ -5927,6 +5927,51 @@ function buildServerSetupPayload(guildName) {
   });
 }
 
+function getMissingSetupChannelPermissions(channel, botMember) {
+  const permissions = channel?.permissionsFor?.(botMember);
+  if (!permissions) {
+    return ["View Channel", "Send Messages"];
+  }
+
+  const requiredPermissions = [
+    [PermissionsBitField.Flags.ViewChannel, "View Channel"],
+    [PermissionsBitField.Flags.SendMessages, "Send Messages"],
+    [PermissionsBitField.Flags.EmbedLinks, "Embed Links"],
+  ];
+  return requiredPermissions
+    .filter(([flag]) => !permissions.has(flag))
+    .map(([, label]) => label);
+}
+
+function buildSetupPlainText(guildName) {
+  return [
+    `Aurix is ready in ${guildName}.`,
+    "Members should run /start to create their save and see the quick-start path.",
+    "Recommended split: /setup mode:commands channel:#economy and /setup mode:drops channel:#aurix-drops.",
+    "Best first commands: /daily, /work, /spin, /mine, /profile, /help.",
+  ].join("\n");
+}
+
+function buildSetupGuidePayloadForPermissions(guildName, permissions) {
+  const payload = buildServerSetupPayload(guildName);
+  if (permissions?.has(PermissionsBitField.Flags.AttachFiles)) {
+    return payload;
+  }
+
+  const { files, ...payloadWithoutFiles } = payload;
+  if (payloadWithoutFiles.embeds?.[0]?.setImage) {
+    payloadWithoutFiles.embeds[0].setImage(null);
+  }
+  return payloadWithoutFiles;
+}
+
+async function sendSetupGuideToChannel(channel, guildName) {
+  const botMember = channel.guild?.members?.me || await channel.guild?.members?.fetchMe?.().catch(() => null);
+  const permissions = channel.permissionsFor?.(botMember);
+  const payload = buildSetupGuidePayloadForPermissions(guildName, permissions);
+  return channel.send(payload).catch(() => channel.send({ content: buildSetupPlainText(guildName) }));
+}
+
 function buildServerJoinPayload(guildName) {
   return buildEmbedPayload({
     title: "Aurix Setup Required",
@@ -11282,12 +11327,12 @@ async function handleSetup(interaction) {
   }
 
   const botMember = interaction.guild.members.me || await interaction.guild.members.fetchMe().catch(() => null);
-  const permissions = selectedChannel.permissionsFor(botMember);
-  if (!permissions?.has(PermissionsBitField.Flags.ViewChannel) || !permissions?.has(PermissionsBitField.Flags.SendMessages)) {
+  const missingPermissions = getMissingSetupChannelPermissions(selectedChannel, botMember);
+  if (missingPermissions.length) {
     return interaction.reply({
       ...buildEmbedPayload({
         title: "Setup Channel Blocked",
-        description: `I need View Channel and Send Messages permission in ${selectedChannel}.`,
+        description: `I need these permissions in ${selectedChannel}: **${missingPermissions.join(", ")}**.`,
         visual: "emblem-alert.svg",
       }),
       ephemeral: true,
@@ -11295,12 +11340,27 @@ async function handleSetup(interaction) {
   }
 
   await setAurixChannel(interaction.guildId, selectedChannel.id, interaction.user.id, mode);
-  const payload = buildServerSetupPayload(interaction.guild?.name || "this server");
+  const guildName = interaction.guild?.name || "this server";
   if (selectedChannel.id === interaction.channelId) {
-    return interaction.reply(payload);
+    const permissions = selectedChannel.permissionsFor?.(botMember);
+    return interaction.reply(buildSetupGuidePayloadForPermissions(guildName, permissions));
   }
 
-  await selectedChannel.send(payload);
+  const posted = await sendSetupGuideToChannel(selectedChannel, guildName).then(() => true).catch((error) => {
+    console.warn("Failed to post setup guide:", error?.code || error?.message || error);
+    return false;
+  });
+  if (!posted) {
+    return interaction.reply({
+      ...buildEmbedPayload({
+        title: "Setup Saved, Post Failed",
+        description: `I saved ${selectedChannel} for setup, but Discord blocked my starter-guide message there. Check my channel permissions, especially Embed Links and Attach Files.`,
+        visual: "emblem-alert.svg",
+      }),
+      ephemeral: true,
+    });
+  }
+
   const modeLabel = mode === "both" ? "commands and drops" : mode === "drops" ? "relic drops" : "economy commands";
   return interaction.reply({
     ...buildEmbedPayload({
