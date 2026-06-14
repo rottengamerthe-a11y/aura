@@ -293,6 +293,35 @@ const GENERATED_RELIC_RARITY_COUNTS = Object.freeze({
   legendary: 2160,
   mythic: 360,
 });
+// Generated relics are assembled from readable pixel-art components instead of long lore-name strings.
+const RELIC_NAME_PREFIXES = Object.freeze(["Void", "Soul", "Ash", "Moon", "Sun", "Blood", "Frost", "Storm", "Iron", "Rune", "Shadow", "Ember", "Hollow", "Dread", "Glass", "Bone", "Star", "Hex"]);
+const RELIC_NAME_SUFFIXES = Object.freeze(["Shard", "Core", "Eye", "Fang", "Ring", "Crown", "Idol", "Stone", "Seed", "Heart", "Orb", "Blade", "Thorn", "Nail", "Spark", "Coil"]);
+const RELIC_SINGLE_NAMES = Object.freeze([
+  "Eclipse", "Voidcore", "Ember", "Crown", "Shiver", "Heartseed", "Moonfang", "Soulstone",
+  "Obelisk", "Warden", "Bloodroot", "Sunshard", "Frostgem", "Nullrod", "Glimmer", "Hex",
+  "Starfall", "Ashbell", "Ironbloom", "Stormglass", "Dreadseed", "Boneheart", "Runestone", "Hollow Eye",
+]);
+const RELIC_MATERIAL_PALETTES = Object.freeze({
+  gold: { label: "Gold", body: 0xd49a24, shade: 0x5f3512, light: 0xffe08a, trim: 0xffc857, wear: 0x8f5f12 },
+  silver: { label: "Silver", body: 0xaeb7c2, shade: 0x46505c, light: 0xf8fafc, trim: 0xdce6f2, wear: 0x6b7280 },
+  jade: { label: "Jade", body: 0x1f9d6a, shade: 0x064e3b, light: 0xa7f3d0, trim: 0x5ce1a1, wear: 0x0f766e },
+  obsidian: { label: "Obsidian", body: 0x151827, shade: 0x030712, light: 0x5b6478, trim: 0xa78bfa, wear: 0x0b1020 },
+  crystal: { label: "Crystal", body: 0x67e8f9, shade: 0x155e75, light: 0xecfeff, trim: 0x93c5fd, wear: 0x22d3ee },
+  bone: { label: "Bone", body: 0xd8c79b, shade: 0x76664a, light: 0xfff7d6, trim: 0xf4e2b8, wear: 0x9a7d4f },
+});
+const RELIC_BASE_SHAPES = Object.freeze({
+  shard: { label: "Shard", family: 1, compatibleMaterials: ["crystal", "obsidian", "jade"], ornaments: ["rune", "gem", "halo"], suffixes: ["Shard", "Fang", "Stone"] },
+  core: { label: "Core", family: 0, compatibleMaterials: ["gold", "silver", "crystal", "obsidian"], ornaments: ["gem", "ring", "rune"], suffixes: ["Core", "Heart", "Orb"] },
+  eye: { label: "Eye", family: 5, compatibleMaterials: ["obsidian", "crystal", "silver"], ornaments: ["halo", "rune", "gem"], suffixes: ["Eye", "Orb", "Idol"] },
+  ring: { label: "Ring", family: 8, compatibleMaterials: ["gold", "silver", "jade", "bone"], ornaments: ["gem", "rune", "chain"], suffixes: ["Ring", "Crown", "Orb"] },
+  idol: { label: "Idol", family: 2, compatibleMaterials: ["jade", "bone", "obsidian", "gold"], ornaments: ["rune", "horn", "gem"], suffixes: ["Idol", "Stone", "Seed"] },
+  crown: { label: "Crown", family: 4, compatibleMaterials: ["gold", "silver", "obsidian"], ornaments: ["spike", "gem", "halo"], suffixes: ["Crown", "Heart", "Eye"] },
+  seed: { label: "Seed", family: 10, compatibleMaterials: ["jade", "bone", "gold"], ornaments: ["leaf", "rune", "ring"], suffixes: ["Seed", "Heart", "Stone"] },
+  fang: { label: "Fang", family: 6, compatibleMaterials: ["bone", "obsidian", "crystal"], ornaments: ["spike", "rune", "chain"], suffixes: ["Fang", "Shard", "Idol"] },
+});
+const RELIC_SPECIAL_FEATURES = Object.freeze(["none", "halo", "orbit", "split", "sigil", "crown", "animated_glint"]);
+const RELIC_AURAS = Object.freeze(["none", "ember", "frost", "void", "storm", "sun", "soul"]);
+const RELIC_WEAR_DETAILS = Object.freeze(["cracks", "chips", "corrosion", "engravings"]);
 
 function slugifyRelicPart(value) {
   return String(value || "")
@@ -312,32 +341,119 @@ function pickGeneratedRelicRarity(index) {
   return "common";
 }
 
+function createSeededRelicRandom(seed) {
+  let state = seed || 1;
+  return () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return (state >>> 0) / 4294967296;
+  };
+}
+
+function pickSeededWeighted(values, rand, weightForValue) {
+  const totalWeight = values.reduce((sum, value) => sum + Math.max(0, weightForValue(value)), 0);
+  let roll = rand() * totalWeight;
+  for (const value of values) {
+    roll -= Math.max(0, weightForValue(value));
+    if (roll <= 0) return value;
+  }
+  return values[values.length - 1] || null;
+}
+
+function generateShortRelicName(index, components) {
+  if (index < RELIC_SINGLE_NAMES.length || index % 5 === 0) {
+    return RELIC_SINGLE_NAMES[index % RELIC_SINGLE_NAMES.length];
+  }
+  const base = RELIC_BASE_SHAPES[components.baseShape] || RELIC_BASE_SHAPES.core;
+  const prefix = RELIC_NAME_PREFIXES[(index + components.material.length) % RELIC_NAME_PREFIXES.length];
+  const compatibleSuffixes = RELIC_NAME_SUFFIXES.filter((suffix) => base.suffixes.includes(suffix));
+  const suffix = compatibleSuffixes[Math.floor(index / RELIC_NAME_PREFIXES.length) % compatibleSuffixes.length] || RELIC_NAME_SUFFIXES[index % RELIC_NAME_SUFFIXES.length];
+  const compact = `${prefix}${suffix.toLowerCase()}`;
+  if (compact.length <= 15) return compact;
+  const fallback = RELIC_SINGLE_NAMES[(index + suffix.length) % RELIC_SINGLE_NAMES.length];
+  return fallback.length <= 15 ? fallback : suffix;
+}
+
+function buildRelicComponents(index, rarity) {
+  const rand = createSeededRelicRandom((index + 1) * 2654435761);
+  const shapeEntries = Object.entries(RELIC_BASE_SHAPES);
+  const baseShape = pickSeededWeighted(shapeEntries, rand, ([shapeId, shape]) => {
+    const rareShapeBonus = ["epic", "legendary", "mythic"].includes(rarity) && ["eye", "crown", "fang"].includes(shapeId) ? 2.4 : 1;
+    const simpleShapeBonus = rarity === "common" && ["core", "shard", "ring", "seed"].includes(shapeId) ? 2 : 1;
+    return shape.compatibleMaterials.length * rareShapeBonus * simpleShapeBonus;
+  })?.[0] || "core";
+  const base = RELIC_BASE_SHAPES[baseShape];
+  const materialEntries = Object.keys(RELIC_MATERIAL_PALETTES);
+  // Weighted compatibility keeps silhouettes, materials, and ornaments visually coherent.
+  const material = pickSeededWeighted(materialEntries, rand, (materialId) => {
+    const compatible = base.compatibleMaterials.includes(materialId) ? 6 : 1;
+    const rarityBonus = ["legendary", "mythic"].includes(rarity) && ["gold", "obsidian", "crystal"].includes(materialId) ? 1.8 : 1;
+    return compatible * rarityBonus;
+  }) || "silver";
+  const ornamentBudget = { common: 0, uncommon: 1, rare: 1, epic: 2, legendary: 2, mythic: 3 }[rarity] ?? 0;
+  const ornamentCount = Math.max(0, ornamentBudget + (rarity === "rare" && rand() > 0.62 ? 1 : 0));
+  const ornamentPool = [...base.ornaments, "rune", "gem", "band"].filter((value, position, values) => values.indexOf(value) === position);
+  const ornaments = [];
+  for (let slot = 0; slot < ornamentCount; slot += 1) {
+    const ornament = pickSeededWeighted(ornamentPool, rand, (value) => (base.ornaments.includes(value) ? 5 : 1));
+    if (ornament && !ornaments.includes(ornament)) ornaments.push(ornament);
+  }
+  const specialFeature = pickSeededWeighted(RELIC_SPECIAL_FEATURES, rand, (feature) => {
+    if (rarity === "common") return feature === "none" ? 8 : 0.35;
+    if (rarity === "rare") return ["halo", "sigil", "split"].includes(feature) ? 3 : 1;
+    if (["legendary", "mythic"].includes(rarity)) return feature === "animated_glint" || feature === "orbit" ? 5 : feature === "none" ? 0.1 : 2;
+    return feature === "none" ? 2 : 1.5;
+  }) || "none";
+  const aura = pickSeededWeighted(RELIC_AURAS, rand, (auraId) => {
+    if (rarity === "common") return auraId === "none" ? 8 : 0.25;
+    if (material === "obsidian" && auraId === "void") return 5;
+    if (material === "crystal" && ["frost", "storm"].includes(auraId)) return 4;
+    if (material === "gold" && auraId === "sun") return 4;
+    return auraId === "none" ? 1 : 2;
+  }) || "none";
+  const wearCount = { common: 1, uncommon: 1, rare: 2, epic: 2, legendary: 2, mythic: 3 }[rarity] ?? 1;
+  const wear = [];
+  for (let slot = 0; slot < wearCount; slot += 1) {
+    const detail = RELIC_WEAR_DETAILS[Math.floor(rand() * RELIC_WEAR_DETAILS.length)];
+    if (!wear.includes(detail)) wear.push(detail);
+  }
+  return { baseShape, material, ornaments, specialFeature, aura, wear, animated: specialFeature === "animated_glint" || ["legendary", "mythic"].includes(rarity) };
+}
+
+function describeRelicComponents(components) {
+  const material = RELIC_MATERIAL_PALETTES[components?.material]?.label || "Silver";
+  const base = RELIC_BASE_SHAPES[components?.baseShape]?.label || "Core";
+  const extras = [
+    components?.ornaments?.length ? `${components.ornaments.join("/")}` : null,
+    components?.specialFeature && components.specialFeature !== "none" ? components.specialFeature.replace(/_/g, " ") : null,
+    components?.aura && components.aura !== "none" ? `${components.aura} aura` : null,
+  ].filter(Boolean);
+  return `${material} ${base}${extras.length ? `, ${extras.join(", ")}` : ""}`;
+}
+
 function buildGeneratedAurixRelics(count = GENERATED_RELIC_COUNT) {
-  const prefixes = ["Amber", "Ashen", "Astral", "Azure", "Black", "Bloom", "Brass", "Bright", "Broken", "Celestial", "Chrome", "Crimson", "Crystal", "Duskworn", "Echo", "Elder", "Ember", "Fabled", "Frost", "Gilded", "Glass", "Golden", "Hollow", "Iron", "Ivory", "Jade", "Lunar", "Mist", "Obsidian", "Onyx", "Oracle", "Pearl", "Prism", "Radiant", "Rift", "Ruby", "Runed", "Sable", "Scarlet", "Shadow", "Silver", "Solar", "Static", "Storm", "Sunken", "Verdant", "Violet", "Void", "Wild", "Woven"];
-  const cores = ["Anchor", "Anvil", "Bell", "Blade", "Bloom", "Button", "Candle", "Charm", "Chip", "Coin", "Compass", "Crown", "Dial", "Door", "Eye", "Feather", "Gear", "Glyph", "Halo", "Heart", "Hourglass", "Key", "Knot", "Lantern", "Leaf", "Lens", "Locket", "Mask", "Mirror", "Needle", "Orb", "Pearl", "Pin", "Prism", "Rune", "Scale", "Seal", "Seed", "Shard", "Shell", "Sigil", "Spark", "Spindle", "Sprout", "Star", "Stone", "Thread", "Ticket", "Token", "Tooth"];
-  const suffixes = ["of Dawn", "of Dusk", "of Static", "of Cinders", "of the Vault", "of the Rift", "of Old Seasons", "of Quiet Luck", "of Deep Channels", "of Wild Commands", "of Moonlight", "of Sunroot", "of Lost Prints", "of First Light", "of the Garden", "of the Market", "of the Oracle", "of the Warden", "of the Ember Court", "of Hidden Doors", "of Glass Rain", "of Silver Bells", "of Soft Thunder", "of Patient Hands", "of the Long Hunt", "of Hollow Echoes", "of the Night Bazaar", "of Golden Dust", "of Broken Crowns", "of Infinite Roots"];
   const descriptions = {
-    common: "A small collectible relic from the outer Aurix archive.",
-    uncommon: "A tuned relic with enough aura residue to stand out in a busy channel.",
-    rare: "A scarce relic with a memorable silhouette and a stubborn glow.",
-    epic: "A high-value relic sought by collectors and late-night hunters.",
-    legendary: "A server-flex relic with old power folded into its shadow.",
-    mythic: "A near-impossible relic whispered about by the archive itself.",
+    common: "A simple pixel relic with a clean silhouette and light wear.",
+    uncommon: "A readable relic with one compatible ornament and a tuned material palette.",
+    rare: "A scarce relic with a stronger ornament pass and visible crafted wear.",
+    epic: "A high-value relic with layered ornaments or an uncommon silhouette.",
+    legendary: "A distinctive relic with aura motion cues and collector-grade contrast.",
+    mythic: "A near-impossible relic with dense but readable mythic component layering.",
   };
   const relics = [];
   const targetCount = Math.max(0, Math.floor(count));
 
   for (let index = 0; index < targetCount; index += 1) {
-    const prefix = prefixes[index % prefixes.length];
-    const core = cores[Math.floor(index / prefixes.length) % cores.length];
-    const suffix = suffixes[Math.floor(index / (prefixes.length * cores.length)) % suffixes.length];
     const rarity = pickGeneratedRelicRarity(index);
-    const name = `${prefix} ${core} ${suffix}`;
+    const components = buildRelicComponents(index, rarity);
+    const name = generateShortRelicName(index, components);
     relics.push({
-      id: `relic_${String(index + 1).padStart(4, "0")}_${slugifyRelicPart(prefix)}_${slugifyRelicPart(core)}`,
+      id: `relic_${String(index + 1).padStart(4, "0")}_${slugifyRelicPart(name)}`,
       name,
       rarity,
       description: descriptions[rarity],
+      components,
       generated: true,
     });
   }
@@ -3364,6 +3480,19 @@ function buildPixelArtRelicSpawnAttachment(relic) {
   ];
   const theme = themes[seed % themes.length];
   const scene = (seed >> 5) % 8;
+  // Render the same component recipe stored on the relic so art and metadata stay in sync.
+  const components = relic.components || buildRelicComponents(seed % GENERATED_RELIC_COUNT, relic.rarity || "common");
+  const materialPalette = RELIC_MATERIAL_PALETTES[components.material] || RELIC_MATERIAL_PALETTES.silver;
+  const auraColor = {
+    ember: 0xff7a1a,
+    frost: 0x93c5fd,
+    void: 0xa78bfa,
+    storm: 0x69c7ff,
+    sun: 0xffd166,
+    soul: 0x5ce1a1,
+    none: rarityColor,
+  }[components.aura] || rarityColor;
+  const featureColor = components.specialFeature === "animated_glint" ? materialPalette.light : auraColor;
 
   for (let y = 0; y < sourceHeight; y += 1) {
     const hex = y < sourceHeight / 2 ? theme.sky : theme.sky2;
@@ -3452,8 +3581,12 @@ function buildPixelArtRelicSpawnAttachment(relic) {
     if (x >= 0 && y >= 0 && x < spriteGrid && y < spriteGrid) body.add(`${x},${y}`);
   };
   const archetype = seed % 48;
-  const family = archetype % 16;
-  const profile = Math.floor(archetype / 16);
+  let family = archetype % 16;
+  let profile = Math.floor(archetype / 16);
+  if (RELIC_BASE_SHAPES[components.baseShape]) {
+    family = RELIC_BASE_SHAPES[components.baseShape].family;
+    profile = ["epic", "legendary", "mythic"].includes(relic.rarity) ? 1 : 0;
+  }
   for (let y = 2; y < spriteGrid - 2; y += 1) {
     for (let x = 0; x <= 15; x += 1) {
       const dx = Math.abs(x - 15);
@@ -3490,34 +3623,39 @@ function buildPixelArtRelicSpawnAttachment(relic) {
     add(30 - x, y);
   };
   const ornament = (seed >> 9) % 16;
-  if (ornament === 0 || ((seed >> 3) & 1)) for (let i = 0; i < 7; i += 1) { addMirror(15 - i, 4 + i); }
-  if (ornament === 1 || ((seed >> 7) & 1)) for (let y = 12; y < 22; y += 1) { addMirror(3, y); if (y % 2) addMirror(2, y); }
-  if (ornament === 2 || ((seed >> 11) & 1)) for (let y = 23; y < 30; y += 1) { add(15, y); if (y < 27) { add(14, y); add(16, y); } }
-  if (ornament === 3 || ((seed >> 14) & 1)) for (let x = 9; x <= 21; x += 1) add(x, 2 + Math.abs(15 - x) % 3);
-  if (ornament === 4) for (let i = 0; i < 8; i += 1) { addMirror(6 - Math.floor(i / 3), 7 + i); }
-  if (ornament === 5) for (let i = 0; i < 9; i += 1) { addMirror(4 + i, 3); addMirror(5 + i, 4); }
-  if (ornament === 6) for (let y = 7; y <= 24; y += 1) { add(15, y); if (y % 3 === 0) { add(14, y); add(16, y); } }
-  if (ornament === 7) for (let i = 0; i < 7; i += 1) { addMirror(10 - i, 22 + Math.floor(i / 2)); }
-  if (ornament === 8) for (let i = 0; i < 8; i += 1) { addMirror(5, 8 + i); addMirror(4, 9 + i); }
-  if (ornament === 9) for (let x = 8; x <= 22; x += 1) { if (x % 2 === 0) add(x, 28); }
-  if (ornament === 10) for (let i = 0; i < 6; i += 1) { addMirror(2 + i, 13 - i); }
-  if (ornament === 11) for (let i = 0; i < 8; i += 1) { addMirror(8 + Math.floor(i / 2), 5 + i); }
-  if (ornament === 12) for (let y = 6; y <= 24; y += 1) { if (y % 2 === 0) addMirror(1 + (y % 4), y); }
-  if (ornament === 13) for (let i = 0; i < 6; i += 1) { add(15 - i, 2 + i); add(15 + i, 2 + i); add(15, 2 + i); }
-  if (ornament === 14) for (let y = 9; y <= 21; y += 1) { addMirror(25 - Math.floor(y / 3), y); }
-  if (ornament === 15) for (let i = 0; i < 10; i += 1) { addMirror(7 + (i % 3), 25 + Math.floor(i / 3)); }
+  const componentOrnaments = new Set(components.ornaments || []);
+  const allowExtraOrnaments = ["epic", "legendary", "mythic"].includes(relic.rarity);
+  if (componentOrnaments.has("spike") || (allowExtraOrnaments && ornament === 0)) for (let i = 0; i < 7; i += 1) { addMirror(15 - i, 4 + i); }
+  if (componentOrnaments.has("chain") || (allowExtraOrnaments && ornament === 1)) for (let y = 12; y < 22; y += 1) { addMirror(3, y); if (y % 2) addMirror(2, y); }
+  if (componentOrnaments.has("halo") || (allowExtraOrnaments && ornament === 2)) for (let y = 23; y < 30; y += 1) { add(15, y); if (y < 27) { add(14, y); add(16, y); } }
+  if (componentOrnaments.has("crown") || components.specialFeature === "crown" || (allowExtraOrnaments && ornament === 3)) for (let x = 9; x <= 21; x += 1) add(x, 2 + Math.abs(15 - x) % 3);
+  if (allowExtraOrnaments && ornament === 4) for (let i = 0; i < 8; i += 1) { addMirror(6 - Math.floor(i / 3), 7 + i); }
+  if (componentOrnaments.has("horn") || (allowExtraOrnaments && ornament === 5)) for (let i = 0; i < 9; i += 1) { addMirror(4 + i, 3); addMirror(5 + i, 4); }
+  if (componentOrnaments.has("rune") || (allowExtraOrnaments && ornament === 6)) for (let y = 7; y <= 24; y += 1) { add(15, y); if (y % 3 === 0) { add(14, y); add(16, y); } }
+  if (allowExtraOrnaments && ornament === 7) for (let i = 0; i < 7; i += 1) { addMirror(10 - i, 22 + Math.floor(i / 2)); }
+  if (componentOrnaments.has("band") || (allowExtraOrnaments && ornament === 8)) for (let i = 0; i < 8; i += 1) { addMirror(5, 8 + i); addMirror(4, 9 + i); }
+  if (componentOrnaments.has("ring") || (allowExtraOrnaments && ornament === 9)) for (let x = 8; x <= 22; x += 1) { if (x % 2 === 0) add(x, 28); }
+  if (componentOrnaments.has("leaf") || (allowExtraOrnaments && ornament === 10)) for (let i = 0; i < 6; i += 1) { addMirror(2 + i, 13 - i); }
+  if (allowExtraOrnaments && ornament === 11) for (let i = 0; i < 8; i += 1) { addMirror(8 + Math.floor(i / 2), 5 + i); }
+  if (allowExtraOrnaments && ornament === 12) for (let y = 6; y <= 24; y += 1) { if (y % 2 === 0) addMirror(1 + (y % 4), y); }
+  if (allowExtraOrnaments && ornament === 13) for (let i = 0; i < 6; i += 1) { add(15 - i, 2 + i); add(15 + i, 2 + i); add(15, 2 + i); }
+  if (allowExtraOrnaments && ornament === 14) for (let y = 9; y <= 21; y += 1) { addMirror(25 - Math.floor(y / 3), y); }
+  if (allowExtraOrnaments && ornament === 15) for (let i = 0; i < 10; i += 1) { addMirror(7 + (i % 3), 25 + Math.floor(i / 3)); }
 
-  for (let ring = 0; ring < 5 + (seed % 4); ring += 1) {
-    const angle = (Math.PI * 2 * ring) / (5 + (seed % 4)) + (seed % 19) / 19;
-    spriteCellFill(Math.round(15 + Math.cos(angle) * 14), Math.round(15 + Math.sin(angle) * 11), ring % 2 ? theme.accent : theme.light, 220, 1);
+  const auraDots = components.aura === "none" && components.specialFeature !== "orbit" ? 2 : 5 + (seed % 4);
+  for (let ring = 0; ring < auraDots; ring += 1) {
+    const angle = (Math.PI * 2 * ring) / auraDots + (seed % 19) / 19;
+    const radiusX = components.specialFeature === "orbit" ? 15 : 13;
+    const radiusY = components.specialFeature === "orbit" ? 12 : 10;
+    spriteCellFill(Math.round(15 + Math.cos(angle) * radiusX), Math.round(15 + Math.sin(angle) * radiusY), ring % 2 ? auraColor : featureColor, 220, 1);
   }
 
   for (const cell of body) {
     const [x, y] = cell.split(",").map(Number);
     const edge = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => !body.has(`${x + dx},${y + dy}`));
     const lit = x < 15 && y < 17;
-    spriteCellFill(x, y, edge ? theme.dark : lit ? theme.light : theme.mid, edge ? 255 : 235);
-    if (!edge && (x === 15 || y === 15 || (x + y + seed) % 7 === 0)) spriteCellFill(x, y, rarityColor, 220, 1);
+    spriteCellFill(x, y, edge ? materialPalette.shade : lit ? materialPalette.light : materialPalette.body, edge ? 255 : 235);
+    if (!edge && (x === 15 || y === 15 || (x + y + seed) % 7 === 0)) spriteCellFill(x, y, materialPalette.trim, 220, 1);
   }
   const gemPattern = (seed >> 17) % 4;
   const gemCells = gemPattern === 0
@@ -3528,8 +3666,31 @@ function buildPixelArtRelicSpawnAttachment(relic) {
         ? [[11, 10], [19, 10], [15, 15], [12, 21], [18, 21]]
         : [[10, 15], [13, 15], [16, 15], [19, 15], [15, 11], [15, 19]];
   gemCells.forEach(([x, y]) => {
-    if (body.has(`${x},${y}`)) spriteCellFill(x, y, theme.accent, 255, 0);
+    if (body.has(`${x},${y}`)) spriteCellFill(x, y, componentOrnaments.has("gem") ? auraColor : materialPalette.trim, 255, 0);
   });
+
+  const wearDetails = new Set(components.wear || []);
+  if (wearDetails.has("cracks")) {
+    [[12, 9, 15, 13], [18, 17, 15, 20], [10, 22, 13, 20]].forEach(([x1, y1, x2, y2]) => line(spriteStartX + x1 * spriteCell, spriteStartY + y1 * spriteCell, spriteStartX + x2 * spriteCell, spriteStartY + y2 * spriteCell, materialPalette.shade, 1, 210));
+  }
+  if (wearDetails.has("chips")) {
+    [[8, 8], [22, 9], [7, 21], [23, 22]].forEach(([x, y]) => {
+      if (body.has(`${x},${y}`)) spriteCellFill(x, y, theme.dark, 255, 0);
+    });
+  }
+  if (wearDetails.has("corrosion")) {
+    for (let y = 7; y <= 24; y += 4) {
+      const x = 8 + ((y + seed) % 15);
+      if (body.has(`${x},${y}`)) spriteCellFill(x, y, materialPalette.wear, 220, 1);
+    }
+  }
+  if (wearDetails.has("engravings")) {
+    for (let y = 10; y <= 20; y += 5) {
+      for (let x = 11; x <= 19; x += 4) {
+        if (body.has(`${x},${y}`)) spriteCellFill(x, y, materialPalette.shade, 210, 1);
+      }
+    }
+  }
 
   const signatureBits = visualSerial.toString(2).padStart(24, "0").slice(-24);
   for (let bit = 0; bit < signatureBits.length; bit += 1) {
@@ -6490,6 +6651,7 @@ async function handleBurn(interaction) {
 function buildRelicInspectPayload(user, entry) {
   const relic = getRelic(entry.id);
   const rarity = getRelicRarity(relic);
+  const components = relic ? (relic.components || buildRelicComponents(Math.abs(hashString(relic.id)) % GENERATED_RELIC_COUNT, relic.rarity || "common")) : null;
   const history = (entry.history || []).length
     ? entry.history.slice(0, 5).map((item) => `**${item.type}** - ${item.detail || "No detail"}${item.userId ? ` by <@${item.userId}>` : ""}`).join("\n")
     : "No recorded history yet.";
@@ -6507,6 +6669,7 @@ function buildRelicInspectPayload(user, entry) {
       { name: "Corruption", value: `${formatNumber(entry.corruption || 0)} / 100`, inline: true },
       { name: "Origin", value: RELIC_ORIGIN_LABELS[entry.origin] || entry.origin || "Unknown", inline: true },
       { name: "Faction", value: faction, inline: true },
+      { name: "Art Components", value: components ? describeRelicComponents(components) : "Archived silhouette", inline: false },
       { name: "Traits", value: entry.traits?.length ? entry.traits.join(", ") : "No traits awakened yet." },
       { name: "History", value: history },
       { name: "Growth", value: `Evolve: ${formatNumber(RELIC_EVOLVE_COST.aura)} aura + ${RELIC_EVOLVE_COST.essence} essence.\nPurify: ${formatNumber(RELIC_PURIFY_COST.aura)} aura + ${RELIC_PURIFY_COST.essence} essence.` },
@@ -8135,9 +8298,34 @@ function formatForgeStatus(user) {
   return lines.join("\n");
 }
 
+function hasGearOwnershipSignal(user, gearId) {
+  if (getInventoryQuantity(user, gearId) > 0) {
+    return true;
+  }
+  if (Object.values(user?.equippedGear || {}).includes(gearId)) {
+    return true;
+  }
+  if (user?.gearUpgrades?.get?.(gearId) > 0 || user?.gearDurability?.get?.(gearId) > 0) {
+    return true;
+  }
+  return false;
+}
+
+function ensureGearInventoryOwnership(user, gearId) {
+  if (!hasGearOwnershipSignal(user, gearId)) {
+    return false;
+  }
+  const entry = ensureInventoryEntry(user, gearId);
+  if (entry.quantity <= 0) {
+    entry.quantity = 1;
+    user.markModified("inventory");
+  }
+  return true;
+}
+
 function getOwnedGearEntries(user) {
   return Object.entries(GEAR_ITEMS)
-    .filter(([gearId]) => getInventoryQuantity(user, gearId) > 0)
+    .filter(([gearId]) => hasGearOwnershipSignal(user, gearId))
     .map(([gearId, gear]) => ({ gearId, gear }));
 }
 
@@ -8551,9 +8739,23 @@ async function equipGearItem(interaction, user, gearId) {
   if (!gear) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Gear Missing", description: "That gear item does not exist.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
-  const ownedQuantity = getInventoryQuantity(user, gearId);
-  if (ownedQuantity <= 0) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Gear Not Owned", description: `You do not own **${getInventoryLabel(gearId)}** yet. Craft it first.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  if (!ensureGearInventoryOwnership(user, gearId)) {
+    const inventorySnapshot = user.inventory
+      .filter((entry) => getGearItem(entry.id) || entry.id === gearId)
+      .map((entry) => `${entry.id}: ${entry.quantity}`)
+      .join("\n") || "No gear entries found in inventory.";
+    return interaction.reply({
+      ...buildEmbedPayload({
+        title: "Gear Not Owned",
+        description: `I could not find **${getInventoryLabel(gearId)}** on your player record. Craft it first, then reopen \`/gear loadout\`.`,
+        visual: "emblem-alert.svg",
+        fields: [
+          { name: "Gear Id", value: `\`${gearId}\``, inline: true },
+          { name: "Inventory Gear Entries", value: inventorySnapshot.slice(0, 1024), inline: false },
+        ],
+      }),
+      ephemeral: true,
+    });
   }
 
   user.equippedGear = cloneLoadout(user.equippedGear);
