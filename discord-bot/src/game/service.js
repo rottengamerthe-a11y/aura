@@ -9,6 +9,7 @@ const { buildProfileCosmeticAttachment, encodePng, FILE_NAME: PROFILE_COSMETIC_F
 const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
 
 const activeBattles = new Map();
+const battleInteractionLocks = new Set();
 const pendingRankUps = new Map();
 const reminderIntervals = new WeakMap();
 const relicSpawnIntervals = new WeakMap();
@@ -4226,6 +4227,14 @@ function getBattleAction(actionId) {
   return BATTLE_ACTIONS[actionId] || BATTLE_SPECIAL_ACTIONS[actionId] || null;
 }
 
+function isSupportedBattleAction(actionId) {
+  return Boolean(getBattleAction(actionId));
+}
+
+function isBattleParticipant(state, userId) {
+  return [state?.playerOne?.id, state?.playerTwo?.id, state?.challengerId, state?.opponentId].includes(userId);
+}
+
 function getUnlockedBattleActions(user) {
   return Object.entries(BATTLE_ACTIONS)
     .filter(([, action]) => action.unlocked(user))
@@ -4260,7 +4269,9 @@ function cloneLoadout(loadout = {}) {
 }
 
 function getInventoryQuantity(user, itemId) {
-  return user.inventory.find((entry) => entry.id === itemId)?.quantity || 0;
+  return user.inventory
+    .filter((entry) => entry.id === itemId)
+    .reduce((total, entry) => total + Math.max(0, Number(entry.quantity) || 0), 0);
 }
 
 function normalizeProgressionSystems(user) {
@@ -4411,6 +4422,22 @@ function createLoadoutParticipant(user, displayName) {
     unlockedActions: getUnlockedBattleActions(user),
     availableGear,
   };
+}
+
+function refreshLoadoutParticipantFromUser(participant, user) {
+  participant.loadout = normalizeBattleLoadout(user, participant.loadout);
+  participant.combatItems = getPlayerCombatInventory(user);
+  participant.unlockedActions = getUnlockedBattleActions(user);
+  participant.availableGear = BATTLE_GEAR_SLOTS.reduce((acc, slot) => {
+    acc[slot.id] = Object.fromEntries(
+      user.inventory
+        .filter((entry) => entry.quantity > 0)
+        .map((entry) => [entry.id, getGearItem(entry.id)])
+        .filter(([, gear]) => gear?.slot === slot.id)
+        .map(([gearId, gear]) => [gearId, gear.name])
+    );
+    return acc;
+  }, {});
 }
 
 function createLoadoutField(player) {
@@ -10467,7 +10494,7 @@ async function useBattleItem(interaction, fighter, defender, itemId) {
   }
 
   const user = await getOrCreatePlayer(interaction.guildId, fighter.id);
-  const entry = user.inventory.find((inventoryItem) => inventoryItem.id === itemId);
+  const entry = user.inventory.find((inventoryItem) => inventoryItem.id === itemId && inventoryItem.quantity > 0);
   if (!entry || entry.quantity <= 0) {
     fighter.combatItems[itemId] = 0;
     return { error: `You do not have any ${item.name} left in your inventory.` };
@@ -10855,6 +10882,8 @@ async function handleLoadoutButton(interaction, state, action) {
 
   const challenger = await getOrCreatePlayer(getBattleGuildIdForUser(state, state.playerOne.id, interaction.guildId), state.playerOne.id);
   const rival = await getOrCreatePlayer(getBattleGuildIdForUser(state, state.playerTwo.id, interaction.guildId), state.playerTwo.id);
+  refreshLoadoutParticipantFromUser(state.playerOne, challenger);
+  refreshLoadoutParticipantFromUser(state.playerTwo, rival);
   initializePvpBattleFromLoadout(state, challenger, rival);
   await saveBattleSession(state);
 
@@ -10875,6 +10904,9 @@ async function handleLoadoutButton(interaction, state, action) {
 async function handleLoadoutSelect(interaction, state, slotId) {
   if (![state.playerOne.id, state.playerTwo.id].includes(interaction.user.id)) {
     return interaction.reply({ content: "Only the duelists can change battle gear.", ephemeral: true });
+  }
+  if (!BATTLE_GEAR_SLOTS.some((slot) => slot.id === slotId)) {
+    return interaction.reply({ content: "That gear slot is not available for this duel.", ephemeral: true });
   }
 
   const fighter = state.playerOne.id === interaction.user.id ? state.playerOne : state.playerTwo;
@@ -10904,6 +10936,9 @@ async function handleBattleButton(interaction, state, action) {
 
   const acting = state.playerOne.id === interaction.user.id ? state.playerOne : state.playerTwo;
   const defending = acting.id === state.playerOne.id ? state.playerTwo : state.playerOne;
+  if (!isSupportedBattleAction(action)) {
+    return interaction.reply({ content: "That battle action is not available anymore.", ephemeral: true });
+  }
   if (BATTLE_ACTIONS[action] && !acting.unlockedActions.includes(action)) {
     return interaction.reply({ content: "That attack style is still locked for your current progression.", ephemeral: true });
   }
@@ -10980,8 +11015,9 @@ async function handleBattleComponentInteraction(interaction) {
     return interaction.reply({ content: "That battle session is no longer active. Start a new `/boss` or `/pvp` fight.", ephemeral: true });
   }
 
-  state.lastActionAt = Date.now();
-  await saveBattleSession(state);
+  if (!isBattleParticipant(state, interaction.user.id)) {
+    return interaction.reply({ content: "Only the active fighter(s) can use this battle panel.", ephemeral: true });
+  }
 
   if (scope === "invite" && state.phase !== "invite") {
     return interaction.reply({ content: "That invite is no longer active.", ephemeral: true });
@@ -10996,26 +11032,38 @@ async function handleBattleComponentInteraction(interaction) {
     return interaction.reply({ content: "That battle has not started yet.", ephemeral: true });
   }
 
-  if (interaction.isButton()) {
-    if (scope === "invite") {
-      return handleInviteButton(interaction, state, parts[0]);
-    }
-    if (scope === "loadout") {
-      return handleLoadoutButton(interaction, state, parts[0]);
-    }
-    return handleBattleButton(interaction, state, scope);
+  if (battleInteractionLocks.has(battleId)) {
+    return interaction.reply({ content: "That battle is already resolving an action. Try again in a moment.", ephemeral: true });
   }
 
-  if (interaction.isStringSelectMenu()) {
-    if (scope === "gear") {
-      return handleLoadoutSelect(interaction, state, parts[0]);
-    }
-    if (scope === "item") {
-      return handleBattleItemSelect(interaction, state);
-    }
-  }
+  battleInteractionLocks.add(battleId);
+  try {
+    state.lastActionAt = Date.now();
+    await saveBattleSession(state);
 
-  return interaction.reply({ content: "That action is not supported for this battle.", ephemeral: true });
+    if (interaction.isButton()) {
+      if (scope === "invite") {
+        return handleInviteButton(interaction, state, parts[0]);
+      }
+      if (scope === "loadout") {
+        return handleLoadoutButton(interaction, state, parts[0]);
+      }
+      return handleBattleButton(interaction, state, scope);
+    }
+
+    if (interaction.isStringSelectMenu()) {
+      if (scope === "gear") {
+        return handleLoadoutSelect(interaction, state, parts[0]);
+      }
+      if (scope === "item") {
+        return handleBattleItemSelect(interaction, state);
+      }
+    }
+
+    return interaction.reply({ content: "That action is not supported for this battle.", ephemeral: true });
+  } finally {
+    battleInteractionLocks.delete(battleId);
+  }
 }
 
 async function pruneExpiredPvpQueue() {
