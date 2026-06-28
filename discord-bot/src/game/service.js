@@ -88,6 +88,7 @@ const BLACK_MARKET_OFFERS = Object.freeze([
   { id: "warden_mark", name: "Warden Black Seal", cost: 68000, type: "title", value: "Warden Black Seal", factionId: "wardens", heat: 20 },
   { id: "bloom_mark", name: "Bloom Syndicate Mark", cost: 68000, type: "title", value: "Bloom Syndicate Mark", factionId: "bloom", heat: 20 },
 ]);
+const GLOBAL_BLACK_MARKET_SEED = "aurix-global-black-market";
 const TUTORIAL_STEPS = Object.freeze([
   { id: "daily", command: "daily", label: "Claim /daily", rewardAura: 250, rewardXp: 80 },
   { id: "work", command: "work", label: "Complete /work", rewardAura: 300, rewardXp: 90 },
@@ -1396,17 +1397,12 @@ function getBlackMarketCycleId(date = new Date()) {
   return `bm-${day}`;
 }
 
-function getBlackMarketOffer(settings, date = new Date()) {
-  const world = normalizeWorldState(settings);
-  const dominant = getDominantWorldFaction(world);
+function getBlackMarketOffer(date = new Date()) {
   const cycleId = getBlackMarketCycleId(date);
-  const seed = `${settings.guildId}:${world.seasonId}:${cycleId}:${dominant?.id || "none"}`;
-  let pool = BLACK_MARKET_OFFERS.filter((offer) => !offer.factionId || offer.factionId === dominant?.id);
-  if (!pool.length) {
-    pool = [...BLACK_MARKET_OFFERS];
-  }
+  const seed = `${GLOBAL_BLACK_MARKET_SEED}:${cycleId}`;
+  const pool = [...BLACK_MARKET_OFFERS];
   const offer = pool[Math.abs(hashString(seed)) % pool.length];
-  return { ...offer, cycleId, purchaseKey: `${cycleId}:${offer.id}`, dominantFaction: dominant };
+  return { ...offer, cycleId, purchaseKey: `${cycleId}:${offer.id}`, dominantFaction: null };
 }
 
 function grantBlackMarketOffer(user, offer) {
@@ -7692,25 +7688,24 @@ async function handleFlex(interaction) {
 
 async function handleBlackMarket(interaction) {
   const subcommand = interaction.options.getSubcommand();
-  const settings = await getOrCreateGuildSettings(interaction.guildId);
-  const offer = getBlackMarketOffer(settings);
+  const offer = getBlackMarketOffer();
   const heatText = `${formatNumber(offer.heat)} heat`;
   if (subcommand === "status") {
-    await settings.save();
     return interaction.reply(buildEmbedPayload({
       title: "Black Market",
-      description: `Tonight's contraband: **${offer.name}**`,
+      description: `Today's global contraband: **${offer.name}**`,
       visual: "economy-vault.svg",
       fields: [
         { name: "Cost", value: `${formatNumber(offer.cost)} aura`, inline: true },
         { name: "Heat", value: heatText, inline: true },
-        { name: "Faction Signal", value: offer.dominantFaction?.name || "No dominant faction", inline: true },
+        { name: "Market Scope", value: "Global rotation", inline: true },
         { name: "Buy", value: "`/blackmarket buy`" },
       ],
       footer: "Rotating prestige sink. Expensive on purpose, because flex needs scarcity.",
     }));
   }
 
+  const settings = await getOrCreateGuildSettings(interaction.guildId);
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   user.blackMarketPurchases ||= [];
   if (user.blackMarketPurchases.includes(offer.purchaseKey)) {
