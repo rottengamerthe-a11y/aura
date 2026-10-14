@@ -77,6 +77,30 @@ function startWebServer({ getClient, startedAt }) {
 
   app.set("trust proxy", 1);
 
+  // Tebex Webhook Listener
+  app.post('/tebex-webhook', express.text({ type: 'application/json' }), (req, res) => {
+    try {
+      // Parse the raw text body into a JSON object
+      const payload = JSON.parse(req.body);
+
+      // 1. Force Pass the Tebex Validation Ping
+      if (payload.type === 'validation.webhook') {
+        console.log("Passed Tebex Validation!");
+        return res.status(200).json({ id: payload.id });
+      }
+
+      // 2. Acknowledge real payments (you can add reward logic here later)
+      if (payload.type === 'payment.completed') {
+        console.log("Payment received for:", payload.subject?.customer?.username);
+      }
+
+      return res.status(200).send('OK');
+    } catch (err) {
+      console.error("Webhook Error:", err);
+      return res.status(400).send('Bad Request');
+    }
+  });
+
   // Mount webhook routes (Paddle, Top.gg)
   registerWebhookRoutes(app, { getClient });
 

@@ -698,8 +698,8 @@ const PREMIUM_PLANS = Object.freeze({
 Object.defineProperty(PREMIUM_PLANS, "monthly", { value: PREMIUM_PLANS.plus, writable: false });
 Object.defineProperty(PREMIUM_PLANS, "yearly", { value: PREMIUM_PLANS.pro, writable: false });
 Object.defineProperty(PREMIUM_PLANS, "lifetime", { value: PREMIUM_PLANS.elite, writable: false });
-const PREMIUM_PURCHASE_URL = "https://aurawebsite-12gd.onrender.com";
-const OFFICIAL_SERVER_URL = "https://aurawebsite-12gd.onrender.com";
+const PREMIUM_PURCHASE_URL = process.env.PREMIUM_PURCHASE_URL || "https://auraweb-nugv.onrender.com";
+const OFFICIAL_SERVER_URL = process.env.OFFICIAL_SERVER_URL || "https://auraweb-nugv.onrender.com";
 const TOPGG_VOTE_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 const TOPGG_VOTE_PROMPT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 const TOPGG_VOTE_PROMPTS_ENABLED = process.env.TOPGG_VOTE_PROMPTS_ENABLED !== "false";
