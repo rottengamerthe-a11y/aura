@@ -4,6 +4,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "shard": "node shard.js",
     "register": "node src/registerCommands.js",
     "test": "node --check index.js",
     "test:premium": "node src/billing/testPremiumWebhook.js"
@@ -17,6 +18,7 @@
     "dotenv": "^16.6.1",
     "express": "^5.2.1",
     "express-session": "^1.19.0",
+    "ioredis": "^6.0.0",
     "mongoose": "^8.19.3"
   }
 }

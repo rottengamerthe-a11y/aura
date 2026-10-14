@@ -1,0 +1,91 @@
+{
+  "common": {
+    "error": "Quelque chose s'est mal passé. Réessayez plus tard.",
+    "not_enough_aura": "Vous n'avez pas assez d'aura. Besoin de **{required}**, vous avez **{current}**.",
+    "cooldown": "Veuillez patienter **{time}** avant d'utiliser ceci à nouveau.",
+    "success": "Succès !",
+    "cancelled": "Action annulée.",
+    "no_account": "Vous devez d'abord utiliser `/start` pour créer votre compte !",
+    "level_up": "🎉 Niveau supérieur ! Vous avez atteint le **Rang {rank}** !",
+    "premium_required": "Cette fonctionnalité nécessite le premium. Obtenez-le sur {url}."
+  },
+  "commands": {
+    "work": {
+      "success": "⚒️ Vous avez travaillé comme **{job}** et gagné **{aura} d'aura** + **{xp} XP** !",
+      "cooldown": "Vous êtes trop fatigué pour travailler. Reposez-vous pendant **{time}**."
+    },
+    "mine": {
+      "success": "⛏️ Vous avez miné et trouvé **{aura} d'aura**, **{xp} XP**{materials} !",
+      "cooldown": "Votre pioche a besoin d'être aiguisée. Attendez **{time}**."
+    },
+    "daily": {
+      "claimed": "📅 Récompense quotidienne récupérée ! **+{aura} d'aura** | Série : **{streak} jours** 🔥",
+      "already_claimed": "Vous avez déjà réclamé aujourd'hui ! Revenez dans **{time}**."
+    },
+    "balance": {
+      "title": "💰 Solde",
+      "wallet": "Portefeuille : **{aura}** d'aura",
+      "vault": "Coffre : **{vault}** d'aura",
+      "total": "Total : **{total}** d'aura"
+    },
+    "profile": {
+      "title": "👤 Profil de {username}",
+      "rank": "Rang : **{rank}**",
+      "xp": "XP : **{xp}** / **{nextXp}**",
+      "prestige": "Prestige : **{prestige}**"
+    },
+    "rob": {
+      "success": "💰 Vous avez volé **{target}** et pris **{amount} d'aura** !",
+      "failed": "🚔 Vous avez été attrapé en essayant de voler **{target}** et avez payé une amende de **{fine} d'aura** !",
+      "protected": "🛡️ **{target}** est protégé contre les vols."
+    },
+    "battlepass": {
+      "title": "🎖️ Passe de Combat — {season}",
+      "tier": "Palier : **{current}** / {max}",
+      "xp_progress": "**{current}** / **{needed}** XP pour le Palier {next}",
+      "purchased": "🎖️ Passe de Combat acheté ! Coût : **{cost} d'aura**.",
+      "claimed": "🎖️ Palier {tier} ({track}) réclamé !"
+    },
+    "auction": {
+      "listed": "📋 **{item}** x{qty} mis en vente pour **{price} d'aura** (enchère de départ).",
+      "bid_placed": "💰 Enchère de **{amount} d'aura** placée !",
+      "purchased": "🛒 Acheté pour **{price} d'aura** !",
+      "cancelled": "❌ Annonce annulée. Objet retourné.",
+      "no_listings": "Aucune annonce active trouvée."
+    },
+    "referral": {
+      "created": "🔗 Votre code : **`{code}`** — Partagez-le pour gagner **{reward} d'aura** par parrainage !",
+      "used": "🎁 Vous avez reçu **{bonus} d'aura** comme bonus de bienvenue !",
+      "already_used": "Vous avez déjà utilisé un code de parrainage."
+    },
+    "npc": {
+      "remaining": "{count} discussions restantes aujourd'hui"
+    },
+    "global_event": {
+      "no_active": "Aucun événement global actif pour le moment.",
+      "claimed": "🎁 Récompense d'événement réclamée !"
+    },
+    "pet": {
+      "adopted": "🐾 Vous avez adopté **{name}**, le {species} !",
+      "fed": "🍖 Vous avez nourri **{name}**. Faim : {hunger}/100, Bonheur : {happiness}/100.",
+      "trained": "💪 **{name}** a entraîné {stat} ! +{xp} XP de familier."
+    },
+    "language": {
+      "changed": "🌐 Langue changée en **{language}** !",
+      "current": "Votre langue actuelle : **{language}** {flag}"
+    }
+  },
+  "notifications": {
+    "robbed": "🚨 Vous avez été volé par **{thief}** ! Ils vous ont pris **{amount} d'aura**.",
+    "trade_received": "📬 Vous avez reçu une offre d'échange de **{from}**.",
+    "pet_hungry": "🐾 Votre familier **{name}** a faim ! Nourrissez-le bientôt.",
+    "weekly_reset": "📋 Les défis hebdomadaires ont été réinitialisés ! Vérifiez `/challenges`.",
+    "daily_shop": "🏪 La Boutique Quotidienne a un objet en vedette : **{item}** !"
+  },
+  "seasons": {
+    "spring": "🌸 Éclosion Printanière",
+    "summer": "☀️ Enfer Estival",
+    "autumn": "🍂 Récolte Automnale",
+    "winter": "❄️ Givre Hivernal"
+  }
+}

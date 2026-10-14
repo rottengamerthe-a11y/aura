@@ -213,6 +213,19 @@ const worldStateSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const activeRiftNodeSchema = new mongoose.Schema(
+  {
+    nodeId: { type: String, default: null },
+    bossId: { type: String, default: "rift_colossus" },
+    health: { type: Number, default: 0 },
+    maxHealth: { type: Number, default: 0 },
+    openedByUserId: { type: String, default: null },
+    openedAt: { type: Date, default: null },
+    expiresAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
 const creatorChallengeEntrySchema = new mongoose.Schema(
   {
     userId: String,
@@ -346,6 +359,19 @@ const relicSpawnStateSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const flashSaleSchema = new mongoose.Schema(
+  {
+    offerId: { type: String, default: null },
+    itemId: { type: String, default: null },
+    basePrice: { type: Number, default: 0 },
+    discountPercent: { type: Number, default: 0 },
+    sourceEventId: { type: String, default: null },
+    expiresAt: { type: Date, default: null },
+    claimedAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
 const userSchema = new mongoose.Schema(
   {
     guildId: { type: String, index: true },
@@ -356,6 +382,10 @@ const userSchema = new mongoose.Schema(
     rankIndex: { type: Number, default: 0 },
     prestige: { type: Number, default: 0 },
     streak: { type: Number, default: 0 },
+    dailyStreak: {
+      count: { type: Number, default: 0, min: 0 },
+      lastClaimedAt: { type: Date, default: null },
+    },
     lastDailyAt: { type: Date, default: null },
     lastAppreciateAt: { type: Date, default: null },
     lastFactionStrikeAt: { type: Date, default: null },
@@ -369,6 +399,7 @@ const userSchema = new mongoose.Schema(
     lastBossAt: { type: Date, default: null },
     lastAuthorityAt: { type: Date, default: null },
     protectionUntil: { type: Date, default: null },
+    clanEmpowermentUntil: { type: Date, default: null },
     revengeTargetId: { type: String, default: null },
     revengeExpiresAt: { type: Date, default: null },
     notoriety: { type: Number, default: 0 },
@@ -391,8 +422,14 @@ const userSchema = new mongoose.Schema(
     cosmetics: {
       activeTitle: { type: String, default: null },
       activeFrame: { type: String, default: null },
+      activeBackground: { type: String, default: null },
+      activeBadge: { type: String, default: null },
+      activeNameColor: { type: String, default: null },
       ownedTitles: { type: [String], default: [] },
       ownedFrames: { type: [String], default: [] },
+      ownedBackgrounds: { type: [String], default: [] },
+      ownedBadges: { type: [String], default: [] },
+      ownedNameColors: { type: [String], default: [] },
     },
     faction: {
       id: { type: String, default: null },
@@ -418,6 +455,7 @@ const userSchema = new mongoose.Schema(
       lastWelcomeGrantEventId: { type: String, default: null },
       lastChestAt: { type: Date, default: null },
     },
+    flashSale: { type: flashSaleSchema, default: null },
     topgg: {
       voteCount: { type: Number, default: 0 },
       voteWeight: { type: Number, default: 0 },
@@ -466,12 +504,32 @@ const userSchema = new mongoose.Schema(
       bountiesPlaced: { type: Number, default: 0 },
       bountiesClaimed: { type: Number, default: 0 },
       projectContributions: { type: Number, default: 0 },
+      coinflipWins: { type: Number, default: 0 },
+      dailyClaims: { type: Number, default: 0 },
+      gifted: { type: Number, default: 0 },
+      votes: { type: Number, default: 0 },
+      expeditions: { type: Number, default: 0 },
+      blackjackWins: { type: Number, default: 0 },
+      blackjackPlayed: { type: Number, default: 0 },
+      slotsPlayed: { type: Number, default: 0 },
+      slotsWins: { type: Number, default: 0 },
+      scratchCardsOpened: { type: Number, default: 0 },
+      dailyShopBuys: { type: Number, default: 0 },
+      weeklyChallengesCompleted: { type: Number, default: 0 },
+      petTrains: { type: Number, default: 0 },
     },
     reminders: {
       guildId: { type: String, default: null },
       channelId: { type: String, default: null },
       enabledActions: { type: [String], default: [] },
       lastNotifiedAt: { type: Map, of: Date, default: {} },
+      notifyOnRob: { type: Boolean, default: true },
+      notifyOnTrade: { type: Boolean, default: true },
+      notifyOnClanWar: { type: Boolean, default: true },
+      notifyOnServerEvent: { type: Boolean, default: false },
+      notifyOnPetHungry: { type: Boolean, default: true },
+      notifyOnWeeklyReset: { type: Boolean, default: true },
+      notifyOnDailyShop: { type: Boolean, default: false },
     },
     relicHuntStreaks: { type: Map, of: Number, default: {} },
     reputation: { type: Map, of: Number, default: {} },
@@ -481,11 +539,62 @@ const userSchema = new mongoose.Schema(
     },
     clanId: { type: mongoose.Schema.Types.ObjectId, ref: "Clan", default: null },
     clanMemberships: { type: Map, of: mongoose.Schema.Types.ObjectId, default: {} },
+    weeklyChallenges: { type: [{
+      id: String,
+      progress: { type: Number, default: 0 },
+      completed: { type: Boolean, default: false },
+      claimedAt: { type: Date, default: null },
+    }], default: [] },
+    lastWeeklyResetAt: { type: Date, default: null },
+    seasonStats: {
+      score: { type: Number, default: 0 },
+      auraEarned: { type: Number, default: 0 },
+      xpEarned: { type: Number, default: 0 },
+      bossWins: { type: Number, default: 0 },
+      pvpWins: { type: Number, default: 0 },
+      crafts: { type: Number, default: 0 },
+      robsSuccess: { type: Number, default: 0 },
+    },
+    lastSeasonResetAt: { type: Date, default: null },
+    pet: {
+      id: { type: String, default: null },
+      name: { type: String, default: null },
+      level: { type: Number, default: 1 },
+      xp: { type: Number, default: 0 },
+      happiness: { type: Number, default: 100 },
+      hunger: { type: Number, default: 100 },
+      energy: { type: Number, default: 100 },
+      stage: { type: Number, default: 1 },
+      skin: { type: String, default: null },
+      adoptedAt: { type: Date, default: null },
+      lastFedAt: { type: Date, default: null },
+      lastPlayedAt: { type: Date, default: null },
+      lastTrainedAt: { type: Date, default: null },
+      stats: {
+        strength: { type: Number, default: 0 },
+        luck: { type: Number, default: 0 },
+        mining: { type: Number, default: 0 },
+        gardening: { type: Number, default: 0 },
+      },
+    },
+    battlePass: {
+      seasonId: { type: String, default: null },
+      xp: { type: Number, default: 0 },
+      tier: { type: Number, default: 0 },
+      paid: { type: Boolean, default: false },
+      claimedFree: { type: [Number], default: [] },
+      claimedPaid: { type: [Number], default: [] },
+      purchasedAt: { type: Date, default: null },
+    },
+    referredBy: { type: String, default: null },
+    referralConfirmed: { type: Boolean, default: false },
+    locale: { type: String, default: "en" },
   },
   { timestamps: true }
 );
 
 userSchema.index({ guildId: 1, userId: 1 }, { unique: true });
+userSchema.index({ clanId: 1 });
 userSchema.index(
   { userId: 1 },
   {
@@ -517,6 +626,11 @@ const clanSchema = new mongoose.Schema(
     raidWins: { type: Number, default: 0 },
     raidLosses: { type: Number, default: 0 },
     lastRaidAt: { type: Date, default: null },
+    dailyEnergy: {
+      current: { type: Number, default: 0, min: 0 },
+      goal: { type: Number, default: 3, min: 1 },
+      lastResetAt: { type: Date, default: null },
+    },
   },
   { timestamps: true }
 );
@@ -622,6 +736,7 @@ const guildSettingsSchema = new mongoose.Schema(
     serverProject: { type: serverProjectSchema, default: null },
     community: { type: communityIdentitySchema, default: () => ({}) },
     worldState: { type: worldStateSchema, default: () => ({}) },
+    activeRiftNode: { type: activeRiftNodeSchema, default: null },
     creatorChallenge: { type: creatorChallengeSchema, default: () => ({}) },
     memoryQuest: { type: memoryQuestSchema, default: null },
     yearbook: { type: yearbookSchema, default: () => ({}) },
@@ -630,9 +745,23 @@ const guildSettingsSchema = new mongoose.Schema(
     bounties: { type: [bountySchema], default: [] },
     relicSpawn: { type: relicSpawnStateSchema, default: () => ({ current: null, incenseRemaining: 0, lastIncenseSpawnAt: null }) },
     lastEventSpawnAt: { type: Date, default: null },
+    serverPremium: {
+      active: { type: Boolean, default: false },
+      tierId: { type: String, default: null },
+      expiresAt: { type: Date, default: null },
+      grantedBy: { type: String, default: null },
+      activatedAt: { type: Date, default: null },
+      paddleSubscriptionId: { type: String, default: null },
+      customSettings: {
+        embedColor: { type: String, default: null },
+        welcomeMessage: { type: String, default: null },
+      },
+    },
   },
   { timestamps: true }
 );
+
+guildSettingsSchema.index({ activeRiftNode: 1 }, { sparse: true });
 
 const tradeOfferSchema = new mongoose.Schema(
   {
@@ -645,6 +774,38 @@ const tradeOfferSchema = new mongoose.Schema(
     quantity: { type: Number, default: 0 },
     status: { type: String, default: "pending", index: true },
     expiresAt: { type: Date, required: true, index: true },
+  },
+  { timestamps: true }
+);
+
+const inviteAttributionSchema = new mongoose.Schema(
+  {
+    attributionType: { type: String, enum: ["bot_join", "member_join"], required: true },
+    guildId: { type: String, required: true, index: true },
+    inviterId: { type: String, default: null, index: true },
+    invitedUserId: { type: String, required: true, index: true },
+    inviteCode: { type: String, default: null },
+    joinedAt: { type: Date, default: Date.now, index: true },
+    rewardGranted: { type: Boolean, default: false, index: true },
+    riftOpened: { type: Boolean, default: false, index: true },
+  },
+  { timestamps: true, versionKey: false }
+);
+
+inviteAttributionSchema.index(
+  { attributionType: 1, guildId: 1, invitedUserId: 1 },
+  { unique: true }
+);
+
+const worldBossSchema = new mongoose.Schema(
+  {
+    key: { type: String, required: true, unique: true, index: true },
+    bossId: { type: String, default: "rift_colossus" },
+    health: { type: Number, required: true, min: 0 },
+    maxHealth: { type: Number, required: true, min: 1 },
+    cycleId: { type: String, required: true },
+    riftCount: { type: Number, default: 0 },
+    lastRiftOpenedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
@@ -712,6 +873,7 @@ const BattleSession = mongoose.models.BattleSession || mongoose.model("BattleSes
 const Clan = mongoose.models.Clan || mongoose.model("Clan", clanSchema);
 const CollectiblePrintCounter = mongoose.models.CollectiblePrintCounter || mongoose.model("CollectiblePrintCounter", collectiblePrintCounterSchema);
 const GuildSettings = mongoose.models.GuildSettings || mongoose.model("GuildSettings", guildSettingsSchema);
+const InviteAttribution = mongoose.models.InviteAttribution || mongoose.model("InviteAttribution", inviteAttributionSchema);
 const PaddleWebhookLog = mongoose.models.PaddleWebhookLog || mongoose.model("PaddleWebhookLog", paddleWebhookLogSchema);
 const PvpInvite = mongoose.models.PvpInvite || mongoose.model("PvpInvite", pvpInviteSchema);
 const PvpMatchmakingQueue = mongoose.models.PvpMatchmakingQueue || mongoose.model("PvpMatchmakingQueue", pvpMatchmakingQueueSchema);
@@ -719,5 +881,50 @@ const RoleListing = mongoose.models.RoleListing || mongoose.model("RoleListing",
 const RolePurchase = mongoose.models.RolePurchase || mongoose.model("RolePurchase", rolePurchaseSchema);
 const TopggVoteLog = mongoose.models.TopggVoteLog || mongoose.model("TopggVoteLog", topggVoteLogSchema);
 const TradeOffer = mongoose.models.TradeOffer || mongoose.model("TradeOffer", tradeOfferSchema);
+const WorldBoss = mongoose.models.WorldBoss || mongoose.model("WorldBoss", worldBossSchema);
 
-module.exports = { AnalyticsEvent, BattleSession, Clan, CollectiblePrintCounter, GuildSettings, PaddleWebhookLog, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TopggVoteLog, TradeOffer, User };
+const auctionListingSchema = new mongoose.Schema(
+  {
+    sellerId: { type: String, required: true, index: true },
+    sellerGuildId: { type: String, default: null },
+    itemType: { type: String, required: true, enum: ["material", "crate", "relic", "cosmetic", "pet_food"] },
+    itemId: { type: String, required: true },
+    quantity: { type: Number, default: 1 },
+    startingPrice: { type: Number, required: true },
+    buyNowPrice: { type: Number, default: null },
+    currentBid: { type: Number, default: 0 },
+    currentBidderId: { type: String, default: null },
+    currentBidderGuildId: { type: String, default: null },
+    bidCount: { type: Number, default: 0 },
+    expiresAt: { type: Date, required: true, index: true },
+    status: { type: String, default: "active", enum: ["active", "sold", "expired", "cancelled"], index: true },
+    soldAt: { type: Date, default: null },
+    soldTo: { type: String, default: null },
+    finalPrice: { type: Number, default: null },
+  },
+  { timestamps: true }
+);
+auctionListingSchema.index({ status: 1, expiresAt: 1 });
+auctionListingSchema.index({ itemType: 1, status: 1 });
+auctionListingSchema.index({ sellerId: 1, status: 1 });
+const AuctionListing = mongoose.models.AuctionListing || mongoose.model("AuctionListing", auctionListingSchema);
+
+const referralCodeSchema = new mongoose.Schema(
+  {
+    code: { type: String, required: true, unique: true, index: true },
+    ownerId: { type: String, required: true, index: true },
+    ownerType: { type: String, default: "player", enum: ["player", "creator"] },
+    uses: { type: Number, default: 0 },
+    maxUses: { type: Number, default: null },
+    rewardPerUse: { type: Number, default: 1000 },
+    bonusAuraForReferred: { type: Number, default: 500 },
+    totalAuraEarned: { type: Number, default: 0 },
+    usedBy: { type: [String], default: [] },
+    active: { type: Boolean, default: true },
+    expiresAt: { type: Date, default: null },
+  },
+  { timestamps: true }
+);
+const ReferralCode = mongoose.models.ReferralCode || mongoose.model("ReferralCode", referralCodeSchema);
+
+module.exports = { AnalyticsEvent, AuctionListing, BattleSession, Clan, CollectiblePrintCounter, GuildSettings, InviteAttribution, PaddleWebhookLog, PvpInvite, PvpMatchmakingQueue, ReferralCode, RoleListing, RolePurchase, TopggVoteLog, TradeOffer, User, WorldBoss };

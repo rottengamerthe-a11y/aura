@@ -13,7 +13,7 @@ function clamp(value, min, max) {
 
 async function calculateServerEconomyPolicy(guildId) {
   const rows = await User.aggregate([
-    { $match: { guildId } },
+    { $match: { guildId, xp: { $gt: 0 } } },
     {
       $project: {
         aura: { $ifNull: ["$aura", 0] },

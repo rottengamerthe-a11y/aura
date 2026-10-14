@@ -1,0 +1,91 @@
+{
+  "common": {
+    "error": "Something went wrong. Try again later.",
+    "not_enough_aura": "You don't have enough aura. Need **{required}**, have **{current}**.",
+    "cooldown": "Please wait **{time}** before using this again.",
+    "success": "Success!",
+    "cancelled": "Action cancelled.",
+    "no_account": "You need to run `/start` first to create your account!",
+    "level_up": "🎉 Level up! You reached **Rank {rank}**!",
+    "premium_required": "This feature requires premium. Get it at {url}."
+  },
+  "commands": {
+    "work": {
+      "success": "⚒️ You worked as a **{job}** and earned **{aura} aura** + **{xp} XP**!",
+      "cooldown": "You're too tired to work. Rest for **{time}**."
+    },
+    "mine": {
+      "success": "⛏️ You mined and found **{aura} aura**, **{xp} XP**{materials}!",
+      "cooldown": "Your pickaxe needs sharpening. Wait **{time}**."
+    },
+    "daily": {
+      "claimed": "📅 Daily claimed! **+{aura} aura** | Streak: **{streak} days** 🔥",
+      "already_claimed": "You already claimed today! Come back in **{time}**."
+    },
+    "balance": {
+      "title": "💰 Balance",
+      "wallet": "Wallet: **{aura}** aura",
+      "vault": "Vault: **{vault}** aura",
+      "total": "Total: **{total}** aura"
+    },
+    "profile": {
+      "title": "👤 {username}'s Profile",
+      "rank": "Rank: **{rank}**",
+      "xp": "XP: **{xp}** / **{nextXp}**",
+      "prestige": "Prestige: **{prestige}**"
+    },
+    "rob": {
+      "success": "💰 You robbed **{target}** and stole **{amount} aura**!",
+      "failed": "🚔 You got caught trying to rob **{target}** and paid a **{fine} aura** fine!",
+      "protected": "🛡️ **{target}** is protected from robbery."
+    },
+    "battlepass": {
+      "title": "🎖️ Battle Pass — {season}",
+      "tier": "Tier: **{current}** / {max}",
+      "xp_progress": "**{current}** / **{needed}** XP to Tier {next}",
+      "purchased": "🎖️ Battle Pass purchased! Cost: **{cost} aura**.",
+      "claimed": "🎖️ Tier {tier} ({track}) claimed!"
+    },
+    "auction": {
+      "listed": "📋 **{item}** x{qty} listed for **{price} aura** starting bid.",
+      "bid_placed": "💰 Bid of **{amount} aura** placed!",
+      "purchased": "🛒 Purchased for **{price} aura**!",
+      "cancelled": "❌ Listing cancelled. Item returned.",
+      "no_listings": "No active listings found."
+    },
+    "referral": {
+      "created": "🔗 Your code: **`{code}`** — Share it to earn **{reward} aura** per referral!",
+      "used": "🎁 You received **{bonus} aura** as a welcome bonus!",
+      "already_used": "You've already used a referral code."
+    },
+    "npc": {
+      "remaining": "{count} chats remaining today"
+    },
+    "global_event": {
+      "no_active": "No active global event right now.",
+      "claimed": "🎁 Event reward claimed!"
+    },
+    "pet": {
+      "adopted": "🐾 You adopted **{name}** the {species}!",
+      "fed": "🍖 You fed **{name}**. Hunger: {hunger}/100, Happiness: {happiness}/100.",
+      "trained": "💪 **{name}** trained {stat}! +{xp} pet XP."
+    },
+    "language": {
+      "changed": "🌐 Language changed to **{language}**!",
+      "current": "Your current language: **{language}** {flag}"
+    }
+  },
+  "notifications": {
+    "robbed": "🚨 You were robbed by **{thief}**! They stole **{amount} aura**.",
+    "trade_received": "📬 You received a trade offer from **{from}**.",
+    "pet_hungry": "🐾 Your pet **{name}** is hungry! Feed them soon.",
+    "weekly_reset": "📋 Weekly challenges have reset! Check `/challenges`.",
+    "daily_shop": "🏪 The Daily Shop has a featured item: **{item}**!"
+  },
+  "seasons": {
+    "spring": "🌸 Spring Bloom",
+    "summer": "☀️ Summer Inferno",
+    "autumn": "🍂 Autumn Harvest",
+    "winter": "❄️ Winter Frost"
+  }
+}

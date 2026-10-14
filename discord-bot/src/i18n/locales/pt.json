@@ -1,0 +1,91 @@
+{
+  "common": {
+    "error": "Algo deu errado. Tente novamente mais tarde.",
+    "not_enough_aura": "Você não tem aura suficiente. Precisa de **{required}**, tem **{current}**.",
+    "cooldown": "Por favor espere **{time}** antes de usar isso de novo.",
+    "success": "Sucesso!",
+    "cancelled": "Ação cancelada.",
+    "no_account": "Você precisa usar `/start` primeiro para criar sua conta!",
+    "level_up": "🎉 Subiu de nível! Você alcançou o **Rank {rank}**!",
+    "premium_required": "Este recurso requer premium. Obtenha-o em {url}."
+  },
+  "commands": {
+    "work": {
+      "success": "⚒️ Você trabalhou como **{job}** e ganhou **{aura} de aura** + **{xp} XP**!",
+      "cooldown": "Você está muito cansado para trabalhar. Descanse por **{time}**."
+    },
+    "mine": {
+      "success": "⛏️ Você minerou e encontrou **{aura} de aura**, **{xp} XP**{materials}!",
+      "cooldown": "Sua picareta precisa ser afiada. Espere **{time}**."
+    },
+    "daily": {
+      "claimed": "📅 Recompensa diária resgatada! **+{aura} de aura** | Sequência: **{streak} dias** 🔥",
+      "already_claimed": "Você já resgatou hoje! Volte em **{time}**."
+    },
+    "balance": {
+      "title": "💰 Saldo",
+      "wallet": "Carteira: **{aura}** de aura",
+      "vault": "Cofre: **{vault}** de aura",
+      "total": "Total: **{total}** de aura"
+    },
+    "profile": {
+      "title": "👤 Perfil de {username}",
+      "rank": "Rank: **{rank}**",
+      "xp": "XP: **{xp}** / **{nextXp}**",
+      "prestige": "Prestígio: **{prestige}**"
+    },
+    "rob": {
+      "success": "💰 Você roubou **{target}** e pegou **{amount} de aura**!",
+      "failed": "🚔 Você foi pego tentando roubar **{target}** e pagou uma multa de **{fine} de aura**!",
+      "protected": "🛡️ **{target}** está protegido contra roubos."
+    },
+    "battlepass": {
+      "title": "🎖️ Passe de Batalha — {season}",
+      "tier": "Nível: **{current}** / {max}",
+      "xp_progress": "**{current}** / **{needed}** XP para o Nível {next}",
+      "purchased": "🎖️ Passe de Batalha comprado! Custo: **{cost} de aura**.",
+      "claimed": "🎖️ Nível {tier} ({track}) resgatado!"
+    },
+    "auction": {
+      "listed": "📋 **{item}** x{qty} listado por **{price} de aura** (lance inicial).",
+      "bid_placed": "💰 Lance de **{amount} de aura** realizado!",
+      "purchased": "🛒 Comprado por **{price} de aura**!",
+      "cancelled": "❌ Anúncio cancelado. Item devolvido.",
+      "no_listings": "Nenhum anúncio ativo encontrado."
+    },
+    "referral": {
+      "created": "🔗 Seu código: **`{code}`** — Compartilhe para ganhar **{reward} de aura** por indicação!",
+      "used": "🎁 Você recebeu **{bonus} de aura** como bônus de boas-vindas!",
+      "already_used": "Você já usou um código de indicação."
+    },
+    "npc": {
+      "remaining": "{count} chats restantes hoje"
+    },
+    "global_event": {
+      "no_active": "Nenhum evento global ativo no momento.",
+      "claimed": "🎁 Recompensa do evento resgatada!"
+    },
+    "pet": {
+      "adopted": "🐾 Você adotou **{name}**, o {species}!",
+      "fed": "🍖 Você alimentou **{name}**. Fome: {hunger}/100, Felicidade: {happiness}/100.",
+      "trained": "💪 **{name}** treinou {stat}! +{xp} XP de pet."
+    },
+    "language": {
+      "changed": "🌐 Idioma alterado para **{language}**!",
+      "current": "Seu idioma atual: **{language}** {flag}"
+    }
+  },
+  "notifications": {
+    "robbed": "🚨 Você foi roubado por **{thief}**! Levaram **{amount} de aura**.",
+    "trade_received": "📬 Você recebeu uma proposta de troca de **{from}**.",
+    "pet_hungry": "🐾 Seu pet **{name}** está com fome! Alimente-o em breve.",
+    "weekly_reset": "📋 Os desafios semanais foram reiniciados! Verifique `/challenges`.",
+    "daily_shop": "🏪 A Loja Diária tem um item em destaque: **{item}**!"
+  },
+  "seasons": {
+    "spring": "🌸 Desabrochar da Primavera",
+    "summer": "☀️ Inferno de Verão",
+    "autumn": "🍂 Colheita de Outono",
+    "winter": "❄️ Geada de Inverno"
+  }
+}

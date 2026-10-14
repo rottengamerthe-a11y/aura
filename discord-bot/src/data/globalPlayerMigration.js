@@ -209,6 +209,8 @@ function mergeUsers(users) {
   let xp = 0;
   let prestige = 0;
   let streak = 0;
+  let dailyStreakCount = 0;
+  let dailyStreakLastClaimedAt = null;
   let createdAt = asDate(primary.createdAt);
   let updatedAt = asDate(primary.updatedAt);
   let lastDailyAt = null;
@@ -237,6 +239,8 @@ function mergeUsers(users) {
     xp += Number(user.xp) || 0;
     prestige = Math.max(prestige, Number(user.prestige) || 0);
     streak = Math.max(streak, Number(user.streak) || 0);
+    dailyStreakCount = Math.max(dailyStreakCount, Number(user.dailyStreak?.count) || 0);
+    dailyStreakLastClaimedAt = latestDate(dailyStreakLastClaimedAt, user.dailyStreak?.lastClaimedAt);
     createdAt = createdAt && asDate(user.createdAt)
       ? new Date(Math.min(createdAt.getTime(), asDate(user.createdAt).getTime()))
       : createdAt || asDate(user.createdAt);
@@ -286,6 +290,10 @@ function mergeUsers(users) {
   primary.rankIndex = getRankByXp(xp);
   primary.prestige = prestige;
   primary.streak = streak;
+  primary.dailyStreak = {
+    count: dailyStreakCount || streak,
+    lastClaimedAt: dailyStreakLastClaimedAt || lastDailyAt,
+  };
   primary.lastDailyAt = lastDailyAt;
   primary.lastSpinAt = lastSpinAt;
   primary.lastCoinflipAt = lastCoinflipAt;

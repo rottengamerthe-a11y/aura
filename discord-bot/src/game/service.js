@@ -1,18 +1,41 @@
 const { ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle, ChannelType, EmbedBuilder, PermissionsBitField, SlashCommandBuilder, StringSelectMenuBuilder } = require("discord.js");
 const crypto = require("crypto");
 const { BOSSES, COLORS, COOLDOWNS, CRATES, CRAFTING_RECIPES, EFFECT_CAPS, GARDEN_CROPS, GEAR_ITEMS, MATERIALS, QUEST_TEMPLATES, RANKS, SHOP_ITEMS, SKILLS, WORLD_EVENTS } = require("../config/gameConfig");
-const { BattleSession, Clan, CollectiblePrintCounter, GuildSettings, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TopggVoteLog, TradeOffer, User } = require("../data/models");
+const { BattleSession, Clan, CollectiblePrintCounter, GuildSettings, InviteAttribution, PvpInvite, PvpMatchmakingQueue, RoleListing, RolePurchase, TopggVoteLog, TradeOffer, User, WorldBoss } = require("../data/models");
 const { buildClanCreateData, buildClanLeaderboardFilter, buildClanLookup, buildClanMembershipClearUpdate, buildClanMembershipFilter, buildPlayerCreateData, buildPlayerLeaderboardFilter, buildPlayerLookup, getGuildClanId, isGlobalPlayerDataEnabled, setGuildClanId } = require("../data/playerScope");
 const { classifyIntent } = require("../ai/intentRouter");
 const { eventBus } = require("../core/eventBus");
 const { buildProfileCosmeticAttachment, encodePng, FILE_NAME: PROFILE_COSMETIC_FILE } = require("../utils/cosmeticArt");
 const { buildAttachment, buildEmbedPayload } = require("../utils/visuals");
+const { FLASH_SALE_ITEM } = require("../monetization/flashSale");
+const { getDailyShopItems, validateDailyShopPurchase, purchaseDailyShopItem, getTimeUntilRotation } = require("./dailyShop");
+const { WEEKLY_CHALLENGE_TEMPLATES, getWeeklyChallenges, getOrResetWeeklyChallenges, incrementWeeklyProgress, claimWeeklyChallenge, getTimeUntilWeeklyReset, formatTimeRemaining } = require("./weeklyChallenges");
+const { LEADERBOARD_CATEGORIES, getServerLeaderboard, getGlobalLeaderboard, getClanLeaderboard, getUserRank, checkSeasonReset, incrementSeasonStat } = require("./leaderboards");
+const { startBlackjack, blackjackHit, blackjackStand, blackjackDoubleDown, calculateHandTotal, formatHand, formatBlackjackResult, spinSlots, formatSlotDisplay, generateScratchCard, formatScratchCardDisplay, BLACKJACK_MIN_BET, SLOTS_MIN_BET, SLOTS_MAX_BET, SCRATCH_CARD_COST, SCRATCH_CARD_PREMIUM_COST } = require("./casino");
+const { adoptPet, applyPetDecay, feedPet, playWithPet, trainPet, checkPetProgression, getPetBonuses, renamePet, getPetStatusInfo, formatCooldown: formatPetCooldown } = require("./petSystem");
+const { getOwnedCosmetics, getEarnedBadges, equipCosmetic, purchaseCosmetic, getAvailableCosmetics, unequipCosmetic } = require("./cosmetics");
+const { BACKGROUNDS, BADGES, NAME_COLORS } = require("../config/cosmeticsConfig");
+const { PET_SPECIES, PET_FOODS } = require("../config/petConfig");
+const { BATTLE_PASS_TIERS, BATTLE_PASS_TIER_XP, BATTLE_PASS_PRICE_AURA } = require("../config/battlePassConfig");
+const { getBattlePassSeason, checkBattlePassReset, addBattlePassXP, purchaseBattlePass, grantBattlePassPaid, claimBattlePassTier, applyBattlePassRewards, getBattlePassProgress } = require("./battlePass");
+const { getServerPremiumTier, getServerPremiumStatus, getServerXpMultiplier } = require("./serverPremium");
+const { SERVER_PREMIUM_TIERS } = require("../config/serverPremiumConfig");
+const { createListing, saveListing, placeBid, buyNow, cancelListing, searchListings, getUserListings, getListingById, formatListingDisplay, formatTimeRemaining: formatAuctionTime, AUCTION_DURATIONS, MIN_LISTING_PRICE } = require("./auctionHouse");
+const { createReferralCode, useReferralCode, confirmReferral, getReferralStats, getUserCode, getTopReferrers, REFERRAL_MILESTONES } = require("./referralSystem");
+const { getActiveGlobalEvent, getGlobalEventMultipliers, claimGlobalEventReward, tryAutoSpawnEvent, getGlobalEventStatus, startGlobalEvent, endGlobalEvent } = require("./globalEvents");
+const { chatWithNPC, getAvailableNPCs, getRemainingUses } = require("../ai/geminiChat");
+const { getCurrentSeason, getSeasonalShopItems, getSeasonalMultipliers, getSeasonInfo } = require("./seasonalContent");
+const { createPoll, castVote, getPollResults, getActivePolls, closePoll, getUnvotedPolls, formatVoteBar, VOTER_REWARD_AURA } = require("./communityVoting");
+const { initDefaultExperiments, getExperimentValue, trackEvent: trackAbEvent, getExperimentResults, listExperiments } = require("./abTesting");
+const { trackCommand, getDailySnapshot, getFullAnalyticsReport } = require("../analytics/analyticsEngine");
+const { init: initI18n, tu, setUserLocale, getUserLocale, getAvailableLocales } = require("../i18n/i18n");
 
 const activeBattles = new Map();
 const battleInteractionLocks = new Set();
 const pendingRankUps = new Map();
 const reminderIntervals = new WeakMap();
 const relicSpawnIntervals = new WeakMap();
+let clanDailyResetInterval = null;
 const chatSpawnCounters = new Map();
 const recentInteractions = [];
 const COMMAND_BUILD_ID = "aurix-topgg-vote-reminder-prompts-v22";
@@ -31,22 +54,36 @@ const SHINY_RELIC_CHANCE = 0.012;
 const CHAT_SPAWN_MULTI_USER_THRESHOLD = 24;
 const CHAT_SPAWN_SINGLE_USER_THRESHOLD = 36;
 const CHAT_SPAWN_USER_RATE_LIMIT_MS = 1500;
+const ONBOARDING_STARTER_STEP = "starter_drop";
+const ONBOARDING_ENCOUNTER_STEP = "starter_encounter";
+const WORLD_BOSS_KEY = "aurix-global-rift-colossus";
+const WORLD_BOSS_ID = "rift_colossus";
+const WORLD_BOSS_MAX_HEALTH = 1000000;
+const WORLD_BOSS_BOT_JOIN_DAMAGE = 50000;
+const WORLD_BOSS_MEMBER_JOIN_DAMAGE = 5000;
+const WORLD_BOSS_INVITER_AURA_REWARD = 50000;
 const INCENSE_COST = 50000;
 const INCENSE_SPAWNS = 180;
 const INCENSE_TICK_MS = 20 * 1000;
+const DAILY_STREAK_MAX = 365;
+const CLAN_DAILY_ENERGY_MIN_GOAL = 3;
+const CLAN_DAILY_ENERGY_MAX_GOAL = 50;
+const CLAN_EMPOWERMENT_DURATION_MS = 12 * 60 * 60 * 1000;
+const CLAN_EMPOWERMENT_AURA_MULTIPLIER = 1.2;
+const CLAN_DAILY_RESET_POLL_MS = 60 * 1000;
 const ECONOMY_RULES = Object.freeze({
   faucetSoftCap: 250000,
   faucetHardCap: 2500000,
   faucetMinimumMultiplier: 0.45,
-  vaultBaseRatePerHour: 0.004,
+  vaultBaseRatePerHour: 0.001,
   vaultPrestigeRatePerHour: 0.001,
   vaultMaxAccrualHours: 12,
   vaultDiminishStart: 150000,
   vaultDiminishFull: 3000000,
   vaultMinimumRateMultiplier: 0.25,
-  transferFeeRate: 0.03,
-  transferFeeThreshold: 50000,
-  coinflipMaxWalletRatio: 0.05,
+  transferFeeRate: 0.05,
+  transferFeeMinimum: 100,
+  coinflipMaxWalletRatio: 0.10,
   coinflipMaxBet: 50000,
   projectRewardPoolCapContributors: 5,
   projectRewardMaxSinkRatio: 0.35,
@@ -58,10 +95,10 @@ const REVENGE_WINDOW_MS = 48 * 60 * 60 * 1000;
 const PROTECTION_WINDOW_MS = 6 * 60 * 60 * 1000;
 const BOUNTY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const HEIST_RULES = Object.freeze({
-  newbieRankFloor: 1,
-  newbieAuraFloor: 8000,
-  walletStealRate: 0.035,
-  walletStealCap: 4200,
+  newbieRankFloor: 2,
+  newbieAuraFloor: 15000,
+  walletStealRate: 0.08,
+  walletStealCap: 0,
   revengeStealMultiplier: 1.4,
   factionProtectionMultiplier: 0.75,
   protectionMultiplier: 0.45,
@@ -568,16 +605,19 @@ const BATTLE_GEAR_SLOTS = Object.freeze([
   { id: "relic", label: "Relic" },
 ]);
 const PREMIUM_PLANS = Object.freeze({
-  monthly: {
-    id: "monthly",
-    label: "Monthly",
-    priceLabel: "$4.99/month",
+  plus: {
+    id: "plus",
+    label: "Plus",
+    priceLabel: "$2.99/month",
     durationDays: 30,
     dailyMultiplier: 1.08,
     dailyRareCrates: 0,
     cooldownReduction: 0,
     gardenPlots: 3,
     chestCooldownHours: 24,
+    dailyShopDiscount: 0.05,
+    battlePassIncluded: false,
+    maxPets: 1,
     welcome: Object.freeze({ aura: 2000, rareCrates: 1, epicCrates: 0, legendaryCrates: 0 }),
     battle: Object.freeze({ maxHpBonus: 0, critChanceBonus: 0 }),
     chest: Object.freeze({ aura: [700, 1400], xp: [220, 420], rareCrates: 1, epicChance: 0.08, legendaryChance: 0, materials: 3 }),
@@ -593,44 +633,22 @@ const PREMIUM_PLANS = Object.freeze({
       crateAuraBoost: 0.05,
     }),
   },
-  yearly: {
-    id: "yearly",
-    label: "Yearly",
-    priceLabel: "$19.99/year",
-    durationDays: 365,
-    dailyMultiplier: 1.12,
-    dailyRareCrates: 1,
-    cooldownReduction: 0,
-    gardenPlots: 4,
-    chestCooldownHours: 22,
-    welcome: Object.freeze({ aura: 5000, rareCrates: 2, epicCrates: 1, legendaryCrates: 0 }),
-    battle: Object.freeze({ maxHpBonus: 0, critChanceBonus: 0 }),
-    chest: Object.freeze({ aura: [1200, 2600], xp: [360, 720], rareCrates: 1, epicChance: 0.14, legendaryChance: 0, materials: 4 }),
-    effects: Object.freeze({
-      spinRewardBoost: 0.12,
-      vaultInterestBoost: 0.025,
-      workAuraBoost: 0.12,
-      workXpBoost: 0.12,
-      mineYieldBoost: 0.12,
-      mineXpBoost: 0.12,
-      bossRewardBoost: 0.08,
-      pvpRewardBoost: 0,
-      crateAuraBoost: 0.08,
-    }),
-  },
-  lifetime: {
-    id: "lifetime",
-    label: "Lifetime",
-    priceLabel: "$49.99 one-time",
-    durationDays: null,
+  pro: {
+    id: "pro",
+    label: "Pro",
+    priceLabel: "$4.99/month",
+    durationDays: 30,
     dailyMultiplier: 1.15,
     dailyRareCrates: 1,
     cooldownReduction: 0,
     gardenPlots: 4,
-    chestCooldownHours: 20,
-    welcome: Object.freeze({ aura: 10000, rareCrates: 3, epicCrates: 1, legendaryCrates: 0 }),
+    chestCooldownHours: 18,
+    dailyShopDiscount: 0.10,
+    battlePassIncluded: false,
+    maxPets: 2,
+    welcome: Object.freeze({ aura: 5000, rareCrates: 2, epicCrates: 1, legendaryCrates: 0 }),
     battle: Object.freeze({ maxHpBonus: 0, critChanceBonus: 0 }),
-    chest: Object.freeze({ aura: [2200, 4200], xp: [650, 1100], rareCrates: 2, epicChance: 0.2, legendaryChance: 0.01, materials: 5 }),
+    chest: Object.freeze({ aura: [1200, 2600], xp: [360, 720], rareCrates: 1, epicChance: 0.14, legendaryChance: 0, materials: 4 }),
     effects: Object.freeze({
       spinRewardBoost: 0.15,
       vaultInterestBoost: 0.03,
@@ -638,12 +656,48 @@ const PREMIUM_PLANS = Object.freeze({
       workXpBoost: 0.15,
       mineYieldBoost: 0.15,
       mineXpBoost: 0.15,
-      bossRewardBoost: 0.1,
+      bossRewardBoost: 0.08,
       pvpRewardBoost: 0,
-      crateAuraBoost: 0.1,
+      crateAuraBoost: 0.08,
     }),
   },
+  elite: {
+    id: "elite",
+    label: "Elite",
+    priceLabel: "$12.99/month",
+    durationDays: 30,
+    dailyMultiplier: 1.25,
+    dailyRareCrates: 1,
+    cooldownReduction: 0,
+    gardenPlots: 5,
+    chestCooldownHours: 12,
+    dailyShopDiscount: 0.15,
+    battlePassIncluded: true,
+    maxPets: 3,
+    welcome: Object.freeze({ aura: 12000, rareCrates: 3, epicCrates: 1, legendaryCrates: 1 }),
+    battle: Object.freeze({ maxHpBonus: 0, critChanceBonus: 0 }),
+    chest: Object.freeze({ aura: [2500, 5000], xp: [700, 1300], rareCrates: 2, epicChance: 0.22, legendaryChance: 0.03, materials: 5 }),
+    effects: Object.freeze({
+      spinRewardBoost: 0.25,
+      vaultInterestBoost: 0.05,
+      workAuraBoost: 0.25,
+      workXpBoost: 0.25,
+      mineYieldBoost: 0.25,
+      mineXpBoost: 0.25,
+      bossRewardBoost: 0.10,
+      pvpRewardBoost: 0,
+      crateAuraBoost: 0.10,
+    }),
+  },
+  // Backward compatibility aliases for existing subscribers
+  monthly: null,
+  yearly: null,
+  lifetime: null,
 });
+// Map old plan IDs to new tiers for existing users (workaround: use defineProperty since object is frozen at top level only)
+Object.defineProperty(PREMIUM_PLANS, "monthly", { value: PREMIUM_PLANS.plus, writable: false });
+Object.defineProperty(PREMIUM_PLANS, "yearly", { value: PREMIUM_PLANS.pro, writable: false });
+Object.defineProperty(PREMIUM_PLANS, "lifetime", { value: PREMIUM_PLANS.elite, writable: false });
 const PREMIUM_PURCHASE_URL = "https://aurawebsite-12gd.onrender.com";
 const OFFICIAL_SERVER_URL = "https://aurawebsite-12gd.onrender.com";
 const TOPGG_VOTE_COOLDOWN_MS = 12 * 60 * 60 * 1000;
@@ -651,11 +705,13 @@ const TOPGG_VOTE_PROMPT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 const TOPGG_VOTE_PROMPTS_ENABLED = process.env.TOPGG_VOTE_PROMPTS_ENABLED !== "false";
 const TOPGG_VOTE_PROMPT_CHANCE = TOPGG_VOTE_PROMPTS_ENABLED ? (Number(process.env.TOPGG_VOTE_PROMPT_CHANCE) || 0.05) : 0;
 const TOPGG_VOTE_REWARD = Object.freeze({
-  aura: Number(process.env.TOPGG_VOTE_REWARD_AURA) || 8000,
-  xp: Number(process.env.TOPGG_VOTE_REWARD_XP) || 450,
+  aura: Number(process.env.TOPGG_VOTE_REWARD_AURA) || 2000,
+  auraPerStreak: 200,
+  auraStreakCap: 5000,
+  xp: Number(process.env.TOPGG_VOTE_REWARD_XP) || 200,
   crates: Object.freeze({
     common: Number(process.env.TOPGG_VOTE_REWARD_COMMON_CRATES) || 1,
-    rare: Number(process.env.TOPGG_VOTE_REWARD_RARE_CRATES) || 1,
+    rare: Number(process.env.TOPGG_VOTE_REWARD_RARE_CRATES) || 0,
     legendary: Number(process.env.TOPGG_VOTE_REWARD_LEGENDARY_CRATES) || 0,
   }),
 });
@@ -822,6 +878,9 @@ const EXPEDITION_TYPES = Object.freeze({
   },
 });
 const PADDLE_PRICE_PLAN_ENV = Object.freeze({
+  plus: "PADDLE_PLUS_PRICE_ID",
+  pro: "PADDLE_PRO_PRICE_ID",
+  elite: "PADDLE_ELITE_PRICE_ID",
   monthly: "PADDLE_MONTHLY_PRICE_ID",
   yearly: "PADDLE_YEARLY_PRICE_ID",
   lifetime: "PADDLE_LIFETIME_PRICE_ID",
@@ -1080,7 +1139,10 @@ function getFaucetMultiplier(user) {
 }
 
 function applyFaucetDamping(user, amount) {
-  return Math.max(0, Math.floor((Number(amount) || 0) * getFaucetMultiplier(user)));
+  const empowermentActive = user?.clanEmpowermentUntil
+    && new Date(user.clanEmpowermentUntil).getTime() > Date.now();
+  const clanMultiplier = empowermentActive ? CLAN_EMPOWERMENT_AURA_MULTIPLIER : 1;
+  return Math.max(0, Math.floor((Number(amount) || 0) * getFaucetMultiplier(user) * clanMultiplier));
 }
 
 function getVaultRate(user, combinedEffects = null) {
@@ -1100,10 +1162,10 @@ function getVaultRate(user, combinedEffects = null) {
 
 function getTransferFee(amount) {
   const normalized = Math.max(0, Math.floor(Number(amount) || 0));
-  if (normalized <= ECONOMY_RULES.transferFeeThreshold) {
+  if (normalized <= 0) {
     return 0;
   }
-  return Math.floor((normalized - ECONOMY_RULES.transferFeeThreshold) * ECONOMY_RULES.transferFeeRate);
+  return Math.max(ECONOMY_RULES.transferFeeMinimum, Math.floor(normalized * ECONOMY_RULES.transferFeeRate));
 }
 
 function getCoinflipMaxBet(user) {
@@ -1504,26 +1566,23 @@ function getHeistOutcome(thief, victim, plan) {
     0.18,
     0.74
   );
-  let cap = HEIST_RULES.walletStealCap + (Number(thief.rankIndex) || 0) * 160;
+  let maxSteal = Math.floor(Math.max(0, (Number(victim.aura) || 0)) * HEIST_RULES.walletStealRate);
   if (plan === "smash") {
-    cap *= 1.35;
+    maxSteal = Math.floor(maxSteal * 1.35);
   }
   if (plan === "frame") {
-    cap *= 0.65;
+    maxSteal = Math.floor(maxSteal * 0.65);
   }
   if (revenge) {
-    cap *= HEIST_RULES.revengeStealMultiplier;
+    maxSteal = Math.floor(maxSteal * HEIST_RULES.revengeStealMultiplier);
   }
   if (sameFaction) {
-    cap *= HEIST_RULES.factionProtectionMultiplier;
+    maxSteal = Math.floor(maxSteal * HEIST_RULES.factionProtectionMultiplier);
   }
   if (protectedTarget) {
-    cap *= HEIST_RULES.protectionMultiplier;
+    maxSteal = Math.floor(maxSteal * HEIST_RULES.protectionMultiplier);
   }
-  const stealable = Math.min(
-    Math.max(0, Math.floor((Number(victim.aura) || 0) * HEIST_RULES.walletStealRate)),
-    Math.floor(cap)
-  );
+  const stealable = Math.max(0, maxSteal);
   const heat = plan === "smash" ? 9 : plan === "frame" ? 6 : 4;
   return { successChance, stealable, revenge, sameFaction, protectedTarget, heat };
 }
@@ -2790,9 +2849,9 @@ function getUserPremiumPlan(user) {
     return null;
   }
   if (user.premium?.lifetime) {
-    return PREMIUM_PLANS.lifetime;
+    return PREMIUM_PLANS.elite;
   }
-  return getPremiumPlan(user.premium?.source) || PREMIUM_PLANS.monthly;
+  return getPremiumPlan(user.premium?.source) || PREMIUM_PLANS.plus;
 }
 
 function normalizeReminderState(user) {
@@ -2912,14 +2971,12 @@ function formatPremiumPlanLabel(planId) {
 
 function buildPremiumFeatureSummary() {
   return [
-    "Premium welcome bundle on purchase: modest aura, crates, and profile cosmetics",
-    "Premium Chest command: recurring prestige cache with capped progression loot",
-    "Extra garden plots for relaxed material convenience",
+    "**Plus** ($2.99/mo) — +8% work/mine boost, 5% daily shop discount, premium chest every 24h, 3 garden plots",
+    "**Pro** ($4.99/mo) — +15% boosts, 10% shop discount, chest every 18h, 4 plots, daily rare crate, 2 pet slots",
+    "**Elite** ($12.99/mo) — +25% boosts, 15% shop discount, chest every 12h, 5 plots, Battle Pass included, 3 pet slots, exclusive monthly crate",
+    "",
     "PvP integrity: no premium HP, crit, or PvP reward advantage",
-    "Premium-only shop items focus on prestige and light convenience",
-    "Gentle garden reminders remain opt-in and low-pressure",
-    "Profile membership status shown in /profile and /premium",
-    "Premium profile cosmetics: Aurix VIP Title, Gold Profile Frame, Storm Nameplate, and paid style drops",
+    "All tiers: welcome bundle, Premium Chest, profile cosmetics, priority-free competitive play",
   ].join("\n");
 }
 
@@ -5181,7 +5238,7 @@ function buildTopggVoteKey(vote) {
   ].join(":");
 }
 
-function buildTopggReward(weight) {
+function buildTopggReward(weight, voteStreak = 0) {
   const multiplier = clamp(Number(weight) || 1, 1, 5);
   const crates = Object.entries(TOPGG_VOTE_REWARD.crates).reduce((drops, [crateId, amount]) => {
     const total = Math.floor((Number(amount) || 0) * multiplier);
@@ -5191,8 +5248,12 @@ function buildTopggReward(weight) {
     return drops;
   }, {});
 
+  const streakBonus = Math.min(
+    (Number(voteStreak) || 0) * TOPGG_VOTE_REWARD.auraPerStreak,
+    TOPGG_VOTE_REWARD.auraStreakCap - TOPGG_VOTE_REWARD.aura
+  );
   return {
-    aura: Math.floor(TOPGG_VOTE_REWARD.aura * multiplier),
+    aura: Math.floor((TOPGG_VOTE_REWARD.aura + Math.max(0, streakBonus)) * multiplier),
     xp: Math.floor(TOPGG_VOTE_REWARD.xp * multiplier),
     crates,
   };
@@ -5314,22 +5375,71 @@ async function applyTopggVoteWebhookEvent(payload) {
       nextVoteAt: user.topgg.nextVoteAt || null,
     };
   }
-  const reward = buildTopggReward(vote.weight);
+  const reward = buildTopggReward(vote.weight, user.topgg.voteCount || 0);
   reward.aura = applyFaucetDamping(user, reward.aura);
 
-  user.aura += reward.aura;
-  user.xp += reward.xp;
+  const cooldownCutoff = new Date(vote.createdAt.getTime() - (TOPGG_VOTE_COOLDOWN_MS - 5 * 60 * 1000));
+  const rewardIncrement = {
+    aura: reward.aura,
+    xp: reward.xp,
+    "topgg.voteCount": 1,
+    "topgg.voteWeight": vote.weight,
+  };
   Object.entries(reward.crates).forEach(([crateId, amount]) => {
-    user.crates.set(crateId, (user.crates.get(crateId) || 0) + amount);
+    rewardIncrement[`crates.${crateId}`] = amount;
   });
-  user.topgg.voteCount += 1;
-  user.topgg.voteWeight += vote.weight;
-  user.topgg.lastVoteAt = vote.createdAt;
-  user.topgg.nextVoteAt = vote.expiresAt;
-  user.topgg.lastVoteEventId = vote.eventId;
 
-  await syncRank(user);
-  await user.save();
+  const rewardedUser = await User.findOneAndUpdate(
+    {
+      _id: user._id,
+      $or: [
+        { "topgg.lastVoteAt": { $exists: false } },
+        { "topgg.lastVoteAt": null },
+        { "topgg.lastVoteAt": { $lte: cooldownCutoff } },
+      ],
+    },
+    {
+      $inc: rewardIncrement,
+      $set: {
+        "topgg.lastVoteAt": vote.createdAt,
+        "topgg.nextVoteAt": vote.expiresAt,
+        "topgg.lastVoteEventId": vote.eventId,
+      },
+    },
+    { new: true }
+  );
+
+  if (!rewardedUser) {
+    return {
+      ok: true,
+      action: "duplicate",
+      reason: "within_vote_cooldown",
+      userId: vote.userId,
+      eventId: vote.eventId,
+      voteKey,
+    };
+  }
+
+  const retentionUser = await User.findOneAndUpdate(
+    { _id: rewardedUser._id },
+    [
+      {
+        $set: {
+          "dailyStreak.count": {
+            $min: [30, { $add: [{ $ifNull: ["$dailyStreak.count", 0] }, 1] }],
+          },
+          "flashSale.expiresAt": {
+            $cond: [
+              { $gt: [{ $ifNull: ["$flashSale.expiresAt", new Date(0)] }, new Date()] },
+              { $dateAdd: { startDate: "$flashSale.expiresAt", unit: "hour", amount: 1 } },
+              "$flashSale.expiresAt",
+            ],
+          },
+        },
+      },
+    ],
+    { new: true }
+  );
 
   await TopggVoteLog.create({
     eventId: vote.eventId,
@@ -5356,8 +5466,8 @@ async function applyTopggVoteWebhookEvent(payload) {
     reward,
     rewardSummary: formatTopggReward(reward),
     nextVoteAt: vote.expiresAt,
-    announcementGuildId: user.botContext?.lastGuildId || user.reminders?.guildId || user.guildId || null,
-    announcementChannelId: user.botContext?.lastChannelId || user.reminders?.channelId || null,
+    announcementGuildId: retentionUser?.botContext?.lastGuildId || rewardedUser.botContext?.lastGuildId || user.botContext?.lastGuildId || user.reminders?.guildId || user.guildId || null,
+    announcementChannelId: retentionUser?.botContext?.lastChannelId || rewardedUser.botContext?.lastChannelId || user.botContext?.lastChannelId || user.reminders?.channelId || null,
   };
 }
 
@@ -5732,6 +5842,100 @@ function startRelicSpawnLoop(client) {
   const interval = setInterval(tick, INCENSE_TICK_MS);
   interval.unref?.();
   relicSpawnIntervals.set(client, interval);
+}
+
+function getUtcDayStart(date = new Date()) {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+async function resetClanDailyEnergy() {
+  const dayStart = getUtcDayStart();
+  return Clan.updateMany(
+    {
+      $or: [
+        { "dailyEnergy.lastResetAt": { $lt: dayStart } },
+        { "dailyEnergy.lastResetAt": null },
+        { "dailyEnergy.lastResetAt": { $exists: false } },
+      ],
+    },
+    [
+      {
+        $set: {
+          "dailyEnergy.current": 0,
+          "dailyEnergy.goal": {
+            $max: [
+              CLAN_DAILY_ENERGY_MIN_GOAL,
+              {
+                $min: [
+                  CLAN_DAILY_ENERGY_MAX_GOAL,
+                  { $ceil: { $multiply: [{ $size: { $ifNull: ["$memberIds", []] } }, 0.75] } },
+                ],
+              },
+            ],
+          },
+          "dailyEnergy.lastResetAt": dayStart,
+        },
+      },
+    ]
+  );
+}
+
+function startClanDailyResetLoop(client) {
+  if (clanDailyResetInterval) {
+    return;
+  }
+
+  const isPrimaryShard = !client?.shard || client.shard.ids?.[0] === 0;
+  const tick = () => {
+    if (!isPrimaryShard) {
+      return;
+    }
+    resetClanDailyEnergy().catch((error) => {
+      console.error("Clan daily energy reset failed:", error);
+    });
+  };
+  tick();
+  clanDailyResetInterval = setInterval(tick, CLAN_DAILY_RESET_POLL_MS);
+  clanDailyResetInterval.unref?.();
+}
+
+async function handleClanDailyGoalMet(event, client) {
+  const { clanId, guildId, goal } = event.payload || {};
+  if (!clanId || !guildId) {
+    return;
+  }
+
+  const expiresAt = new Date(Date.now() + CLAN_EMPOWERMENT_DURATION_MS);
+  await User.updateMany(
+    buildClanMembershipFilter(guildId, clanId),
+    { $set: { clanEmpowermentUntil: expiresAt } }
+  );
+
+  const settings = await GuildSettings.findOne({ guildId }).lean();
+  const channelId = settings?.commandChannelId || settings?.aurixChannelId || null;
+  const channel = channelId && client?.channels?.fetch
+    ? await client.channels.fetch(channelId).catch(() => null)
+    : null;
+  if (channel?.isTextBased?.() && channel.send) {
+    await channel.send(buildEmbedPayload({
+      title: "Clan Empowerment Unlocked",
+      description: `Your clan met its daily check-in goal of **${formatNumber(goal)}**. All clan members receive **+20% Aura** for the next 12 hours.`,
+      visual: "clan-hall.svg",
+      fields: [
+        { name: "Buff", value: "+20% Aura from faucet rewards", inline: true },
+        { name: "Expires", value: `<t:${Math.floor(expiresAt.getTime() / 1000)}:R>`, inline: true },
+      ],
+      footer: "Daily energy resets at midnight UTC.",
+    })).catch(() => null);
+  }
+}
+
+function attachRetentionSubscribers(eventBusInstance, client) {
+  return eventBusInstance.subscribe("clan.dailyGoalMet", (event) => {
+    handleClanDailyGoalMet(event, client).catch((error) => {
+      console.error("Clan empowerment grant failed:", error);
+    });
+  });
 }
 
 function getEffectiveCooldownMs(user, durationMs) {
@@ -6301,10 +6505,127 @@ async function formatClanLogEntries(interaction, clan) {
 
 async function handleStart(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  normalizeTutorialState(user);
+  const firstStart = !user.tutorial.claimedSteps.includes(ONBOARDING_STARTER_STEP);
+  if (firstStart) {
+    user.aura += 600;
+    addInventoryItem(user, "health_vial", 1);
+    user.crates.set("common", (user.crates.get("common") || 0) + 1);
+    user.tutorial.claimedSteps.push(ONBOARDING_STARTER_STEP);
+    user.tutorial.step = Math.max(1, user.tutorial.step);
+    user.markModified("tutorial");
+  }
   await user.save();
+  const quickStartPayload = addQuickActions(buildPlayerStartPayload(user), interaction.user.id, ["daily", "work", "spin", "tutorial"]);
   return interaction.reply({
-    ...addQuickActions(buildPlayerStartPayload(user), interaction.user.id, ["daily", "work", "spin", "tutorial"]),
+    ...withExtraComponents(quickStartPayload, [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`onboarding:encounter:${interaction.user.id}`).setLabel("Run Mini Encounter").setStyle(ButtonStyle.Success),
+    )]),
     ephemeral: true,
+  });
+}
+
+async function handleOnboardingButton(interaction) {
+  const [, action, ownerId, choice] = interaction.customId.split(":");
+  if (ownerId !== interaction.user.id) {
+    return interaction.reply({ content: "Only the player who started onboarding can use this encounter.", ephemeral: true });
+  }
+
+  if (action === "encounter") {
+    return interaction.update({
+      ...buildEmbedPayload({
+        title: "Riftling Encounter",
+        description: "A small riftling blocks your first relic route. Choose how to answer it.",
+        visual: "help-bosses.svg",
+        fields: [
+          { name: "Strike", value: "Take the direct route and earn a common crate.", inline: true },
+          { name: "Guard", value: "Play carefully and earn a health vial plus XP.", inline: true },
+        ],
+      }),
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`onboarding:choice:${ownerId}:strike`).setLabel("Strike").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`onboarding:choice:${ownerId}:guard`).setLabel("Guard").setStyle(ButtonStyle.Secondary),
+      )],
+    });
+  }
+
+  if (action !== "choice" || !["strike", "guard"].includes(choice)) {
+    return interaction.reply({ content: "That onboarding encounter is no longer available.", ephemeral: true });
+  }
+
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  if (user.tutorial.claimedSteps.includes(ONBOARDING_ENCOUNTER_STEP)) {
+    return interaction.reply({ content: "You already completed this encounter.", ephemeral: true });
+  }
+  user.tutorial.claimedSteps.push(ONBOARDING_ENCOUNTER_STEP);
+  user.xp += choice === "strike" ? 80 : 120;
+  if (choice === "strike") {
+    user.crates.set("common", (user.crates.get("common") || 0) + 1);
+  } else {
+    addInventoryItem(user, "health_vial", 1);
+  }
+  await syncRank(user);
+  await user.save();
+  return interaction.update({
+    ...buildEmbedPayload({
+      title: "First Encounter Cleared",
+      description: choice === "strike" ? "The riftling broke apart and left a crate behind." : "Your guard held. The riftling retreated and left a health vial behind.",
+      visual: "emblem-success.svg",
+      fields: [
+        { name: "Reward", value: choice === "strike" ? "Common Crate x1" : "Health Vial x1", inline: true },
+        { name: "XP", value: choice === "strike" ? "+80" : "+120", inline: true },
+      ],
+      footer: "Your next step is ready in the existing quick actions.",
+    }),
+    components: [],
+  });
+}
+
+async function handleFlashSaleButton(interaction) {
+  const [, action, ownerId, offerId] = interaction.customId.split(":");
+  if (action !== "buy" || ownerId !== interaction.user.id) {
+    return interaction.reply({ content: "That offer is bound to the player who earned it.", ephemeral: true });
+  }
+
+  const discountedPrice = Math.floor(FLASH_SALE_ITEM.basePrice * (1 - FLASH_SALE_ITEM.discountPercent / 100));
+  const user = await User.findOneAndUpdate(
+    {
+      ...buildPlayerLookup(interaction.guildId, interaction.user.id),
+      "flashSale.offerId": offerId,
+      "flashSale.itemId": FLASH_SALE_ITEM.id,
+      "flashSale.expiresAt": { $gt: new Date() },
+      "flashSale.claimedAt": null,
+      aura: { $gte: discountedPrice },
+    },
+    {
+      $inc: { aura: -discountedPrice, "crates.rare": 1 },
+      $set: { "flashSale.claimedAt": new Date() },
+    },
+    { new: true }
+  );
+
+  if (!user) {
+    return interaction.reply({
+      ...buildEmbedPayload({
+        title: "Flash Sale Unavailable",
+        description: "That offer has expired, was already claimed, or your wallet is too low.",
+        visual: "emblem-alert.svg",
+      }),
+      ephemeral: true,
+    });
+  }
+
+  return interaction.update({
+    ...buildEmbedPayload({
+      title: "Flash Sale Claimed",
+      description: `You bought **${FLASH_SALE_ITEM.label}** for ${discountedPrice.toLocaleString("en-US")} aura.`,
+      visual: "emblem-success.svg",
+      fields: [
+        { name: "Saved", value: `${(FLASH_SALE_ITEM.basePrice - discountedPrice).toLocaleString("en-US")} aura`, inline: true },
+        { name: "Wallet", value: `${user.aura.toLocaleString("en-US")} aura`, inline: true },
+      ],
+    }),
+    components: [],
   });
 }
 
@@ -6384,7 +6705,7 @@ async function handleGift(interaction) {
   const transferFee = getTransferFee(amount);
   const totalCost = amount + transferFee;
   if (amount <= 0 || totalCost > sender.aura) {
-    return interaction.reply({ ...buildEmbedPayload({ title: "Gift Failed", description: `Send an amount inside your current aura wallet. Large transfers include a ${Math.round(ECONOMY_RULES.transferFeeRate * 100)}% burn fee above ${formatNumber(ECONOMY_RULES.transferFeeThreshold)} aura.`, visual: "emblem-alert.svg" }), ephemeral: true });
+    return interaction.reply({ ...buildEmbedPayload({ title: "Gift Failed", description: `Send an amount inside your current aura wallet. All transfers include a ${Math.round(ECONOMY_RULES.transferFeeRate * 100)}% burn fee (minimum ${formatNumber(ECONOMY_RULES.transferFeeMinimum)} aura).`, visual: "emblem-alert.svg" }), ephemeral: true });
   }
 
   const receiver = await getOrCreatePlayer(interaction.guildId, target.id);
@@ -6545,7 +6866,7 @@ async function handleTrade(interaction) {
     }
     const transferFee = getTransferFee(aura);
     if (aura + transferFee > sender.aura) {
-      return interaction.reply({ ...buildEmbedPayload({ title: "Trade Blocked", description: `You need ${formatNumber(aura + transferFee)} aura including the ${formatNumber(transferFee)} aura large-transfer burn fee.`, visual: "emblem-alert.svg" }), ephemeral: true });
+      return interaction.reply({ ...buildEmbedPayload({ title: "Trade Blocked", description: `You need ${formatNumber(aura + transferFee)} aura including the ${formatNumber(transferFee)} aura transfer burn fee.`, visual: "emblem-alert.svg" }), ephemeral: true });
     }
     if (itemId && getTradableQuantity(sender, itemId) < quantity) {
       return interaction.reply({ ...buildEmbedPayload({ title: "Trade Blocked", description: `You do not have ${formatNumber(quantity)} ${getTradableLabel(itemId)}.\n${getTradeItemHelpText()}`, visual: "emblem-alert.svg" }), ephemeral: true });
@@ -8910,35 +9231,121 @@ async function handleCoinflip(interaction) {
   }));
 }
 
+function calculateDailyStreak(previousClaimedAt, previousCount, now = Date.now()) {
+  if (!previousClaimedAt) {
+    return 1;
+  }
+
+  const elapsedMs = now - new Date(previousClaimedAt).getTime();
+  if (elapsedMs >= COOLDOWNS.dailyMs && elapsedMs <= COOLDOWNS.dailyMs * 2) {
+    return Math.min(DAILY_STREAK_MAX, Math.max(0, Number(previousCount) || 0) + 1);
+  }
+  return 1;
+}
+
+function getClanDailyEnergyGoal(memberCount) {
+  return Math.max(
+    CLAN_DAILY_ENERGY_MIN_GOAL,
+    Math.min(CLAN_DAILY_ENERGY_MAX_GOAL, Math.ceil(Math.max(0, Number(memberCount) || 0) * 0.75))
+  );
+}
+
+async function contributeClanDailyEnergy(guildId, clanId, userId) {
+  if (!clanId) {
+    return null;
+  }
+
+  const clan = await Clan.findById(clanId).select("guildId memberIds dailyEnergy").lean();
+  if (!clan) {
+    return null;
+  }
+
+  const goal = getClanDailyEnergyGoal(clan.memberIds?.length || 0);
+  const updated = await Clan.findOneAndUpdate(
+    {
+      _id: clanId,
+      $expr: { $lt: [{ $ifNull: ["$dailyEnergy.current", 0] }, goal] },
+    },
+    [
+      {
+        $set: {
+          "dailyEnergy.current": { $add: [{ $ifNull: ["$dailyEnergy.current", 0] }, 1] },
+          "dailyEnergy.goal": goal,
+          "dailyEnergy.lastResetAt": { $ifNull: ["$dailyEnergy.lastResetAt", new Date()] },
+        },
+      },
+    ],
+    { new: true }
+  ).lean();
+
+  if (!updated) {
+    return { goal, current: goal, met: false };
+  }
+
+  const current = Number(updated.dailyEnergy?.current) || 0;
+  const met = current === goal;
+  if (met) {
+    eventBus.publish("clan.dailyGoalMet", {
+      clanId: updated._id.toString(),
+      guildId: guildId || updated.guildId || null,
+      userId,
+      goal,
+      current,
+      sourceEventId: `clan-daily:${updated._id}:${updated.dailyEnergy.lastResetAt?.toISOString?.() || "current"}`,
+    });
+  }
+
+  return { goal, current, met };
+}
+
 async function handleDaily(interaction) {
   const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
   const previousDailyAt = user.lastDailyAt;
+  const previousDailyStreakAt = user.dailyStreak?.lastClaimedAt || previousDailyAt;
+  const previousDailyStreakCount = user.dailyStreak?.count || user.streak || 0;
+  const clanId = getGuildClanId(user, interaction.guildId);
   const cooldown = await reserveUserCooldown(user, "lastDailyAt", COOLDOWNS.dailyMs);
   if (!cooldown.ok) {
     return interaction.reply({ ...buildEmbedPayload({ title: "Daily Already Checked In", description: `Another relaxed check-in is available in ${humanizeMs(cooldown.remaining)}. You will not lose progress by stepping away.`, visual: "emblem-help.svg" }), ephemeral: true });
   }
 
   const catchup = getDailyCatchup(previousDailyAt, user.streak);
-  user.streak = catchup.protectedStreak;
+  const dailyStreakCount = calculateDailyStreak(previousDailyStreakAt, previousDailyStreakCount);
   const premiumRareCrates = getPremiumDailyRareCrates(user);
   const premiumMultiplier = getPremiumDailyMultiplier(user);
-  const auraReward = applyFaucetDamping(user, Math.floor((700 + user.streak * 90 + user.prestige * 140) * premiumMultiplier));
-  const xpReward = Math.floor((180 + user.streak * 40) * premiumMultiplier);
+  const auraReward = applyFaucetDamping(user, Math.floor((700 + dailyStreakCount * 100 + user.prestige * 140) * premiumMultiplier));
+  const xpReward = Math.floor((180 + dailyStreakCount * 40) * premiumMultiplier);
   const catchupAuraBonus = applyFaucetDamping(user, catchup.auraBonus);
-  user.aura += auraReward + catchupAuraBonus;
-  user.xp += xpReward + catchup.xpBonus;
-  user.crates.set("common", (user.crates.get("common") || 0) + 1);
-  if (user.streak % 7 === 0) {
-    user.crates.set("rare", (user.crates.get("rare") || 0) + 1);
+  const rareCrateReward = (dailyStreakCount % 7 === 0 ? 1 : 0) + premiumRareCrates;
+  const claimedAt = user.lastDailyAt;
+  const updatedUser = await User.findOneAndUpdate(
+    { _id: user._id, lastDailyAt: claimedAt },
+    {
+      $set: {
+        "dailyStreak.count": dailyStreakCount,
+        "dailyStreak.lastClaimedAt": claimedAt,
+        streak: dailyStreakCount,
+      },
+      $inc: {
+        aura: auraReward + catchupAuraBonus,
+        xp: xpReward + catchup.xpBonus,
+        "crates.common": 1,
+        ...(rareCrateReward > 0 ? { "crates.rare": rareCrateReward } : {}),
+      },
+    },
+    { new: true }
+  );
+  if (!updatedUser) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Daily Retry Needed", description: "Your daily check-in was claimed by another request. Please try again when the next check-in is ready.", visual: "emblem-alert.svg" }), ephemeral: true });
   }
-  if (premiumRareCrates > 0) {
-    user.crates.set("rare", (user.crates.get("rare") || 0) + premiumRareCrates);
-  }
+
+  user.set(updatedUser.toObject());
 
   user.quests = [];
   setQuestSet(user);
   await syncRank(user);
   await user.save();
+  const clanEnergy = await contributeClanDailyEnergy(interaction.guildId, clanId, interaction.user.id);
 
   return interaction.reply(addQuickActions(buildEmbedPayload({
     title: "Daily Check-In",
@@ -8949,13 +9356,14 @@ async function handleDaily(interaction) {
         "The rhythm counter notes the visit without asking you to rush.",
         "Today's check-in lands quietly.",
       ]),
-      `Your rhythm is now **${user.streak}**. ${catchup.message}`
+      `Your rhythm is now **${dailyStreakCount}**. ${catchup.message}`
     ),
     visual: "emblem-success.svg",
     fields: [
       { name: "Aura", value: `${formatNumber(auraReward)}`, inline: true },
       { name: "XP", value: `${formatNumber(xpReward)}`, inline: true },
-      { name: "Bonus", value: premiumRareCrates > 0 ? `Premium bonus ${getCrateLabel("rare")} x${premiumRareCrates} + ${user.streak % 7 === 0 ? `weekly rhythm ${getCrateLabel("rare")}` : getCrateLabel("common")}` : user.streak % 7 === 0 ? `${getCrateLabel("rare")} earned` : `${getCrateLabel("common")} earned`, inline: true },
+      { name: "Bonus", value: rareCrateReward > 0 ? `${getCrateLabel("rare")} x${rareCrateReward} + ${getCrateLabel("common")}` : `${getCrateLabel("common")} earned`, inline: true },
+      { name: "Clan Energy", value: clanEnergy ? `${formatNumber(clanEnergy.current)} / ${formatNumber(clanEnergy.goal)}${clanEnergy.met ? " - goal met" : ""}` : "No clan contribution", inline: true },
       { name: "Rested Catch-up", value: catchupAuraBonus || catchup.xpBonus ? `${formatNumber(catchupAuraBonus)} aura + ${formatNumber(catchup.xpBonus)} XP` : "No missed days to recover.", inline: true },
       { name: "Economy Scaling", value: `${Math.round(getFaucetMultiplier(user) * 100)}% faucet rate`, inline: true },
     ],
@@ -10589,6 +10997,13 @@ async function finishBattle(interaction, state, winnerId) {
       await applyQuestProgress(first, "bossWins", 1);
       await syncRank(first);
       await first.save();
+      eventBus.publish("boss.defeated", {
+        guildId: interaction.guildId,
+        userId: first.userId,
+        channelId: interaction.channelId,
+        sourceEventId: state.id,
+        metadata: { bossId: state.playerTwo.id.replace("boss:", ""), auraReward, rewardXp: state.rewardXp },
+      });
       const payload = {
         ...buildEmbedPayload({
           title: "Boss Defeated",
@@ -12219,6 +12634,1324 @@ async function handleAuthority(interaction) {
   }));
 }
 
+// ─── Phase 2: Daily Shop ───
+
+async function handleDailyShop(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+
+  if (subcommand === "browse") {
+    const items = getDailyShopItems();
+    const timeLeft = getTimeUntilRotation();
+    const hours = Math.floor(timeLeft / (1000 * 60 * 60));
+    const mins = Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60));
+    const purchasedToday = user.stats?.dailyShopPurchases || {};
+    const todayKey = new Date().toISOString().slice(0, 10);
+
+    const fields = items.map((item, index) => {
+      const bought = purchasedToday[item.id] === todayKey;
+      const tag = index === 0 ? " ⭐ FEATURED" : "";
+      const status = bought ? " ✅ PURCHASED" : "";
+      return { name: `${item.name}${tag}${status}`, value: `${item.description}\n**${formatNumber(item.price)} aura** — \`${item.id}\``, inline: true };
+    });
+
+    return interaction.reply(buildEmbedPayload({
+      title: "🛒 Daily Shop",
+      description: `Today's exclusive items. Rotates in **${hours}h ${mins}m**.\nBuy with \`/daily-shop buy <item id>\``,
+      visual: "core-shop.svg",
+      fields,
+    }));
+  }
+
+  if (subcommand === "buy") {
+    const itemId = interaction.options.getString("item");
+    const validation = validateDailyShopPurchase(user, itemId);
+
+    if (!validation) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Not Available", description: "That item isn't in today's shop rotation.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    if (validation.alreadyPurchased) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Already Purchased", description: "You already bought this item today. Come back tomorrow!", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    if (user.aura < validation.item.price) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: `You need **${formatNumber(validation.item.price)} aura** but only have **${formatNumber(user.aura)}**.`, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    const result = purchaseDailyShopItem(user, itemId);
+    user.aura -= validation.item.price;
+    user.stats.dailyShopBuys = (user.stats.dailyShopBuys || 0) + 1;
+    await user.save();
+
+    return interaction.reply(buildEmbedPayload({
+      title: "🛒 Item Purchased!",
+      description: `You bought **${validation.item.name}** for **${formatNumber(validation.item.price)} aura**.`,
+      visual: "core-shop.svg",
+      fields: [
+        { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+      ],
+    }));
+  }
+}
+
+// ─── Phase 2: Weekly Challenges ───
+
+async function handleChallenges(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+
+  if (subcommand === "view") {
+    const challenges = getOrResetWeeklyChallenges(user);
+    const timeLeft = getTimeUntilWeeklyReset();
+    const timeStr = formatTimeRemaining(timeLeft);
+    const weekChallenges = getWeeklyChallenges();
+
+    const fields = challenges.map((ch) => {
+      const template = weekChallenges.find((t) => t.id === ch.id);
+      if (!template) return null;
+      const progress = Math.min(ch.progress, template.goal);
+      const bar = "█".repeat(Math.floor((progress / template.goal) * 10)).padEnd(10, "░");
+      const status = ch.claimedAt ? "✅ Claimed" : ch.completed ? "🎉 Complete! Use `/challenges claim`" : `${bar} ${progress}/${template.goal}`;
+      return { name: `${template.icon || "📋"} ${template.name}`, value: `${template.description}\n${status}\nReward: **${formatNumber(template.rewardAura)} aura** + **${formatNumber(template.rewardXp)} XP**`, inline: false };
+    }).filter(Boolean);
+
+    await user.save();
+
+    return interaction.reply(buildEmbedPayload({
+      title: "📋 Weekly Challenges",
+      description: `Complete challenges for bonus rewards!\nResets in **${timeStr}**`,
+      visual: "core-quests.svg",
+      fields,
+    }));
+  }
+
+  if (subcommand === "claim") {
+    const challengeId = interaction.options.getString("challenge");
+    const challenges = getOrResetWeeklyChallenges(user);
+    const result = claimWeeklyChallenge(user, challengeId);
+
+    if (!result) {
+      await user.save();
+      return interaction.reply({ ...buildEmbedPayload({ title: "Cannot Claim", description: "That challenge isn't complete or has already been claimed.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    user.aura += result.aura;
+    user.xp += result.xp;
+    user.stats.weeklyChallengesCompleted = (user.stats.weeklyChallengesCompleted || 0) + 1;
+    await user.save();
+
+    return interaction.reply(buildEmbedPayload({
+      title: "🎉 Challenge Complete!",
+      description: `You claimed **${formatNumber(result.aura)} aura** and **${formatNumber(result.xp)} XP**!`,
+      visual: "core-reward.svg",
+      fields: [
+        { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+        { name: "XP", value: formatNumber(user.xp), inline: true },
+      ],
+    }));
+  }
+}
+
+// ─── Phase 2: Blackjack ───
+
+const activeBlackjackGames = new Map();
+
+async function handleBlackjack(interaction) {
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const bet = interaction.options.getInteger("bet");
+  const maxBet = Math.floor(user.aura * 0.15);
+
+  if (bet > user.aura) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: `You need **${formatNumber(bet)} aura** but only have **${formatNumber(user.aura)}**.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  if (bet > maxBet && maxBet > BLACKJACK_MIN_BET) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Bet Too High", description: `Maximum bet is **${formatNumber(maxBet)} aura** (15% of wallet).`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  const game = startBlackjack(bet);
+  const gameKey = `${interaction.guildId}:${interaction.user.id}`;
+  activeBlackjackGames.set(gameKey, game);
+
+  const playerTotal = calculateHandTotal(game.playerHand);
+
+  if (playerTotal === 21) {
+    activeBlackjackGames.delete(gameKey);
+    const payout = Math.floor(bet * 1.5);
+    user.aura += payout;
+    user.stats.blackjackWins = (user.stats.blackjackWins || 0) + 1;
+    user.stats.blackjackPlayed = (user.stats.blackjackPlayed || 0) + 1;
+    await user.save();
+
+    return interaction.reply(buildEmbedPayload({
+      title: "🃏 BLACKJACK!",
+      description: `Natural 21! You win **${formatNumber(payout)} aura**!`,
+      visual: "core-arcade.svg",
+      fields: [
+        { name: "Your Hand", value: formatHand(game.playerHand), inline: true },
+        { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+      ],
+    }));
+  }
+
+  user.aura -= bet;
+  await user.save();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`bj:hit:${gameKey}`).setLabel("Hit").setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`bj:stand:${gameKey}`).setLabel("Stand").setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`bj:double:${gameKey}`).setLabel("Double Down").setStyle(ButtonStyle.Danger).setDisabled(!game.canDoubleDown || user.aura < bet),
+  );
+
+  return interaction.reply({
+    ...buildEmbedPayload({
+      title: "🃏 Blackjack",
+      description: `Bet: **${formatNumber(bet)} aura**`,
+      visual: "core-arcade.svg",
+      fields: [
+        { name: "Your Hand", value: `${formatHand(game.playerHand)} (${playerTotal})`, inline: true },
+        { name: "Dealer Shows", value: formatHand([game.dealerUpCard]), inline: true },
+      ],
+    }),
+    components: [row],
+  });
+}
+
+async function handleBlackjackButton(interaction) {
+  const parts = interaction.customId.split(":");
+  const action = parts[1];
+  const gameKey = parts.slice(2).join(":");
+
+  const game = activeBlackjackGames.get(gameKey);
+  if (!game) {
+    return interaction.reply({ content: "This blackjack game has expired.", ephemeral: true });
+  }
+
+  const [guildId, userId] = gameKey.split(":");
+  if (interaction.user.id !== userId) {
+    return interaction.reply({ content: "This isn't your game.", ephemeral: true });
+  }
+
+  const user = await getOrCreatePlayer(guildId, userId);
+
+  if (action === "hit") {
+    const hitResult = blackjackHit(game);
+    if (hitResult.busted) {
+      activeBlackjackGames.delete(gameKey);
+      user.stats.blackjackPlayed = (user.stats.blackjackPlayed || 0) + 1;
+      await user.save();
+      return interaction.update({
+        ...buildEmbedPayload({
+          title: "🃏 Bust!",
+          description: `You went over 21. Lost **${formatNumber(game.bet)} aura**.`,
+          visual: "core-arcade.svg",
+          fields: [
+            { name: "Your Hand", value: `${formatHand(hitResult.hand)} (${hitResult.total})`, inline: true },
+            { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+          ],
+        }),
+        components: [],
+      });
+    }
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`bj:hit:${gameKey}`).setLabel("Hit").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`bj:stand:${gameKey}`).setLabel("Stand").setStyle(ButtonStyle.Secondary),
+    );
+
+    return interaction.update({
+      ...buildEmbedPayload({
+        title: "🃏 Blackjack",
+        description: `Bet: **${formatNumber(game.bet)} aura**`,
+        visual: "core-arcade.svg",
+        fields: [
+          { name: "Your Hand", value: `${formatHand(hitResult.hand)} (${hitResult.total})`, inline: true },
+          { name: "Dealer Shows", value: formatHand([game.dealerUpCard]), inline: true },
+        ],
+      }),
+      components: [row],
+    });
+  }
+
+  if (action === "stand") {
+    activeBlackjackGames.delete(gameKey);
+    const result = blackjackStand(game);
+    user.stats.blackjackPlayed = (user.stats.blackjackPlayed || 0) + 1;
+
+    if (result.result === "win" || result.result === "blackjack") {
+      user.aura += game.bet + result.payout;
+      user.stats.blackjackWins = (user.stats.blackjackWins || 0) + 1;
+    } else if (result.result === "push") {
+      user.aura += game.bet;
+    }
+    await user.save();
+
+    const emoji = result.result === "win" ? "🎉" : result.result === "push" ? "🤝" : "😞";
+    const desc = result.result === "win"
+      ? `You win **${formatNumber(result.payout)} aura**!`
+      : result.result === "push"
+      ? "Push! Your bet is returned."
+      : `Dealer wins. Lost **${formatNumber(game.bet)} aura**.`;
+
+    return interaction.update({
+      ...buildEmbedPayload({
+        title: `🃏 ${emoji} ${result.result.charAt(0).toUpperCase() + result.result.slice(1)}`,
+        description: desc,
+        visual: "core-arcade.svg",
+        fields: [
+          { name: "Your Hand", value: `${formatHand(game.playerHand)} (${result.playerTotal})`, inline: true },
+          { name: "Dealer Hand", value: `${formatHand(result.dealerHand)} (${result.dealerTotal})`, inline: true },
+          { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+        ],
+      }),
+      components: [],
+    });
+  }
+
+  if (action === "double") {
+    activeBlackjackGames.delete(gameKey);
+
+    if (user.aura < game.bet) {
+      return interaction.reply({ content: "Not enough aura to double down.", ephemeral: true });
+    }
+
+    user.aura -= game.bet;
+    const result = blackjackDoubleDown(game);
+    user.stats.blackjackPlayed = (user.stats.blackjackPlayed || 0) + 1;
+
+    if (result.result === "win" || result.result === "blackjack") {
+      user.aura += (game.bet * 2) + result.payout;
+      user.stats.blackjackWins = (user.stats.blackjackWins || 0) + 1;
+    } else if (result.result === "push") {
+      user.aura += game.bet * 2;
+    }
+    await user.save();
+
+    const desc = result.result === "win"
+      ? `Double down! You win **${formatNumber(result.payout)} aura**!`
+      : result.result === "push"
+      ? "Push! Your doubled bet is returned."
+      : `Dealer wins the doubled hand. Lost **${formatNumber(game.bet * 2)} aura**.`;
+
+    return interaction.update({
+      ...buildEmbedPayload({
+        title: `🃏 Double Down — ${result.result}`,
+        description: desc,
+        visual: "core-arcade.svg",
+        fields: [
+          { name: "Your Hand", value: `${formatHand(game.playerHand)} (${result.playerTotal})`, inline: true },
+          { name: "Dealer Hand", value: `${formatHand(result.dealerHand)} (${result.dealerTotal})`, inline: true },
+          { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+        ],
+      }),
+      components: [],
+    });
+  }
+}
+
+// ─── Phase 2: Slots ───
+
+async function handleSlots(interaction) {
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const bet = interaction.options.getInteger("bet");
+
+  if (bet > user.aura) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: `You need **${formatNumber(bet)} aura** but only have **${formatNumber(user.aura)}**.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  user.aura -= bet;
+  const result = spinSlots(bet);
+  const payout = result.payout || 0;
+  user.aura += payout;
+  user.stats.slotsPlayed = (user.stats.slotsPlayed || 0) + 1;
+  if (payout > 0) user.stats.slotsWins = (user.stats.slotsWins || 0) + 1;
+  await user.save();
+
+  const title = result.isJackpot ? "🎰 JACKPOT!!!" : payout > bet ? "🎰 Winner!" : payout > 0 ? "🎰 Small Win" : "🎰 No Match";
+  const description = result.isJackpot
+    ? `💰 JACKPOT! You win **${formatNumber(payout)} aura**!`
+    : payout > 0
+    ? `You win **${formatNumber(payout)} aura**!`
+    : `No luck this time. Lost **${formatNumber(bet)} aura**.`;
+
+  return interaction.reply(buildEmbedPayload({
+    title,
+    description: `${formatSlotDisplay(result.reels)}\n\n${description}`,
+    visual: "core-arcade.svg",
+    fields: [
+      { name: "Bet", value: `${formatNumber(bet)} aura`, inline: true },
+      { name: "Payout", value: `${formatNumber(payout)} aura`, inline: true },
+      { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+    ],
+  }));
+}
+
+// ─── Phase 2: Scratch Cards ───
+
+async function handleScratch(interaction) {
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  const cardType = interaction.options.getString("type") || "standard";
+  const isPremium = cardType === "premium";
+  const cost = isPremium ? SCRATCH_CARD_PREMIUM_COST : SCRATCH_CARD_COST;
+
+  if (isPremium && !user.premium?.active) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Premium Only", description: "Premium scratch cards require an active premium subscription.", visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+  if (user.aura < cost) {
+    return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: `You need **${formatNumber(cost)} aura** to buy a scratch card.`, visual: "emblem-alert.svg" }), ephemeral: true });
+  }
+
+  user.aura -= cost;
+  const card = generateScratchCard(isPremium);
+  user.stats.scratchCardsOpened = (user.stats.scratchCardsOpened || 0) + 1;
+
+  if (card.isWinner) {
+    user.aura += card.prize;
+  }
+
+  await user.save();
+
+  const title = card.isWinner ? "🎫 Winner!" : "🎫 Scratch Card";
+  const description = card.isWinner
+    ? `Match found! You win **${formatNumber(card.prize)} aura**!`
+    : "No matches this time. Better luck next time!";
+
+  return interaction.reply(buildEmbedPayload({
+    title,
+    description: `${formatScratchCardDisplay(card.grid)}\n\n${description}`,
+    visual: "core-arcade.svg",
+    fields: [
+      { name: "Cost", value: `${formatNumber(cost)} aura`, inline: true },
+      { name: "Prize", value: card.isWinner ? `${formatNumber(card.prize)} aura` : "None", inline: true },
+      { name: "Wallet", value: `${formatNumber(user.aura)} aura`, inline: true },
+    ],
+  }));
+}
+
+// ─── Phase 2: Cosmetics ───
+
+async function handleCosmetics(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+
+  if (subcommand === "browse") {
+    const owned = getOwnedCosmetics(user);
+    const badges = getEarnedBadges(user);
+    const fields = [];
+
+    if (owned.backgrounds.length) fields.push({ name: "🖼️ Backgrounds", value: owned.backgrounds.join(", "), inline: false });
+    if (owned.badges.length || badges.length) fields.push({ name: "🏅 Badges", value: [...new Set([...owned.badges, ...badges.map((b) => b.id)])].join(", ") || "None", inline: false });
+    if (owned.titles.length) fields.push({ name: "📛 Titles", value: owned.titles.join(", "), inline: false });
+    if (owned.nameColors.length) fields.push({ name: "🎨 Name Colors", value: owned.nameColors.join(", "), inline: false });
+
+    const active = [];
+    if (user.cosmetics?.activeBackground) active.push(`Background: **${user.cosmetics.activeBackground}**`);
+    if (user.cosmetics?.activeBadge) active.push(`Badge: **${user.cosmetics.activeBadge}**`);
+    if (user.cosmetics?.activeTitle) active.push(`Title: **${user.cosmetics.activeTitle}**`);
+    if (user.cosmetics?.activeNameColor) active.push(`Color: **${user.cosmetics.activeNameColor}**`);
+
+    return interaction.reply(buildEmbedPayload({
+      title: "✨ Your Cosmetics",
+      description: active.length ? `Currently equipped:\n${active.join("\n")}` : "No cosmetics equipped. Use `/cosmetics equip` to style your profile!",
+      visual: "core-profile.svg",
+      fields: fields.length ? fields : [{ name: "Empty Collection", value: "Earn cosmetics from achievements, the shop, or seasonal events!", inline: false }],
+    }));
+  }
+
+  if (subcommand === "shop") {
+    const available = getAvailableCosmetics(user);
+    const fields = [];
+
+    const bgList = Object.values(BACKGROUNDS).filter((bg) => bg.source === "shop" && bg.price > 0).slice(0, 6);
+    if (bgList.length) fields.push({ name: "🖼️ Backgrounds", value: bgList.map((bg) => `**${bg.name}** — ${formatNumber(bg.price)} aura (\`${bg.id}\`)`).join("\n"), inline: false });
+
+    const colorList = Object.values(NAME_COLORS).slice(0, 6);
+    if (colorList.length) fields.push({ name: "🎨 Name Colors", value: colorList.map((c) => `**${c.name}** — ${formatNumber(c.price)} aura${c.premiumOnly ? " 👑" : ""} (\`${c.id}\`)`).join("\n"), inline: false });
+
+    return interaction.reply(buildEmbedPayload({
+      title: "🛍️ Cosmetics Shop",
+      description: "Buy cosmetics with `/cosmetics equip [slot] [item]`\n👑 = Premium only",
+      visual: "core-shop.svg",
+      fields,
+    }));
+  }
+
+  if (subcommand === "equip") {
+    const slot = interaction.options.getString("slot");
+    const itemId = interaction.options.getString("item");
+    const result = equipCosmetic(user, slot, itemId);
+
+    if (result.error) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Cannot Equip", description: result.error, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    await user.save();
+    return interaction.reply(buildEmbedPayload({
+      title: "✨ Cosmetic Equipped!",
+      description: `Equipped **${itemId}** as your ${slot}.`,
+      visual: "core-profile.svg",
+    }));
+  }
+
+  if (subcommand === "unequip") {
+    const slot = interaction.options.getString("slot");
+    unequipCosmetic(user, slot);
+    await user.save();
+    return interaction.reply(buildEmbedPayload({
+      title: "Cosmetic Removed",
+      description: `Removed your ${slot} cosmetic.`,
+      visual: "core-profile.svg",
+    }));
+  }
+}
+
+// ─── Phase 2: Pet System ───
+
+async function handlePet(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+
+  if (subcommand === "adopt") {
+    const speciesId = interaction.options.getString("species");
+    const petName = interaction.options.getString("name");
+    const result = adoptPet(user, speciesId, petName);
+
+    if (result.error) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Cannot Adopt", description: result.error, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    await user.save();
+    const species = PET_SPECIES[speciesId];
+    return interaction.reply(buildEmbedPayload({
+      title: `${species.emoji} Pet Adopted!`,
+      description: `Welcome **${petName}** the **${species.name}** to your party!\n${species.description}`,
+      visual: "core-pet.svg",
+      fields: [
+        { name: "Strength", value: String(species.baseStats.strength), inline: true },
+        { name: "Luck", value: String(species.baseStats.luck), inline: true },
+        { name: "Mining", value: String(species.baseStats.mining), inline: true },
+        { name: "Gardening", value: String(species.baseStats.gardening), inline: true },
+      ],
+    }));
+  }
+
+  if (subcommand === "status") {
+    if (!user.pet?.id) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "No Pet", description: "You don't have a pet yet! Use `/pet adopt` to get one.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    applyPetDecay(user);
+    const status = getPetStatusInfo(user);
+    const bonuses = getPetBonuses(user);
+    const species = PET_SPECIES[user.pet.id];
+    await user.save();
+
+    const happinessBar = "❤️".repeat(Math.ceil(user.pet.happiness / 20)).padEnd(5, "🖤");
+    const hungerBar = "🍖".repeat(Math.ceil(user.pet.hunger / 20)).padEnd(5, "💀");
+
+    return interaction.reply(buildEmbedPayload({
+      title: `${species?.emoji || "🐾"} ${user.pet.name}`,
+      description: `**${species?.name || "Pet"}** — Level ${user.pet.level} ${status.stageName || "Baby"}\n${status.evolutionProgress || ""}`,
+      visual: "core-pet.svg",
+      fields: [
+        { name: "Happiness", value: `${happinessBar} ${user.pet.happiness}/100`, inline: true },
+        { name: "Hunger", value: `${hungerBar} ${user.pet.hunger}/100`, inline: true },
+        { name: "Pet XP", value: `${user.pet.xp}/${status.xpToNextLevel || "MAX"}`, inline: true },
+        { name: "Strength Bonus", value: `+${bonuses.strength.toFixed(1)}`, inline: true },
+        { name: "Luck Bonus", value: `+${bonuses.luck.toFixed(1)}`, inline: true },
+        { name: "Mining Bonus", value: `+${bonuses.mining.toFixed(1)}`, inline: true },
+      ],
+    }));
+  }
+
+  if (subcommand === "feed") {
+    if (!user.pet?.id) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "No Pet", description: "You don't have a pet yet!", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    const foodId = interaction.options.getString("food");
+    const food = PET_FOODS[foodId];
+    if (!food) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Unknown Food", description: "That food doesn't exist.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    if (food.premiumOnly && !user.premium?.active) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Premium Only", description: "This food requires premium.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    if (user.aura < food.cost) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Not Enough Aura", description: `You need **${formatNumber(food.cost)} aura**.`, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    applyPetDecay(user);
+    const result = feedPet(user, foodId);
+    user.aura -= food.cost;
+    await user.save();
+
+    return interaction.reply(buildEmbedPayload({
+      title: `${food.emoji} Fed ${user.pet.name}!`,
+      description: `Fed **${food.name}** to ${user.pet.name}.`,
+      visual: "core-pet.svg",
+      fields: [
+        { name: "Hunger", value: `${user.pet.hunger}/100`, inline: true },
+        { name: "Happiness", value: `${user.pet.happiness}/100`, inline: true },
+        { name: "Cost", value: `${formatNumber(food.cost)} aura`, inline: true },
+      ],
+    }));
+  }
+
+  if (subcommand === "play") {
+    if (!user.pet?.id) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "No Pet", description: "You don't have a pet yet!", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    applyPetDecay(user);
+    const result = playWithPet(user);
+
+    if (result.error) {
+      await user.save();
+      return interaction.reply({ ...buildEmbedPayload({ title: "Can't Play Yet", description: result.error, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    await user.save();
+    return interaction.reply(buildEmbedPayload({
+      title: `🎾 Played with ${user.pet.name}!`,
+      description: `${user.pet.name} is happy!`,
+      visual: "core-pet.svg",
+      fields: [
+        { name: "Happiness", value: `${user.pet.happiness}/100`, inline: true },
+      ],
+    }));
+  }
+
+  if (subcommand === "train") {
+    if (!user.pet?.id) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "No Pet", description: "You don't have a pet yet!", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    const stat = interaction.options.getString("stat");
+    applyPetDecay(user);
+    const result = trainPet(user, stat);
+
+    if (result.error) {
+      await user.save();
+      return interaction.reply({ ...buildEmbedPayload({ title: "Can't Train Yet", description: result.error, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    const progression = checkPetProgression(user);
+    user.stats.petTrains = (user.stats.petTrains || 0) + 1;
+    await user.save();
+
+    const fields = [
+      { name: "Pet XP", value: `+${result.xpGained || 50}`, inline: true },
+      { name: `${stat}`, value: `+1 → ${user.pet.stats[stat]}`, inline: true },
+    ];
+    if (progression.leveledUp) fields.push({ name: "Level Up!", value: `Level ${user.pet.level}`, inline: true });
+    if (progression.evolved) fields.push({ name: "🎆 EVOLVED!", value: `Stage ${user.pet.stage}!`, inline: true });
+
+    return interaction.reply(buildEmbedPayload({
+      title: `🏋️ Trained ${user.pet.name}!`,
+      description: `Trained **${stat}** stat.`,
+      visual: "core-pet.svg",
+      fields,
+    }));
+  }
+
+  if (subcommand === "rename") {
+    if (!user.pet?.id) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "No Pet", description: "You don't have a pet yet!", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    const newName = interaction.options.getString("name");
+    const oldName = user.pet.name;
+    renamePet(user, newName);
+    await user.save();
+
+    return interaction.reply(buildEmbedPayload({
+      title: "📝 Pet Renamed",
+      description: `**${oldName}** is now known as **${newName}**!`,
+      visual: "core-pet.svg",
+    }));
+  }
+}
+
+// ─── Phase 2: Notifications ───
+
+async function handleNotifications(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+
+  if (subcommand === "status") {
+    const prefs = user.reminders || {};
+    const settings = [
+      `🔔 Rob alerts: **${prefs.notifyOnRob !== false ? "ON" : "OFF"}**`,
+      `🔔 Trade offers: **${prefs.notifyOnTrade !== false ? "ON" : "OFF"}**`,
+      `🔔 Clan wars: **${prefs.notifyOnClanWar !== false ? "ON" : "OFF"}**`,
+      `🔔 Server events: **${prefs.notifyOnServerEvent ? "ON" : "OFF"}**`,
+      `🔔 Pet hungry: **${prefs.notifyOnPetHungry !== false ? "ON" : "OFF"}**`,
+      `🔔 Weekly reset: **${prefs.notifyOnWeeklyReset !== false ? "ON" : "OFF"}**`,
+      `🔔 Daily shop: **${prefs.notifyOnDailyShop ? "ON" : "OFF"}**`,
+    ];
+
+    return interaction.reply(buildEmbedPayload({
+      title: "🔔 Notification Settings",
+      description: `Toggle with \`/notifications toggle <type>\`\n\n${settings.join("\n")}`,
+      visual: "emblem-help.svg",
+    }));
+  }
+
+  if (subcommand === "toggle") {
+    const type = interaction.options.getString("type");
+    if (!user.reminders) user.reminders = {};
+    const currentValue = user.reminders[type];
+    const defaultOn = ["notifyOnRob", "notifyOnTrade", "notifyOnClanWar", "notifyOnPetHungry", "notifyOnWeeklyReset"];
+    const isCurrentlyOn = defaultOn.includes(type) ? currentValue !== false : Boolean(currentValue);
+    user.reminders[type] = !isCurrentlyOn;
+    user.markModified("reminders");
+    await user.save();
+
+    const labels = { notifyOnRob: "Rob alerts", notifyOnTrade: "Trade offers", notifyOnClanWar: "Clan wars", notifyOnServerEvent: "Server events", notifyOnPetHungry: "Pet hungry", notifyOnWeeklyReset: "Weekly reset", notifyOnDailyShop: "Daily shop" };
+    return interaction.reply(buildEmbedPayload({
+      title: "🔔 Notification Updated",
+      description: `**${labels[type] || type}** is now **${!isCurrentlyOn ? "ON" : "OFF"}**.`,
+      visual: "emblem-help.svg",
+    }));
+  }
+}
+
+// ─── Phase 3: Battle Pass ───
+
+async function handleBattlePass(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+  checkBattlePassReset(user);
+
+  if (subcommand === "view") {
+    const season = getBattlePassSeason();
+    const progress = getBattlePassProgress(user);
+    const filled = Math.round((progress.currentTier / progress.maxTier) * 10);
+    const progressBar = "▓".repeat(filled) + "░".repeat(10 - filled);
+
+    const nextXpLine = progress.nextTierXp
+      ? `**${formatNumber(progress.xpInCurrentTier)}** / **${formatNumber(progress.xpNeededForNext)}** XP to Tier ${progress.currentTier + 1}`
+      : "✅ MAX TIER REACHED!";
+
+    const unclaimedLine = [];
+    if (progress.unclaimedFree.length) unclaimedLine.push(`${progress.unclaimedFree.length} free`);
+    if (progress.unclaimedPaid.length) unclaimedLine.push(`${progress.unclaimedPaid.length} paid`);
+
+    return interaction.reply(buildEmbedPayload({
+      title: `🎖️ Battle Pass — ${season.name}`,
+      description: [
+        `Tier: **${progress.currentTier}** / ${progress.maxTier} ${progressBar}`,
+        nextXpLine,
+        `Total XP: **${formatNumber(progress.totalXp)}**`,
+        `Track: **${progress.paid ? "✨ Premium" : "Free"}**`,
+        progress.paid ? "" : `\n🔓 Unlock paid track: \`/battlepass buy\` (${formatNumber(BATTLE_PASS_PRICE_AURA)} aura)`,
+        unclaimedLine.length ? `\n📦 Unclaimed rewards: ${unclaimedLine.join(", ")}` : "",
+        `\n⏰ ${season.daysRemaining} days remaining in season`,
+      ].filter(Boolean).join("\n"),
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "buy") {
+    // Check if Elite members get it free
+    const plan = getUserPremiumPlan(user);
+    if (plan?.battlePassIncluded && !user.battlePass.paid) {
+      grantBattlePassPaid(user);
+      await user.save();
+      return interaction.reply(buildEmbedPayload({
+        title: "🎖️ Battle Pass Unlocked!",
+        description: "Your **Elite** subscription includes the Battle Pass for free!",
+        visual: "emblem-success.svg",
+      }));
+    }
+
+    const result = purchaseBattlePass(user);
+    if (result.error) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Battle Pass", description: result.error, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    await user.save();
+    return interaction.reply(buildEmbedPayload({
+      title: "🎖️ Battle Pass Purchased!",
+      description: `You unlocked the **Premium Track** for this season!\nCost: **${formatNumber(BATTLE_PASS_PRICE_AURA)} aura**\nClaim your rewards with \`/battlepass claim <tier> paid\``,
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "claim") {
+    const tier = interaction.options.getInteger("tier");
+    const track = interaction.options.getString("track") || "free";
+
+    const result = claimBattlePassTier(user, tier, track);
+    if (result.error) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Battle Pass", description: result.error, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    const summary = applyBattlePassRewards(user, result.rewards);
+    await syncRank(user);
+    await user.save();
+
+    return interaction.reply(buildEmbedPayload({
+      title: `🎖️ Tier ${tier} (${track}) Claimed!`,
+      description: summary.join("\n"),
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "claim-all") {
+    const progress = getBattlePassProgress(user);
+    const allUnclaimed = [...progress.unclaimedFree.map(t => ({ tier: t, track: "free" })), ...progress.unclaimedPaid.map(t => ({ tier: t, track: "paid" }))];
+
+    if (!allUnclaimed.length) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Battle Pass", description: "No unclaimed rewards!", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    const allSummary = [];
+    for (const { tier, track } of allUnclaimed) {
+      const result = claimBattlePassTier(user, tier, track);
+      if (!result.error) {
+        const summary = applyBattlePassRewards(user, result.rewards);
+        allSummary.push(`**Tier ${tier} (${track})**: ${summary.join(", ")}`);
+      }
+    }
+    await syncRank(user);
+    await user.save();
+
+    return interaction.reply(buildEmbedPayload({
+      title: `🎖️ Claimed ${allSummary.length} Rewards!`,
+      description: allSummary.join("\n") || "Nothing to claim.",
+      visual: "emblem-success.svg",
+    }));
+  }
+}
+
+// ─── Phase 3: Server Premium ───
+
+async function handleServerPremium(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+
+  if (subcommand === "status") {
+    const status = await getServerPremiumStatus(interaction.guildId);
+    if (!status.active) {
+      return interaction.reply(buildEmbedPayload({
+        title: "🏢 Server Premium",
+        description: `This server doesn't have premium.\n\nGet server premium at: ${PREMIUM_PURCHASE_URL}\n\nUse \`/server-premium tiers\` to see what's available.`,
+        visual: "emblem-alert.svg",
+      }));
+    }
+
+    const tier = status.tier;
+    return interaction.reply(buildEmbedPayload({
+      title: `🏢 Server Premium — ${tier.label}`,
+      description: [
+        `**${tier.priceLabel}**`,
+        `XP Multiplier: **${tier.xpMultiplier}x** for all members`,
+        `Aura Multiplier: **${tier.auraMultiplier}x**`,
+        `Auto-role on rank up: **${tier.autoRoleOnRankUp ? "✅" : "❌"}**`,
+        `Custom embed color: **${tier.customEmbedColor ? "✅" : "❌"}**`,
+        `Custom welcome message: **${tier.customWelcomeMessage ? "✅" : "❌"}**`,
+        `Event cooldown: **-${tier.eventCooldownReduction * 100}%**`,
+        `Custom shop items: **${tier.maxCustomShopItems || "None"}**`,
+        `Web leaderboard: **${tier.serverLeaderboardWeb ? "✅" : "❌"}**`,
+        "",
+        `Expires: <t:${Math.floor(new Date(status.expiresAt).getTime() / 1000)}:R>`,
+      ].join("\n"),
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "tiers") {
+    const tiers = Object.values(SERVER_PREMIUM_TIERS);
+    const lines = tiers.map((tier) => [
+      `### ${tier.label} — ${tier.priceLabel}`,
+      `• XP: **${tier.xpMultiplier}x** | Aura: **${tier.auraMultiplier}x**`,
+      `• Events **${tier.eventCooldownReduction * 100}% faster**`,
+      `• Custom shop items: **${tier.maxCustomShopItems}**`,
+      `• Web leaderboard: **${tier.serverLeaderboardWeb ? "✅" : "❌"}** | Priority: **${tier.priorityResponse ? "✅" : "❌"}**`,
+    ].join("\n")).join("\n\n");
+
+    return interaction.reply(buildEmbedPayload({
+      title: "🏢 Server Premium Tiers",
+      description: `${lines}\n\nGet server premium at: ${PREMIUM_PURCHASE_URL}`,
+      visual: "emblem-help.svg",
+    }));
+  }
+}
+
+// ─── Phase 4: Auction House ───
+
+async function handleAuction(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+
+  if (subcommand === "list") {
+    const itemId = interaction.options.getString("item");
+    const quantity = interaction.options.getInteger("quantity") || 1;
+    const price = interaction.options.getInteger("price");
+    const buyNowPrice = interaction.options.getInteger("buynow") || null;
+    const duration = interaction.options.getString("duration") || "medium";
+
+    const result = createListing(user, { itemType: "material", itemId, quantity, startingPrice: price, buyNowPrice, duration });
+    if (result.error) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Auction", description: result.error, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    const listing = await saveListing(result);
+    await user.save();
+
+    return interaction.reply(buildEmbedPayload({
+      title: "📋 Listed on Auction House!",
+      description: `**${itemId}** x${quantity} listed for **${formatNumber(price)} aura** starting bid.\n${buyNowPrice ? `Buy Now: **${formatNumber(buyNowPrice)} aura**\n` : ""}Duration: **${AUCTION_DURATIONS[duration]}h**\nListing ID: \`${listing._id}\``,
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "search") {
+    const category = interaction.options.getString("category") || null;
+    const sort = interaction.options.getString("sort") || "ending_soon";
+    const results = await searchListings({ itemType: category, sortBy: sort, limit: 10 });
+
+    if (!results.listings.length) {
+      return interaction.reply(buildEmbedPayload({ title: "🏪 Auction House", description: "No active listings found.", visual: "emblem-alert.svg" }));
+    }
+
+    const lines = results.listings.map((l, i) => {
+      const display = formatListingDisplay(l);
+      return `**${i + 1}.** ${display.title} — ${display.description}`;
+    });
+
+    return interaction.reply(buildEmbedPayload({
+      title: `🏪 Auction House (${results.total} listings)`,
+      description: lines.join("\n"),
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "bid") {
+    const listingId = interaction.options.getString("listing");
+    const amount = interaction.options.getInteger("amount");
+
+    if (user.aura < amount) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Auction", description: "Not enough aura.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    user.aura -= amount;
+    await user.save();
+    const result = await placeBid(interaction.user.id, interaction.guildId, listingId, amount);
+    if (result.error) {
+      user.aura += amount;
+      await user.save();
+      return interaction.reply({ ...buildEmbedPayload({ title: "Auction", description: result.error, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    return interaction.reply(buildEmbedPayload({
+      title: "💰 Bid Placed!",
+      description: `You bid **${formatNumber(amount)} aura** on listing \`${listingId}\`.`,
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "buy") {
+    const listingId = interaction.options.getString("listing");
+    const result = await buyNow(interaction.user.id, interaction.guildId, listingId);
+    if (result.error) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Auction", description: result.error, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    return interaction.reply(buildEmbedPayload({
+      title: "🛒 Purchased!",
+      description: `You bought the item for **${formatNumber(result.price)} aura**.`,
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "my-listings") {
+    const listings = await getUserListings(interaction.user.id);
+    if (!listings.length) {
+      return interaction.reply(buildEmbedPayload({ title: "📋 Your Listings", description: "You have no active listings.", visual: "emblem-alert.svg" }));
+    }
+    const lines = listings.map((l, i) => `**${i + 1}.** ${l.itemId} x${l.quantity} — ${formatNumber(l.currentBid || l.startingPrice)} aura (${l.bidCount} bids)`);
+    return interaction.reply(buildEmbedPayload({ title: "📋 Your Listings", description: lines.join("\n"), visual: "emblem-success.svg" }));
+  }
+
+  if (subcommand === "cancel") {
+    const listingId = interaction.options.getString("listing");
+    const result = await cancelListing(interaction.user.id, listingId);
+    if (result.error) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Auction", description: result.error, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    return interaction.reply(buildEmbedPayload({ title: "❌ Listing Cancelled", description: "Item returned to your inventory.", visual: "emblem-success.svg" }));
+  }
+}
+
+// ─── Phase 4: Referral System ───
+
+async function handleReferral(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+
+  if (subcommand === "create") {
+    const customCode = interaction.options.getString("code") || null;
+    const result = await createReferralCode(interaction.user.id, customCode);
+    if (result.error) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Referral", description: result.error, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    return interaction.reply(buildEmbedPayload({
+      title: "🔗 Referral Code Created!",
+      description: `Your code: **\`${result.code}\`**\n\nShare it with friends! You earn **1,000 aura** per referral.\nThey get **500 aura** when they use it.\n\nUse \`/referral stats\` to track your referrals.`,
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "use") {
+    const code = interaction.options.getString("code");
+    const result = await useReferralCode(interaction.user.id, interaction.guildId, code);
+    if (result.error) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Referral", description: result.error, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+    user.aura += result.bonusAura;
+    user.referredBy = code;
+    await user.save();
+    return interaction.reply(buildEmbedPayload({
+      title: "🎁 Referral Code Used!",
+      description: `You received **${formatNumber(result.bonusAura)} aura** as a welcome bonus!\nReferred by: <@${result.codeOwner}>`,
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "stats") {
+    const stats = await getReferralStats(interaction.user.id);
+    if (!stats.code) {
+      return interaction.reply(buildEmbedPayload({
+        title: "🔗 Referral Stats",
+        description: "You don't have a referral code yet.\nCreate one with `/referral create`.",
+        visual: "emblem-alert.svg",
+      }));
+    }
+
+    const milestoneLines = REFERRAL_MILESTONES.map(m => {
+      const achieved = stats.code.uses >= m.uses;
+      return `${achieved ? "✅" : "⬜"} **${m.uses} referrals** — ${formatNumber(m.reward.aura)} aura${m.reward.title ? ` + "${m.reward.title}"` : ""}`;
+    });
+
+    return interaction.reply(buildEmbedPayload({
+      title: "🔗 Referral Stats",
+      description: [
+        `Code: **\`${stats.code.code}\`**`,
+        `Uses: **${stats.code.uses}**`,
+        `Total earned: **${formatNumber(stats.code.totalAuraEarned)} aura**`,
+        "",
+        "**Milestones:**",
+        ...milestoneLines,
+      ].join("\n"),
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "leaderboard") {
+    const top = await getTopReferrers(10);
+    if (!top.length) {
+      return interaction.reply(buildEmbedPayload({ title: "🔗 Top Referrers", description: "No referrals yet!", visual: "emblem-alert.svg" }));
+    }
+    const lines = top.map((r, i) => `**${i + 1}.** <@${r.ownerId}> — ${r.uses} referrals (${formatNumber(r.totalAuraEarned)} aura earned)`);
+    return interaction.reply(buildEmbedPayload({ title: "🔗 Top Referrers", description: lines.join("\n"), visual: "emblem-success.svg" }));
+  }
+}
+
+// ─── Phase 4: Global Events ───
+
+async function handleGlobalEvent(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+
+  if (subcommand === "status") {
+    const status = getGlobalEventStatus();
+    if (!status.active) {
+      const nextLine = status.nextPossible ? `Next event possible: <t:${Math.floor(status.nextPossible.getTime() / 1000)}:R>` : "Next event could start any time!";
+      return interaction.reply(buildEmbedPayload({
+        title: "🌍 Global Events",
+        description: `No active global event right now.\n\n${nextLine}`,
+        visual: "emblem-alert.svg",
+      }));
+    }
+
+    const ev = status.event;
+    const effectLines = Object.entries(status.effects)
+      .filter(([, v]) => v !== 1)
+      .map(([k, v]) => `• **${k.replace(/([A-Z])/g, " $1").trim()}**: ${v}x`);
+
+    return interaction.reply(buildEmbedPayload({
+      title: `${ev.icon} ${ev.name}`,
+      description: [
+        ev.description,
+        "",
+        "**Active Effects:**",
+        ...effectLines,
+        "",
+        `⏰ Ends in: **${status.timeRemaining}**`,
+        `👥 Participants: **${status.participantCount}**`,
+      ].join("\n"),
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "claim") {
+    const result = claimGlobalEventReward(interaction.user.id);
+    if (result.error) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Global Event", description: result.error, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+    user.aura += result.rewards.aura;
+    user.xp += result.rewards.xp;
+    if (result.rewards.crate) {
+      user.crates.set(result.rewards.crate, (user.crates.get(result.rewards.crate) || 0) + 1);
+    }
+    await syncRank(user);
+    await user.save();
+
+    const rewardLines = [`+**${formatNumber(result.rewards.aura)}** aura`, `+**${formatNumber(result.rewards.xp)}** XP`];
+    if (result.rewards.crate) rewardLines.push(`+1 ${result.rewards.crate} crate 🎁`);
+
+    return interaction.reply(buildEmbedPayload({
+      title: "🎁 Event Reward Claimed!",
+      description: `${rewardLines.join("\n")}\n\nClaims remaining: **${result.claimsRemaining}**`,
+      visual: "emblem-success.svg",
+    }));
+  }
+}
+
+// ─── Phase 4: AI NPC Chat ───
+
+async function handleNPC(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+
+  if (subcommand === "list") {
+    const npcs = getAvailableNPCs();
+    const lines = npcs.map(n => `${n.emoji} **${n.name}** — \`/npc chat ${n.id}\``);
+    const remaining = getRemainingUses(interaction.user.id);
+    return interaction.reply(buildEmbedPayload({
+      title: "🤖 NPCs",
+      description: `${lines.join("\n")}\n\nDaily chats remaining: **${remaining}**`,
+      visual: "emblem-help.svg",
+    }));
+  }
+
+  if (subcommand === "chat") {
+    const npcId = interaction.options.getString("npc");
+    const message = interaction.options.getString("message");
+
+    await interaction.deferReply();
+    const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+    const result = await chatWithNPC(interaction.user.id, npcId, message, user);
+
+    if (result.error) {
+      return interaction.editReply(buildEmbedPayload({ title: "NPC", description: result.error, visual: "emblem-alert.svg" }));
+    }
+
+    return interaction.editReply(buildEmbedPayload({
+      title: `${result.npc.emoji} ${result.npc.name}`,
+      description: result.text,
+      visual: "emblem-success.svg",
+      footer: `${getRemainingUses(interaction.user.id)} chats remaining today`,
+    }));
+  }
+}
+
+// ─── Phase 5: Community Voting ───
+
+async function handleVotePoll(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+
+  if (subcommand === "create") {
+    const title = interaction.options.getString("title");
+    const optionsRaw = interaction.options.getString("options");
+    const options = optionsRaw.split("|").map(o => o.trim()).filter(Boolean);
+
+    const result = createPoll({ title, options, creatorId: interaction.user.id });
+    if (result.error) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Poll", description: result.error, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    return interaction.reply(buildEmbedPayload({
+      title: `🗳️ New Poll: ${result.poll.title}`,
+      description: result.poll.options.map((o, i) => `**${i + 1}.** ${o.label}`).join("\n") + `\n\nVote with \`/vote-poll vote ${result.poll.id} <option>\`\nEnds <t:${Math.floor(result.poll.endsAt.getTime() / 1000)}:R>`,
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "vote") {
+    const pollId = interaction.options.getString("poll");
+    const option = interaction.options.getInteger("option") - 1;
+
+    const result = castVote(interaction.user.id, pollId, option);
+    if (result.error) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Poll", description: result.error, visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    // Grant voting reward
+    const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+    user.aura += VOTER_REWARD_AURA;
+    await user.save();
+
+    return interaction.reply(buildEmbedPayload({
+      title: "🗳️ Vote Cast!",
+      description: `You voted for **${result.option}**!\nTotal votes: **${result.totalVotes}**\n+**${VOTER_REWARD_AURA} aura** for participating!`,
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "results") {
+    const pollId = interaction.options.getString("poll");
+    const results = getPollResults(pollId);
+    if (!results) {
+      return interaction.reply({ ...buildEmbedPayload({ title: "Poll", description: "Poll not found.", visual: "emblem-alert.svg" }), ephemeral: true });
+    }
+
+    const lines = results.results.map(r => `${formatVoteBar(r.percentage)} **${r.label}** — ${r.votes} votes (${r.percentage}%)`);
+    const statusLine = results.isActive ? `⏰ Ends <t:${Math.floor(results.endsAt.getTime() / 1000)}:R>` : `✅ Ended — Winner: **${results.winner?.label}**`;
+
+    return interaction.reply(buildEmbedPayload({
+      title: `🗳️ ${results.title}`,
+      description: `${lines.join("\n")}\n\nTotal votes: **${results.totalVotes}**\n${statusLine}`,
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "list") {
+    const polls = getActivePolls();
+    if (!polls.length) {
+      return interaction.reply(buildEmbedPayload({ title: "🗳️ Active Polls", description: "No active polls right now.\nCreate one with `/vote-poll create`.", visual: "emblem-alert.svg" }));
+    }
+    const lines = polls.map((p, i) => `**${i + 1}.** ${p.title} — ${p.totalVotes} votes — Ends <t:${Math.floor(p.endsAt.getTime() / 1000)}:R>\n   ID: \`${p.id}\``);
+    return interaction.reply(buildEmbedPayload({ title: "🗳️ Active Polls", description: lines.join("\n\n"), visual: "emblem-success.svg" }));
+  }
+}
+
+// ─── Phase 5: Language ───
+
+async function handleLanguage(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+
+  if (subcommand === "set") {
+    const locale = interaction.options.getString("locale");
+    setUserLocale(interaction.user.id, locale);
+
+    // Persist to user document
+    const user = await getOrCreatePlayer(interaction.guildId, interaction.user.id);
+    user.locale = locale;
+    await user.save();
+
+    const locales = getAvailableLocales();
+    const chosen = locales.find(l => l.code === locale);
+    return interaction.reply(buildEmbedPayload({
+      title: tu(interaction.user.id, "commands.language.changed", { language: chosen?.name || locale }),
+      description: `${chosen?.flag || "🏳️"} ${chosen?.name || locale}`,
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "list") {
+    const locales = getAvailableLocales();
+    const lines = locales.map(l => `${l.flag} **${l.name}** (\`${l.code}\`) ${l.loaded ? "✅" : "❌"}`);
+    const currentLocale = getUserLocale(interaction.user.id);
+    const current = locales.find(l => l.code === currentLocale);
+
+    return interaction.reply(buildEmbedPayload({
+      title: "🌐 Languages",
+      description: `Current: ${current?.flag || ""} **${current?.name || "English"}**\n\n${lines.join("\n")}\n\nChange with \`/language set <locale>\``,
+      visual: "emblem-help.svg",
+    }));
+  }
+}
+
+// ─── Phase 5: Season Info ───
+
+async function handleSeasonInfo(interaction) {
+  const season = getSeasonInfo();
+  const seasonData = getCurrentSeason();
+  const multipliers = getSeasonalMultipliers();
+  const items = getSeasonalShopItems();
+
+  const boostLines = [];
+  if (multipliers.xpEventName) boostLines.push(`⭐ **${multipliers.xpEventName}**: ${multipliers.xp}x XP`);
+  if (multipliers.auraEventName) boostLines.push(`💰 **${multipliers.auraEventName}**: ${multipliers.aura}x Aura`);
+
+  const itemLines = items.slice(0, 5).map(i => `• **${i.name}** — ${formatNumber(i.price)} aura`);
+
+  return interaction.reply(buildEmbedPayload({
+    title: `${season.emoji} ${season.name}`,
+    description: [
+      `**${season.daysRemaining} days** remaining this season`,
+      "",
+      boostLines.length ? "**Active Boosts:**\n" + boostLines.join("\n") : "No seasonal boosts active.",
+      "",
+      "**Seasonal Shop Items:**",
+      ...itemLines,
+      items.length > 5 ? `...and ${items.length - 5} more` : "",
+      "",
+      `Seasonal backgrounds: ${seasonData.backgrounds?.join(", ") || "None"}`,
+      `Seasonal titles: ${seasonData.titles?.join(", ") || "None"}`,
+    ].join("\n"),
+    visual: "emblem-success.svg",
+  }));
+}
+
+// ─── Phase 5: Analytics (Admin) ───
+
+async function handleAnalytics(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+
+  if (subcommand === "daily") {
+    const snapshot = getDailySnapshot();
+    return interaction.reply(buildEmbedPayload({
+      title: "📊 Daily Analytics",
+      description: [
+        `**${snapshot.date}**`,
+        `Commands: **${formatNumber(snapshot.commands)}**`,
+        `Unique users: **${formatNumber(snapshot.uniqueUsers)}**`,
+        `New users: **${snapshot.newUsers}**`,
+        `Aura earned: **${formatNumber(snapshot.auraEarned)}**`,
+        `Aura spent: **${formatNumber(snapshot.auraSpent)}**`,
+        `Net flow: **${formatNumber(snapshot.netAuraFlow)}**`,
+        `Casino house edge: **${formatNumber(snapshot.casinoHouseEdge)}**`,
+        `Premium purchases: **${snapshot.premiumPurchases}**`,
+        `Referrals: **${snapshot.referralUses}**`,
+      ].join("\n"),
+      visual: "emblem-success.svg",
+    }));
+  }
+
+  if (subcommand === "full") {
+    await interaction.deferReply({ ephemeral: true });
+    const report = await getFullAnalyticsReport();
+
+    const eng = report.engagement;
+    const econ = report.economy;
+    const rev = report.revenue;
+
+    return interaction.editReply(buildEmbedPayload({
+      title: "📊 Full Analytics Report",
+      description: [
+        "**📈 Engagement**",
+        `DAU: **${eng.dau}** | WAU: **${eng.wau}** | MAU: **${eng.mau}**`,
+        `Stickiness (DAU/MAU): **${eng.stickiness}**`,
+        "",
+        "**💰 Economy**",
+        `Total players: **${formatNumber(econ.totalPlayers || 0)}**`,
+        `Money supply: **${formatNumber(econ.moneySupply || 0)}** aura`,
+        `Premium rate: **${econ.premiumRate || "0%"}**`,
+        `Pet adoption: **${econ.petAdoptionRate || "0%"}**`,
+        `Battle Pass: **${econ.battlePassRate || "0%"}**`,
+        `Wealth: **${econ.wealthConcentration || "N/A"}**`,
+        "",
+        "**💵 Revenue**",
+        `Active premium: **${rev.activePremium}**`,
+        `Active Battle Passes: **${rev.activeBattlePasses}**`,
+        `Estimated MRR: **$${rev.estimatedMRR?.toFixed(2) || "0.00"}**`,
+        `Total referrals: **${rev.totalReferrals}**`,
+      ].join("\n"),
+      visual: "emblem-success.svg",
+    }));
+  }
+}
+
 function buildCommands() {
   return [
     new SlashCommandBuilder().setName("help").setDescription("Browse game commands by category.").addStringOption((option) => option.setName("category").setDescription("Open one help category").addChoices(...HELP_SECTIONS.map((section) => ({ name: section.name, value: section.id })))),
@@ -12359,6 +14092,83 @@ function buildCommands() {
     new SlashCommandBuilder().setName("premium-chest").setDescription("Open your premium recurring loot chest."),
     new SlashCommandBuilder().setName("clan").setDescription("Manage your clan.").addSubcommand((sub) => sub.setName("create").setDescription("Create a clan for 50,000 aura.").addStringOption((option) => option.setName("name").setDescription("Clan name").setRequired(true))).addSubcommand((sub) => sub.setName("join").setDescription("Join a clan by code.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("apply").setDescription("Send a join request for approval.").addStringOption((option) => option.setName("code").setDescription("Clan code").setRequired(true))).addSubcommand((sub) => sub.setName("leave").setDescription("Leave your clan.")).addSubcommand((sub) => sub.setName("info").setDescription("View your clan.")).addSubcommand((sub) => sub.setName("members").setDescription("List clan members.")).addSubcommand((sub) => sub.setName("log").setDescription("View recent clan activity.")).addSubcommand((sub) => sub.setName("kick").setDescription("Owner-only member removal.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true))).addSubcommand((sub) => sub.setName("approve").setDescription("Owner or officer request approval.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("decline").setDescription("Owner or officer reject an applicant.").addUserOption((option) => option.setName("user").setDescription("Applicant").setRequired(true))).addSubcommand((sub) => sub.setName("role").setDescription("Owner-only officer management.").addUserOption((option) => option.setName("user").setDescription("Clan member").setRequired(true)).addStringOption((option) => option.setName("role").setDescription("Role to set").setRequired(true).addChoices({ name: "officer", value: "officer" }, { name: "member", value: "member" }))).addSubcommand((sub) => sub.setName("transfer").setDescription("Owner-only leadership transfer.").addUserOption((option) => option.setName("user").setDescription("New owner").setRequired(true))).addSubcommand((sub) => sub.setName("disband").setDescription("Owner-only full clan deletion.")).addSubcommand((sub) => sub.setName("upgrade").setDescription("Spend clan vault aura on upgrades.").addStringOption((option) => option.setName("path").setDescription("Upgrade path").setRequired(true).addChoices({ name: "hall", value: "hall" }, { name: "vault", value: "vault" }, { name: "arsenal", value: "arsenal" }))).addSubcommand((sub) => sub.setName("raid").setDescription("Launch a cooldown-based clan raid.")).addSubcommand((sub) => sub.setName("donate").setDescription("Donate aura to your clan.").addIntegerOption((option) => option.setName("amount").setDescription("Amount").setRequired(true).setMinValue(1))).addSubcommand((sub) => sub.setName("war").setDescription("Fight another clan by code.").addStringOption((option) => option.setName("enemy").setDescription("Enemy clan code").setRequired(true))),
     new SlashCommandBuilder().setName("authority").setDescription("Rank-only blessing command.").addUserOption((option) => option.setName("user").setDescription("Target player").setRequired(true)),
+    new SlashCommandBuilder().setName("daily-shop").setDescription("Browse today's rotating shop or buy an item.")
+      .addSubcommand((sub) => sub.setName("browse").setDescription("View today's rotating shop items."))
+      .addSubcommand((sub) => sub.setName("buy").setDescription("Buy an item from today's shop.").addStringOption((option) => option.setName("item").setDescription("Item id from /daily-shop browse").setRequired(true))),
+    new SlashCommandBuilder().setName("challenges").setDescription("View your weekly challenges and progress.")
+      .addSubcommand((sub) => sub.setName("view").setDescription("View current weekly challenges."))
+      .addSubcommand((sub) => sub.setName("claim").setDescription("Claim a completed weekly challenge reward.").addStringOption((option) => option.setName("challenge").setDescription("Challenge id").setRequired(true))),
+    new SlashCommandBuilder().setName("blackjack").setDescription("Play blackjack against the dealer.").addIntegerOption((option) => option.setName("bet").setDescription("Aura to bet").setRequired(true).setMinValue(500)),
+    new SlashCommandBuilder().setName("slots").setDescription("Spin the slot machine.").addIntegerOption((option) => option.setName("bet").setDescription("Aura to bet").setRequired(true).setMinValue(200).setMaxValue(25000)),
+    new SlashCommandBuilder().setName("scratch").setDescription("Buy and scratch a card for prizes.")
+      .addStringOption((option) => option.setName("type").setDescription("Card type").addChoices({ name: "standard (2,000 aura)", value: "standard" }, { name: "premium (5,000 aura)", value: "premium" })),
+    new SlashCommandBuilder().setName("cosmetics").setDescription("Browse, equip, and buy profile cosmetics.")
+      .addSubcommand((sub) => sub.setName("browse").setDescription("View your owned cosmetics."))
+      .addSubcommand((sub) => sub.setName("equip").setDescription("Equip a cosmetic.").addStringOption((option) => option.setName("slot").setDescription("Cosmetic slot").setRequired(true).addChoices({ name: "background", value: "background" }, { name: "badge", value: "badge" }, { name: "title", value: "title" }, { name: "frame", value: "frame" }, { name: "name color", value: "nameColor" })).addStringOption((option) => option.setName("item").setDescription("Cosmetic item id").setRequired(true)))
+      .addSubcommand((sub) => sub.setName("shop").setDescription("Browse purchasable cosmetics."))
+      .addSubcommand((sub) => sub.setName("unequip").setDescription("Remove an equipped cosmetic.").addStringOption((option) => option.setName("slot").setDescription("Cosmetic slot").setRequired(true).addChoices({ name: "background", value: "background" }, { name: "badge", value: "badge" }, { name: "title", value: "title" }, { name: "frame", value: "frame" }, { name: "name color", value: "nameColor" }))),
+    new SlashCommandBuilder().setName("pet").setDescription("Manage your companion pet.")
+      .addSubcommand((sub) => sub.setName("adopt").setDescription("Adopt a companion pet.").addStringOption((option) => option.setName("species").setDescription("Pet species").setRequired(true).addChoices({ name: "Shadow Fox", value: "fox" }, { name: "Mystic Cat", value: "cat" }, { name: "Ember Drake", value: "dragon" }, { name: "Sage Owl", value: "owl" }, { name: "Storm Wolf", value: "wolf" }, { name: "Lucky Bunny", value: "bunny" }, { name: "Phoenix Chick", value: "phoenix" }, { name: "Ancient Turtle", value: "turtle" })).addStringOption((option) => option.setName("name").setDescription("Name for your pet").setRequired(true).setMaxLength(20)))
+      .addSubcommand((sub) => sub.setName("status").setDescription("View your pet's stats and condition."))
+      .addSubcommand((sub) => sub.setName("feed").setDescription("Feed your pet.").addStringOption((option) => option.setName("food").setDescription("Food type").setRequired(true).addChoices({ name: "Basic Kibble (500 aura)", value: "kibble" }, { name: "Tasty Treat (1,200 aura)", value: "treat" }, { name: "Gourmet Feast (3,000 aura)", value: "feast" }, { name: "Vitality Elixir (5,000 aura)", value: "elixir" }, { name: "Premium Delight (8,000 aura)", value: "premium_treat" })))
+      .addSubcommand((sub) => sub.setName("play").setDescription("Play with your pet to boost happiness."))
+      .addSubcommand((sub) => sub.setName("train").setDescription("Train your pet in a specific stat.").addStringOption((option) => option.setName("stat").setDescription("Stat to train").setRequired(true).addChoices({ name: "Strength (combat)", value: "strength" }, { name: "Luck (crates & spins)", value: "luck" }, { name: "Mining (mine yields)", value: "mining" }, { name: "Gardening (garden yields)", value: "gardening" })))
+      .addSubcommand((sub) => sub.setName("rename").setDescription("Rename your pet.").addStringOption((option) => option.setName("name").setDescription("New name").setRequired(true).setMaxLength(20))),
+    new SlashCommandBuilder().setName("notifications").setDescription("Manage push notification preferences.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("View your notification settings."))
+      .addSubcommand((sub) => sub.setName("toggle").setDescription("Toggle a notification type.").addStringOption((option) => option.setName("type").setDescription("Notification type").setRequired(true).addChoices({ name: "Rob alerts", value: "notifyOnRob" }, { name: "Trade offers", value: "notifyOnTrade" }, { name: "Clan wars", value: "notifyOnClanWar" }, { name: "Server events", value: "notifyOnServerEvent" }, { name: "Pet hungry", value: "notifyOnPetHungry" }, { name: "Weekly reset", value: "notifyOnWeeklyReset" }, { name: "Daily shop featured", value: "notifyOnDailyShop" }))),
+    new SlashCommandBuilder().setName("battlepass").setDescription("View and manage your Battle Pass.")
+      .addSubcommand((sub) => sub.setName("view").setDescription("View your Battle Pass progress."))
+      .addSubcommand((sub) => sub.setName("buy").setDescription("Purchase this season's Battle Pass."))
+      .addSubcommand((sub) => sub.setName("claim").setDescription("Claim rewards for a tier.").addIntegerOption((opt) => opt.setName("tier").setDescription("Tier to claim").setRequired(true).setMinValue(1).setMaxValue(30)).addStringOption((opt) => opt.setName("track").setDescription("Free or paid track").addChoices({ name: "Free", value: "free" }, { name: "Paid", value: "paid" })))
+      .addSubcommand((sub) => sub.setName("claim-all").setDescription("Claim all unclaimed rewards.")),
+    new SlashCommandBuilder().setName("server-premium").setDescription("View and manage server premium.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("View this server's premium status."))
+      .addSubcommand((sub) => sub.setName("tiers").setDescription("View available server premium tiers.")),
+    new SlashCommandBuilder().setName("auction").setDescription("Global Auction House — buy and sell items cross-server.")
+      .addSubcommand((sub) => sub.setName("list").setDescription("List an item for auction.").addStringOption((o) => o.setName("item").setDescription("Item ID to sell").setRequired(true)).addIntegerOption((o) => o.setName("price").setDescription("Starting price").setRequired(true).setMinValue(500)).addIntegerOption((o) => o.setName("quantity").setDescription("Quantity").setMinValue(1)).addIntegerOption((o) => o.setName("buynow").setDescription("Buy-now price")).addStringOption((o) => o.setName("duration").setDescription("Auction duration").addChoices({ name: "6 hours", value: "short" }, { name: "12 hours", value: "medium" }, { name: "24 hours", value: "long" })))
+      .addSubcommand((sub) => sub.setName("search").setDescription("Browse listings.").addStringOption((o) => o.setName("category").setDescription("Filter by type").addChoices({ name: "Materials", value: "material" }, { name: "Crates", value: "crate" }, { name: "Relics", value: "relic" }, { name: "Cosmetics", value: "cosmetic" })).addStringOption((o) => o.setName("sort").setDescription("Sort by").addChoices({ name: "Ending soon", value: "ending_soon" }, { name: "Price: Low", value: "price_asc" }, { name: "Price: High", value: "price_desc" }, { name: "Newest", value: "newest" })))
+      .addSubcommand((sub) => sub.setName("bid").setDescription("Place a bid.").addStringOption((o) => o.setName("listing").setDescription("Listing ID").setRequired(true)).addIntegerOption((o) => o.setName("amount").setDescription("Bid amount").setRequired(true).setMinValue(500)))
+      .addSubcommand((sub) => sub.setName("buy").setDescription("Buy now.").addStringOption((o) => o.setName("listing").setDescription("Listing ID").setRequired(true)))
+      .addSubcommand((sub) => sub.setName("my-listings").setDescription("View your active listings."))
+      .addSubcommand((sub) => sub.setName("cancel").setDescription("Cancel a listing.").addStringOption((o) => o.setName("listing").setDescription("Listing ID").setRequired(true))),
+    new SlashCommandBuilder().setName("referral").setDescription("Referral codes — invite friends, earn rewards.")
+      .addSubcommand((sub) => sub.setName("create").setDescription("Create your referral code.").addStringOption((o) => o.setName("code").setDescription("Custom code (optional, 3-16 chars)")))
+      .addSubcommand((sub) => sub.setName("use").setDescription("Use a referral code.").addStringOption((o) => o.setName("code").setDescription("Referral code").setRequired(true)))
+      .addSubcommand((sub) => sub.setName("stats").setDescription("View your referral stats."))
+      .addSubcommand((sub) => sub.setName("leaderboard").setDescription("Top referrers.")),
+    new SlashCommandBuilder().setName("global-event").setDescription("Cross-server world events.")
+      .addSubcommand((sub) => sub.setName("status").setDescription("View current global event."))
+      .addSubcommand((sub) => sub.setName("claim").setDescription("Claim event rewards.")),
+    new SlashCommandBuilder().setName("npc").setDescription("Chat with AI-powered NPCs.")
+      .addSubcommand((sub) => sub.setName("list").setDescription("View available NPCs."))
+      .addSubcommand((sub) => sub.setName("chat").setDescription("Talk to an NPC.").addStringOption((o) => o.setName("npc").setDescription("NPC to chat with").setRequired(true).addChoices({ name: "🏪 Zephyr (Merchant)", value: "merchant" }, { name: "📚 Elder Minos (Sage)", value: "sage" }, { name: "🃏 Jinx (Trickster)", value: "trickster" }, { name: "⚔️ Commander Theron (Warrior)", value: "warrior" })).addStringOption((o) => o.setName("message").setDescription("What to say").setRequired(true))),
+    // Phase 5: Community Voting
+    new SlashCommandBuilder().setName("vote-poll").setDescription("Community polls and voting.")
+      .addSubcommand((sub) => sub.setName("create").setDescription("Create a new poll.")
+        .addStringOption((o) => o.setName("title").setDescription("Poll title/question").setRequired(true))
+        .addStringOption((o) => o.setName("options").setDescription("Options separated by | (e.g. Option A | Option B | Option C)").setRequired(true)))
+      .addSubcommand((sub) => sub.setName("vote").setDescription("Vote in a poll.")
+        .addStringOption((o) => o.setName("poll").setDescription("Poll ID").setRequired(true))
+        .addIntegerOption((o) => o.setName("option").setDescription("Option number (1, 2, 3...)").setRequired(true)))
+      .addSubcommand((sub) => sub.setName("results").setDescription("View poll results.")
+        .addStringOption((o) => o.setName("poll").setDescription("Poll ID").setRequired(true)))
+      .addSubcommand((sub) => sub.setName("list").setDescription("List all active polls.")),
+
+    // Phase 5: Language / Localization
+    new SlashCommandBuilder().setName("language").setDescription("Change your display language.")
+      .addSubcommand((sub) => sub.setName("set").setDescription("Set your preferred language.")
+        .addStringOption((o) => o.setName("locale").setDescription("Language code").setRequired(true)
+          .addChoices({ name: "🇺🇸 English", value: "en" }, { name: "🇪🇸 Español", value: "es" }, { name: "🇧🇷 Português", value: "pt" }, { name: "🇫🇷 Français", value: "fr" })))
+      .addSubcommand((sub) => sub.setName("list").setDescription("View available languages.")),
+
+    // Phase 5: Season Info
+    new SlashCommandBuilder().setName("season-info").setDescription("View current season details, boosts, and seasonal shop."),
+
+    // Phase 5: Analytics (Admin)
+    new SlashCommandBuilder().setName("analytics").setDescription("View bot analytics (Admin only).")
+      .addSubcommand((sub) => sub.setName("daily").setDescription("View today's analytics snapshot."))
+      .addSubcommand((sub) => sub.setName("full").setDescription("View full analytics report with engagement, economy, and revenue.")),
   ].map((command) => command.toJSON());
 }
 
@@ -12381,6 +14191,14 @@ async function routeInteraction(interaction) {
 
   if (interaction.isButton() && interaction.customId?.startsWith("quick:")) {
     return handleQuickActionButton(interaction);
+  }
+
+  if (interaction.isButton() && interaction.customId?.startsWith("onboarding:")) {
+    return handleOnboardingButton(interaction);
+  }
+
+  if (interaction.isButton() && interaction.customId?.startsWith("flashsale:")) {
+    return handleFlashSaleButton(interaction);
   }
 
   if (interaction.isStringSelectMenu() && interaction.customId?.startsWith("gear:")) {
@@ -12419,6 +14237,12 @@ async function routeInteraction(interaction) {
     return result;
   }
 
+  if (interaction.isButton() && interaction.customId?.startsWith("bj:")) {
+    const result = await handleBlackjackButton(interaction);
+    await sendPendingRankUpMessages(interaction);
+    return result;
+  }
+
   if (interaction.isButton() || interaction.isStringSelectMenu()) {
     const result = await handleBattleComponentInteraction(interaction);
     await sendPendingRankUpMessages(interaction);
@@ -12439,7 +14263,7 @@ async function routeInteraction(interaction) {
     });
   }
 
-  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, tutorial: handleTutorial, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, summon: handleSummon, claim: handleClaim, hint: handleHint, incense: handleIncense, burn: handleBurn, relic: handleRelic, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, bounty: handleBounty, daily: handleDaily, vote: handleVote, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, trade: handleTrade, inventory: handleInventory, collection: handleCollection, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, partyquest: handlePartyQuest, weather: handleWeather, letter: handleLetter, shrine: handleShrine, appreciate: handleAppreciate, campfire: handleCampfire, identity: handleIdentity, faction: handleFaction, flex: handleFlex, blackmarket: handleBlackMarket, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, season: handleSeason, serverquest: handleServerQuest, project: handleProject, community: handleCommunity, yearbook: handleYearbook, challenge: handleChallenge, memoryquest: handleMemoryQuest, social: handleSocial, gallery: handleGallery, world: handleWorld, ask: handleAsk, premium: handlePremium, clan: handleClan, authority: handleAuthority };
+  const handlers = { help: handleHelp, event: handleEvent, setup: handleSetup, start: handleStart, tutorial: handleTutorial, profile: handleProfile, stats: handleStats, balance: handleBalance, work: handleWork, mine: handleMine, summon: handleSummon, claim: handleClaim, hint: handleHint, incense: handleIncense, burn: handleBurn, relic: handleRelic, spin: handleSpin, coinflip: handleCoinflip, rob: handleRob, bounty: handleBounty, daily: handleDaily, vote: handleVote, "premium-chest": handlePremiumChest, reminders: handleReminders, vault: handleVault, shop: handleShop, buy: handleBuy, roleshop: handleRoleShop, gift: handleGift, trade: handleTrade, inventory: handleInventory, collection: handleCollection, craft: handleCraft, forge: handleForge, "crafting-guide": handleCraftingGuide, garden: handleGarden, property: handleProperty, expedition: handleExpedition, partyquest: handlePartyQuest, weather: handleWeather, letter: handleLetter, shrine: handleShrine, appreciate: handleAppreciate, campfire: handleCampfire, identity: handleIdentity, faction: handleFaction, flex: handleFlex, blackmarket: handleBlackMarket, gear: handleGear, rank: handleRank, prestige: handlePrestige, achievements: handleAchievements, quests: handleQuests, crate: handleCrate, skills: handleSkills, pvp: handlePvp, boss: handleBoss, leaderboard: handleLeaderboard, season: handleSeason, serverquest: handleServerQuest, project: handleProject, community: handleCommunity, yearbook: handleYearbook, challenge: handleChallenge, memoryquest: handleMemoryQuest, social: handleSocial, gallery: handleGallery, world: handleWorld, ask: handleAsk, premium: handlePremium, clan: handleClan, authority: handleAuthority, "daily-shop": handleDailyShop, challenges: handleChallenges, blackjack: handleBlackjack, slots: handleSlots, scratch: handleScratch, cosmetics: handleCosmetics, pet: handlePet, notifications: handleNotifications, battlepass: handleBattlePass, "server-premium": handleServerPremium, auction: handleAuction, referral: handleReferral, "global-event": handleGlobalEvent, npc: handleNPC, "vote-poll": handleVotePoll, language: handleLanguage, "season-info": handleSeasonInfo, analytics: handleAnalytics };
   const handler = handlers[interaction.commandName];
   if (!handler) {
     return interaction.reply({ content: "Unknown command.", ephemeral: true });
@@ -12489,15 +14313,152 @@ async function routeInteraction(interaction) {
   }
 }
 
+async function ensureWorldBossState() {
+  try {
+    await WorldBoss.updateOne(
+      { key: WORLD_BOSS_KEY },
+      {
+        $setOnInsert: {
+          key: WORLD_BOSS_KEY,
+          bossId: WORLD_BOSS_ID,
+          health: WORLD_BOSS_MAX_HEALTH,
+          maxHealth: WORLD_BOSS_MAX_HEALTH,
+          cycleId: new Date().toISOString().slice(0, 10),
+        },
+      },
+      { upsert: true }
+    );
+  } catch (error) {
+    if (error?.code !== 11000) {
+      throw error;
+    }
+  }
+}
+
+async function getWorldBossGuildMemberCount(client, guildId) {
+  const cachedGuild = client?.guilds?.cache?.get(guildId);
+  if (cachedGuild?.memberCount !== undefined) {
+    const refreshedGuild = await cachedGuild.fetch().catch(() => cachedGuild);
+    return Number(refreshedGuild?.memberCount) || 0;
+  }
+
+  const fetchedGuild = client?.guilds?.fetch
+    ? await client.guilds.fetch(guildId).catch(() => null)
+    : null;
+  return Number(fetchedGuild?.memberCount) || 0;
+}
+
+async function applyWorldBossRift(event, client) {
+  const payload = event.payload || {};
+  const attributionId = payload.attributionId;
+  if (!attributionId) {
+    return null;
+  }
+
+  const opened = await InviteAttribution.findOneAndUpdate(
+    { _id: attributionId, riftOpened: false },
+    { $set: { riftOpened: true } },
+    { new: true }
+  ).lean();
+  if (!opened) {
+    return null;
+  }
+
+  await ensureWorldBossState();
+  const damage = opened.attributionType === "bot_join"
+    ? WORLD_BOSS_BOT_JOIN_DAMAGE
+    : WORLD_BOSS_MEMBER_JOIN_DAMAGE;
+  const boss = await WorldBoss.findOneAndUpdate(
+    { key: WORLD_BOSS_KEY, health: { $gt: 0 } },
+    [
+      { $set: {
+        health: { $max: [0, { $subtract: ["$health", damage] }] },
+        riftCount: { $add: [{ $ifNull: ["$riftCount", 0] }, 1] },
+        lastRiftOpenedAt: new Date(),
+      } },
+    ],
+    { new: true }
+  ).lean();
+
+  if (!boss) {
+    return { opened, defeated: true };
+  }
+
+  await GuildSettings.findOneAndUpdate(
+    { guildId: opened.guildId },
+    {
+      $set: {
+        activeRiftNode: {
+          nodeId: `rift:${opened._id}`,
+          bossId: WORLD_BOSS_ID,
+          health: boss.health,
+          maxHealth: boss.maxHealth,
+          openedByUserId: opened.inviterId,
+          openedAt: opened.joinedAt,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        },
+      },
+      $setOnInsert: { guildId: opened.guildId },
+    },
+    { upsert: true }
+  );
+
+  const memberCount = await getWorldBossGuildMemberCount(client, opened.guildId);
+  const rewardEligible = memberCount >= 10;
+  let rewardGranted = false;
+  if (rewardEligible && opened.attributionType === "bot_join" && opened.inviterId) {
+    const rewardClaim = await InviteAttribution.findOneAndUpdate(
+      { _id: opened._id, rewardGranted: false },
+      { $set: { rewardGranted: true } },
+      { new: true }
+    ).lean();
+    if (rewardClaim) {
+      const inviterProfile = await getOrCreatePlayer(opened.guildId, opened.inviterId);
+      const inviter = await User.findOneAndUpdate(
+        { _id: inviterProfile._id },
+        {
+          $inc: { aura: WORLD_BOSS_INVITER_AURA_REWARD },
+          $addToSet: { "cosmetics.ownedTitles": "Rift Walker" },
+          $set: { "cosmetics.activeTitle": "Rift Walker" },
+        },
+        { new: true, sort: { updatedAt: -1 } }
+      ).lean();
+      rewardGranted = Boolean(inviter);
+    }
+  }
+
+  return {
+    attributionId: opened._id.toString(),
+    guildId: opened.guildId,
+    attributionType: opened.attributionType,
+    memberCount,
+    rewardEligible,
+    damage,
+    bossHealth: boss.health,
+    rewardGranted,
+  };
+}
+
+function attachWorldBossSubscribers(eventBusInstance, client) {
+  return eventBusInstance.subscribe("worldBoss.riftOpened", (event) => {
+    applyWorldBossRift(event, client).catch((error) => {
+      console.error("World Boss rift processing failed:", error);
+    });
+  });
+}
+
 module.exports = {
   applyTopggVoteWebhookEvent,
   applyPaddleWebhookEvent,
   buildCommands,
+  attachRetentionSubscribers,
+  attachWorldBossSubscribers,
   recentInteractions,
   handleChatRelicSpawnMessage,
   routeInteraction,
   sendServerJoinMessage,
   sendServerSetupMessage,
   startReminderLoop,
+  startClanDailyResetLoop,
   startRelicSpawnLoop,
 };
